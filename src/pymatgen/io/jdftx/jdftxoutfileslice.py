@@ -20,12 +20,16 @@ if TYPE_CHECKING:
 
     from pymatgen.io.jdftx.jelstep import JElSteps
     from pymatgen.io.jdftx.jminsettings import JMinSettings
+from scipy.constants import Planck as h_j
+from scipy.constants import e as e_charge
+from scipy.constants import speed_of_light
+
 from pymatgen.core import Structure
 from pymatgen.core.periodic_table import Element
 from pymatgen.core.trajectory import Trajectory
 from pymatgen.core.units import Ha_to_eV, ang_to_bohr, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import (
-    _init_dict_from_colon_dump_lines,
+    _get_eigstats_varsdict,
     find_all_key,
     find_first_range_key,
     find_key,
@@ -58,6 +62,12 @@ _jofs_atr_from_jstrucs = (
     "elec_alpha",
     "elec_linmin",
     "t_s",
+    "pe",
+    "ke",
+    "t_k",
+    "p_bar",
+    "tmd_fs",
+    "thermostat_velocity",
 )
 
 
@@ -202,6 +212,7 @@ class JDFTXOutfileSlice:
     jsettings_lattice: JMinSettings | None = None
     jsettings_ionic: JMinSettings | None = None
     constant_lattice: bool | None = None
+    is_md: bool = False
 
     xc_func: str | None = None
 
@@ -284,7 +295,7 @@ class JDFTXOutfileSlice:
     converged: bool | None = None
     structure: Structure | None = None
     initial_structure: Structure | None = None
-    trajectory: Trajectory | None = None
+    _trajectory: Trajectory | None = None
     electronic_output: dict | None = None
     eopt_type: str | None = None
     elecmindata: JElSteps | None = None
@@ -327,7 +338,12 @@ class JDFTXOutfileSlice:
     # information as possible.
     @classmethod
     def _from_out_slice(
-        cls, text: list[str], is_bgw: bool = False, none_on_error: bool = True
+        cls,
+        text: list[str],
+        skim_levels: list[str],
+        skip_props: list[str],
+        is_bgw: bool = False,
+        none_on_error: bool = True,
     ) -> JDFTXOutfileSlice | None:
         """
         Read slice of out file into a JDFTXOutfileSlice instance.
@@ -344,18 +360,18 @@ class JDFTXOutfileSlice:
         instance = cls()
         instance.is_bgw = is_bgw
         try:
-            instance._from_out_slice_init_all(text)
+            instance._from_out_slice_init_all(text, skim_levels, skip_props)
         except (ValueError, IndexError, TypeError, KeyError, AttributeError):
             if none_on_error:
                 return None
             raise
         return instance
 
-    def _from_out_slice_init_all(self, text: list[str]) -> None:
+    def _from_out_slice_init_all(self, text: list[str], skim_levels: list[str], skip_props: list[str]) -> None:
         self._set_internal_infile(text)
         # self._set_min_settings(text)
         self._set_geomopt_vars(text)
-        self._set_jstrucs(text)
+        self._set_jstrucs(text, skim_levels=skim_levels, skip_props=skip_props)
         self._set_backup_vars(text)
         self.prefix = self._get_prefix(text)
         spintype, nspin = self._get_spinvars(text)
@@ -412,12 +428,14 @@ class JDFTXOutfileSlice:
         if end_line_idx is None:
             raise ValueError("Calculation did not begin for this out file slice.")
         self.infile = JDFTXInfile.from_str(
-            "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False
+            "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False, skip_invalid_tags=True
         )
         self.constant_lattice = True
         if "lattice-minimize" in self.infile:
             latsteps = self.infile["lattice-minimize"]["nIterations"]
             self.constant_lattice = not (int(latsteps) > 0)
+        if "ionic-dynamics" in self.infile:
+            self.is_md = int(self.infile["ionic-dynamics"]["nSteps"]) > 0
 
     def _set_t_s(self) -> None:
         """Return the total time in seconds for the calculation.
@@ -454,11 +472,22 @@ class JDFTXOutfileSlice:
             structures = [slc.structure for slc in self.jstrucs]
             constant_lattice = self.constant_lattice if self.constant_lattice is not None else False
             frame_properties = [slc.properties for slc in self.jstrucs]
-            self.trajectory = Trajectory.from_structures(
+            self._trajectory = Trajectory.from_structures(
                 structures=structures,
                 constant_lattice=constant_lattice,
                 frame_properties=frame_properties,
             )
+
+    @property
+    def trajectory(self) -> Trajectory | None:
+        """Return pymatgen trajectory object.
+
+        Returns:
+            Trajectory: pymatgen Trajectory object containing intermediate Structure's of outfile slice calculation.
+        """
+        if self._trajectory is None:
+            self._set_trajectory()
+        return self._trajectory
 
     def _set_electronic_output(self) -> None:
         """Return a dictionary with all relevant electronic information.
@@ -662,7 +691,7 @@ class JDFTXOutfileSlice:
             return None
         return [int(x) for x in text[line].split()[1:4]]
 
-    def _get_eigstats_varsdict(self, text: list[str], prefix: str | None) -> dict[str, float | None]:
+    def _get_eigstats_varsdict(self, text: list[str]) -> dict[str, float | None]:
         """Get the eigenvalue statistics from the out file text.
 
         Args:
@@ -672,24 +701,8 @@ class JDFTXOutfileSlice:
         Returns:
             dict[str, float | None]: Dictionary of eigenvalue statistics.
         """
-        varsdict: dict[str, float | None] = {}
-        lines1 = find_all_key("Dumping ", text)
-        lines2 = find_all_key("eigStats' ...", text)
-        lines3 = [lines1[i] for i in range(len(lines1)) if lines1[i] in lines2]
-        if not lines3:
-            for key in list(eigstats_keymap.keys()):
-                varsdict[eigstats_keymap[key]] = None
-            self.has_eigstats = False
-        else:
-            line_start = lines3[-1]
-            line_start_rel_idx = lines1.index(line_start)
-            line_end = lines1[line_start_rel_idx + 1] if len(lines1) >= line_start_rel_idx + 2 else len(lines1) - 1
-            _varsdict = _init_dict_from_colon_dump_lines([text[idx] for idx in range(line_start, line_end)])
-            for key in _varsdict:
-                varsdict[eigstats_keymap[key]] = float(_varsdict[key]) * Ha_to_eV
-            self.has_eigstats = all(eigstats_keymap[key] in varsdict for key in eigstats_keymap) and all(
-                eigstats_keymap[key] is not None for key in eigstats_keymap
-            )
+        has_eigstats, varsdict = _get_eigstats_varsdict(text)
+        self.has_eigstats = has_eigstats
         return varsdict
 
     def _set_eigvars(self, text: list[str]) -> None:
@@ -698,7 +711,7 @@ class JDFTXOutfileSlice:
         Args:
             text (list[str]): Output of read_file for out file.
         """
-        eigstats = self._get_eigstats_varsdict(text, self.prefix)
+        eigstats = self._get_eigstats_varsdict(text)
         for key, val in eigstats.items():
             setattr(self, key, val)
         if self.efermi is None:
@@ -781,9 +794,9 @@ class JDFTXOutfileSlice:
             ]
         )
         element_semicore_electrons = element_total_electrons - element_valence_electrons
-        self.total_electrons_uncharged = np.sum(element_total_electrons)
-        self.valence_electrons_uncharged = np.sum(element_valence_electrons)
-        self.semicore_electrons_uncharged = np.sum(element_semicore_electrons)
+        self.total_electrons_uncharged = sum(element_total_electrons)
+        self.valence_electrons_uncharged = sum(element_valence_electrons)
+        self.semicore_electrons_uncharged = sum(element_semicore_electrons)
         self.semicore_electrons = self.semicore_electrons_uncharged
         if (self.total_electrons is not None) and (self.semicore_electrons is not None):
             self.valence_electrons = self.total_electrons - self.semicore_electrons  # accounts for if system is charged
@@ -878,13 +891,13 @@ class JDFTXOutfileSlice:
         output_start_idx = _get_joutstructures_start_idx(text)
         if output_start_idx is None:
             init_struc = _get_init_structure(text)
-        else:
+        else:  # TODO: Change this to fetch the initial structure from the internal infile
             init_struc = _get_init_structure(text[:output_start_idx])
         if init_struc is None:
             raise ValueError("Provided out file slice's inputs preamble does not contain input structure data.")
         return init_struc
 
-    def _set_jstrucs(self, text: list[str]) -> None:
+    def _set_jstrucs(self, text: list[str], skim_levels: list[str], skip_props: list[str]) -> None:
         """Set the jstrucs class variable.
 
         Set the JStructures object to jstrucs from the out file text and all class attributes initialized from jstrucs.
@@ -892,17 +905,29 @@ class JDFTXOutfileSlice:
         Args:
             text (list[str]): Output of read_file for out file.
         """
-        self.initial_structure = self._get_initial_structure(text)
+        self.initial_structure = self.infile.to_pmg_structure(self.infile)
         # In the case where no ion optimization updates are printed, JOutStructures
         if self.geom_opt_type is None:
             raise ValueError("geom_opt_type not set yet.")
+        expected_etype = "F"
+        if "target-mu" in self.infile:
+            expected_etype = "G"
         self.jstrucs = JOutStructures._from_out_slice(
-            text, opt_type=self.geom_opt_type, init_struc=self.initial_structure
+            text,
+            # skim_levels,
+            # skip_props,
+            opt_type=self.geom_opt_label,
+            init_struc=self.initial_structure,
+            is_md=self.is_md,
+            has_igp="ionic-gaussian-potential" in self.infile,
+            expected_etype=expected_etype,
+            skim_levels=skim_levels,
+            skip_props=skip_props,
         )
-        if self.etype is None:
-            self.etype = self.jstrucs[-1].etype
         if self.jstrucs is not None:
-            self._set_trajectory()
+            if self.etype is None:
+                self.etype = self.jstrucs[-1].etype
+            # self._set_trajectory()
             self.mu = self._get_mu()
             for var in _jofs_atr_from_jstrucs:
                 setattr(self, var, getattr(self.jstrucs, var))
@@ -1244,6 +1269,7 @@ class JDFTXOutfileSlice:
                 _displacements.append(np.array([float(x) for x in line.split()[2:5]]))
             vib_mode_data["Displacements"] = np.array(_displacements) * bohr_to_ang  # Length of displacement
             # specified in inputs
+        vib_mode_data["cm^-1"] = vib_mode_data["Frequency"] / (100 * speed_of_light * (h_j / e_charge))
         return vib_mode_data
 
     def to_jdftxinfile(self) -> JDFTXInfile:
@@ -1260,8 +1286,14 @@ class JDFTXOutfileSlice:
         base_infile.strip_structure_tags()
         if self.structure is None:
             return base_infile
-        infile = JDFTXInfile.from_structure(self.structure)
-        infile += base_infile
+        # Optimization restrictions and velocities are carried over the structure site properties
+        add_infile = JDFTXInfile.from_structure(self.structure)
+        infile = base_infile + add_infile
+        # infile +=
+        # Set most recent thermostat velocity if MD with Nose-Hoover
+        if self.is_md and self.infile["ionic-dynamics"]["statMethod"] == "NoseHoover":
+            tv = self.jstrucs.thermostat_velocity
+            infile["thermostat-velocity"] = {"v1": tv[0], "v2": tv[1], "v3": tv[2]}
         return infile
 
     def _check_solvation(self) -> bool:

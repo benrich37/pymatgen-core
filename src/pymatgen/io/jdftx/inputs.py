@@ -37,9 +37,10 @@ from pymatgen.util.typing import SpeciesLike
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any, Self
+    from typing import Any
 
     from numpy.typing import ArrayLike
+    from typing_extensions import Self
 
     from pymatgen.util.typing import PathLike
 
@@ -47,14 +48,15 @@ __author__ = "Jacob Clary, Ben Rich"
 
 logger = logging.getLogger(__name__)
 
+
 # TODO: Add check for whether all ions have or lack velocities.
 # TODO: Add default value filling like JDFTx does.
 # TODO: Add more robust checking for if two repeatable tag values represent the
 # same information. This is likely fixed by implementing filling of default values.
 # TODO: Incorporate something to collapse repeated dump tags of the same frequency
 # into a single value.
-
-
+# TODO: Add a method to strip all tags that contain their default values for simpler
+# files written (especially when a `JDFTXInfile` is created from `JDFTXOutfileSlice`)
 class JDFTXInfile(dict, MSONable):
     """Class for reading/writing JDFtx input files.
 
@@ -115,7 +117,9 @@ class JDFTXInfile(dict, MSONable):
                     params[key] = val
             else:
                 params[key] = val
-        return type(self)(params)
+        instance = type(self)(params)
+        instance.validate_tags(try_auto_type_fix=True, error_on_failed_fix=True)
+        return instance
 
     def __setitem__(self, key: str, value: Any) -> None:
         """Set an item in the JDFTXInfile.
@@ -130,7 +134,6 @@ class JDFTXInfile(dict, MSONable):
         if not isinstance(key, str):
             raise TypeError(f"{key} is not a string!")
         try:
-            # tag_object = get_tag_object_on_val(key, value)
             tag_object = get_tag_object(key)
         except KeyError:
             raise KeyError(f"The {key} tag is not in MASTER_TAG_LIST")
@@ -141,12 +144,6 @@ class JDFTXInfile(dict, MSONable):
             value = value[0]
         tag_object = get_tag_object_on_val(key, value)
 
-        # if isinstance(tag_object, MultiformatTag):
-        #     if isinstance(value, str):
-        #         i = tag_object.get_format_index_for_str_value(key, value)
-        #     else:
-        #         i, _ = tag_object._determine_format_option(key, value)
-        #     tag_object = tag_object.format_options[i]
         if tag_object.can_repeat and key in self:
             del self[key]
         if tag_object.can_repeat and not isinstance(value, list):
@@ -183,6 +180,7 @@ class JDFTXInfile(dict, MSONable):
             instance.validate_boundaries()
         return instance
 
+    # TODO: This can be cleaned up by generalizing kwargs that are passed to from_str
     @classmethod
     def from_file(
         cls,
@@ -221,20 +219,45 @@ class JDFTXInfile(dict, MSONable):
         cls,
         structure: Structure,
         selective_dynamics: ArrayLike | None = None,
+        velocities: ArrayLike | None = None,
+        constraint_types: ArrayLike | None = None,
+        constraint_vectors: ArrayLike | None = None,
+        hyperplane_group_names: ArrayLike | None = None,
         write_cart_coords: bool = False,
+        ignore_site_properties: bool = False,
     ) -> JDFTXInfile:
         """Create a JDFTXInfile object from a pymatgen Structure.
 
         Args:
             structure (Structure): Structure to convert.
             selective_dynamics (ArrayLike, optional): Selective dynamics attribute for each site if available.
-                Shape Nx1, by default None.
+                Shape Nx1, by default None. If None, will check structure.site_properties for "selective_dynamics".
+            velocities (ArrayLike, optional): Velocities attribute for each site if available.
+                Shape Nx3, by default None. If None, will check structure.site_properties for "velocities".
+            write_cart_coords (bool, optional): Whether to write Cartesian coordinates instead of fractional.
+                Defaults to False.
+            ignore_site_properties (bool, optional): Whether to ignore site properties in the structure.
+                Defaults to False. If False, arguments selective_dynamics and velocities will changed from
+                values in site_properties if provided as None. If True, arguments selective_dynamics and velocities
+                will be left as provided, and the duplicated structure used for JDFTXStructure initialization will
+                have its site_properties cleared.
 
         Returns:
             JDFTXInfile: The created JDFTXInfile object.
         """
-        jdftxstructure = JDFTXStructure(structure, selective_dynamics)
-        jdftxstructure.write_cart_coords = write_cart_coords
+        _structure = structure.copy()
+        if ignore_site_properties:
+            _structure.clear_site_properties()
+            # _structure.site_properties = {}
+        jdftxstructure = JDFTXStructure(
+            _structure,
+            selective_dynamics=selective_dynamics,
+            velocities=velocities,
+            constraint_types=constraint_types,
+            constraint_vectors=constraint_vectors,
+            hyperplane_group_names=hyperplane_group_names,
+            write_cart_coords=write_cart_coords,
+        )
         return cls.from_jdftxstructure(jdftxstructure)
 
     @classmethod
@@ -253,6 +276,32 @@ class JDFTXInfile(dict, MSONable):
         jstr = jdftxstructure.get_str()
         return cls.from_str(jstr)
 
+    def read_line(
+        self,
+        line: str,
+        validate_value_boundaries: bool = True,
+        autofix: bool = True,
+        overwrite_nonrepeatable: bool = True,
+    ) -> None:
+        """Read a single line and update the JDFTXInfile object.
+
+        Convenience method for reading a single line and updating the JDFTXInfile object.
+
+        Args:
+            line (str): Line to read.
+        """
+        line = line.strip()
+        tag_object, tag, value = self._preprocess_line(line)
+        if not tag_object.can_repeat and overwrite_nonrepeatable and tag in self:
+            del self[tag]
+        processed_value = tag_object.read(tag, value)
+        _params = self.as_dict(skip_module_keys=True)
+        _params = self._store_value(_params, tag_object, tag, processed_value)
+        self.update(_params)
+        self.validate_tags(try_auto_type_fix=autofix, error_on_failed_fix=True)
+        if validate_value_boundaries:
+            self.validate_boundaries()
+
     @classmethod
     def from_str(
         cls,
@@ -261,6 +310,7 @@ class JDFTXInfile(dict, MSONable):
         sort_tags: bool = True,
         path_parent: Path | None = None,
         validate_value_boundaries: bool = True,
+        skip_invalid_tags: bool = False,
     ) -> JDFTXInfile:
         """Read a JDFTXInfile object from a string.
 
@@ -281,20 +331,34 @@ class JDFTXInfile(dict, MSONable):
         params: dict[str, Any] = {}
         # process all tag value lines using specified tag formats in MASTER_TAG_LIST
         for line in lines:
-            tag_object, tag, value = cls._preprocess_line(line)
-            processed_value = tag_object.read(tag, value)
-            params = cls._store_value(params, tag_object, tag, processed_value)  # this will change with tag categories
-
+            try:
+                tag_object, tag, value = cls._preprocess_line(line)
+                processed_value = tag_object.read(tag, value)
+                params = cls._store_value(
+                    params, tag_object, tag, processed_value
+                )  # this will change with tag categories
+            except ValueError as e:
+                if skip_invalid_tags:
+                    warnings.warn(f"Skipping invalid tag line: '{line}'. Error: {e}", stacklevel=2)
+                    continue
+                raise
+        pop_idcs = []
         if "include" in params:
-            for filename in params["include"]:
+            for i, filename in enumerate(params["include"]):
                 _filename = filename
                 if not Path(_filename).exists():
                     if path_parent is not None:
                         _filename = path_parent / filename
                     if not Path(_filename).exists():
-                        raise ValueError(f"The include file {filename} ({_filename}) does not exist!")
-                params.update(cls.from_file(_filename, dont_require_structure=True, assign_path_parent=False))
-            del params["include"]
+                        warnings.warn(f"The include file {filename} ({_filename}) does not exist!", stacklevel=2)
+                        # raise ValueError(f"The include file {filename} ({_filename}) does not exist!")
+                if Path(_filename).exists():
+                    params.update(cls.from_file(_filename, dont_require_structure=True, assign_path_parent=False))
+                    pop_idcs.append(i)
+            for i in reversed(pop_idcs):
+                del params["include"][i]
+            if len(params["include"]) == 0:
+                del params["include"]
 
         if (
             not dont_require_structure
@@ -380,7 +444,9 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             JDFTXInfile: Copy of the JDFTXInfile object.
         """
-        return type(self)(self)
+        # Wasn't working before
+        # return type(self)(self)
+        return self.from_dict(self.as_dict(skip_module_keys=True), validate_value_boundaries=False)
 
     def get_text_list(self) -> list[str]:
         """Get a list of strings representation of the JDFTXInfile.
@@ -409,17 +475,29 @@ class JDFTXInfile(dict, MSONable):
                 text.append("")
         return text
 
-    def write_file(self, filename: PathLike) -> None:
+    # TODO: JDFTXInfile can accept nan for values, as this is occasionally what is stored
+    # for unused variables, but JDFTx has no way read nan for an input value. All subtags
+    # with nan values should be removed before writing to file.
+    # TODO: Detect for and warn for tags that can be used together but likely shouldn't be,
+    # ie (ion-width being 0 while fluid is not None)
+    def write_file(self, filename: PathLike, strip_nan: bool = False) -> None:
         """Write JDFTXInfile to an in file.
 
         Args:
             filename (PathLike): Filename to write to.
+            strip_nan (bool, optional): Whether to strip all subtags with nan values before writing.
+                                         Defaults to False. WARNING - VERY JANKY RIGHT NOW
         """
+        write_infile = self
+        if strip_nan:
+            write_infile = clean_infile_of_nans(self)
         with open(filename, mode="w") as file:
-            file.write(str(self))
+            file.write(str(write_infile))
 
     @classmethod
-    def to_jdftxstructure(cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False) -> JDFTXStructure:
+    def to_jdftxstructure(
+        cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False, fill_site_properties: bool = True
+    ) -> JDFTXStructure:
         """Convert JDFTXInfile to JDFTXStructure object.
 
         Converts JDFTx lattice, lattice-scale, ion tags into JDFTXStructure, with Pymatgen structure as attribute.
@@ -432,10 +510,14 @@ class JDFTXInfile(dict, MSONable):
         # use dict representation so it's easy to get the right column for moveScale,
         # rather than checking for velocities
         jdftxinfile_dict = cls.get_dict_representation(jdftxinfile)
-        return JDFTXStructure.from_jdftxinfile(jdftxinfile_dict, sort_structure=sort_structure)
+        return JDFTXStructure.from_jdftxinfile(
+            jdftxinfile_dict, sort_structure=sort_structure, fill_site_properties=fill_site_properties
+        )
 
     @classmethod
-    def to_pmg_structure(cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False) -> Structure | None:
+    def to_pmg_structure(
+        cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False, fill_site_properties: bool = True
+    ) -> Structure | None:
         """Convert JDFTXInfile to pymatgen Structure object.
 
         Converts JDFTx lattice, lattice-scale, ion tags into pymatgen Structure.
@@ -457,6 +539,7 @@ class JDFTXInfile(dict, MSONable):
         jdftxstructure = JDFTXStructure.from_jdftxinfile(
             jdftxinfile.get_dict_representation(jdftxinfile),
             sort_structure=sort_structure,
+            fill_site_properties=fill_site_properties,
         )
         return jdftxstructure.structure
 
@@ -827,7 +910,7 @@ class JDFTXInfile(dict, MSONable):
             bool: Whether the value is numeric.
         """
         # data-types that might accidentally be identified as numeric
-        if isinstance(value, bool):
+        if type(value) in [bool]:
             return False
         try:
             float(value)
@@ -856,7 +939,9 @@ def _allnone(val) -> bool:
     return False
 
 
-def selective_dynamics_site_prop_to_jdftx_interpretable(selective_dynamics: Sequence[Any]) -> ArrayLike:
+def selective_dynamics_site_prop_to_jdftx_interpretable(
+    selective_dynamics: Sequence[Any] | ArrayLike[int | float | bool],
+) -> ArrayLike:
     """Convert selective dynamics site property to JDFTX interpretable format.
 
     Args:
@@ -867,12 +952,110 @@ def selective_dynamics_site_prop_to_jdftx_interpretable(selective_dynamics: Sequ
     """
     _selective_dynamics = []
     for i in range(len(selective_dynamics)):
-        # Not worrying about partial free axes for now, just setting movescale to 0 if any axis is fixed
-        if any(not x for x in selective_dynamics[i]):
-            _selective_dynamics.append(0)
+        if isinstance(selective_dynamics[i], (list | tuple | np.ndarray)):
+            _selective_dynamics.append(int(not any(not x for x in selective_dynamics[i])))
         else:
-            _selective_dynamics.append(1)
+            _selective_dynamics.append(int(bool(selective_dynamics[i])))
     return np.array(_selective_dynamics)
+
+
+def movescale_array_to_selective_dynamics_site_prop(movescale: ArrayLike[int | float]) -> Sequence[Any]:
+    """Convert JDFTX movescale array to selective dynamics site property format.
+
+    Args:
+        movescale (ArrayLike): JDFTX movescale array.
+
+    Returns:
+        list[list[bool]]: Selective dynamics site property format of movescale.
+    """
+    selective_dynamics = []
+    for scale in movescale:
+        bool_v = bool(scale)
+        selective_dynamics.append([bool_v, bool_v, bool_v])
+    return selective_dynamics
+
+
+def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
+    infile_cleaned = infile.copy()
+    popmaps = get_popmaps(infile_cleaned)
+    apply_popmaps(infile_cleaned, popmaps)
+    return infile_cleaned
+
+
+def hasnan(val: Any) -> bool:
+    if type(val) in [float, int]:
+        return np.isnan(val)
+    if isinstance(val, list):
+        for v in val:
+            if hasnan(v):
+                return True
+    elif isinstance(val, dict):
+        for v in val.values():
+            if hasnan(v):
+                return True
+    return False
+
+
+def get_nanmaps(val: Any) -> list[list[str | int]]:
+    nanmaps: list[list[str | int]] = []
+    generator = None
+    if type(val) in [float, int]:
+        if hasnan(val):
+            nanmaps.append([])
+    elif isinstance(val, dict):
+        generator = [(k, v) for k, v in val.items()]
+    elif isinstance(val, list):
+        generator = [(i, v) for i, v in enumerate(val)]
+    elif type(val in [str]):
+        pass
+    else:
+        raise ValueError(f"Unexpected type {type(val)} of value {val}")
+    if generator is not None:
+        for k, v in generator:
+            submaps = get_nanmaps(v)
+            for submap in submaps:
+                add_map = [k]
+                add_map.extend(submap)
+                nanmaps.append(add_map)
+    return nanmaps
+
+
+def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
+    popmaps = []
+    for tag in infile:
+        nanmaps = get_nanmaps(infile[tag])
+        for nanmap in nanmaps:
+            add_map = [tag]
+            add_map.extend(nanmap)
+            popmaps.append(add_map)
+    return popmaps
+
+
+def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> None:
+    for popmap in popmaps:
+        popmap_use = popmap
+        popmap_destination = edit_infile
+        tag = popmap[0]
+        if not isinstance(tag, str):
+            raise TypeError("First element of popmap must be a tag string here")
+        to = get_tag_object_on_val(tag, edit_infile[tag])
+        if isinstance(to, TagContainer):
+            subtag: AbstractTag = to
+            popmap_destination = popmap_destination[tag]
+            popmap_route = popmap[1:]
+            popmap_use = [tag]
+            step = None
+            for i, step in enumerate(popmap_route):
+                if isinstance(step, str):
+                    subtag = subtag.subtags[step]
+                    if not subtag.optional:
+                        step = popmap_route[i - 1]
+                        break
+                popmap_use.append(step)
+            popmap_destination = edit_infile
+            for step in popmap_use[:-1]:
+                popmap_destination = popmap_destination[step]
+            popmap_destination.pop(popmap_use[-1], None)
 
 
 @dataclass
@@ -912,12 +1095,13 @@ class JDFTXStructure(MSONable):
 
         Asserts self.structure is ordered, and adds selective dynamics if needed.
         """
-        if ((self.structure is not None) and ("selective_dynamics" in self.structure.site_properties)) and (
-            self.selective_dynamics is None
-        ):
-            self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(
-                self.structure.site_properties["selective_dynamics"]
-            )
+        # `Structure.is_ordered` checks for partial occupancies, which JDFTx cannot handle.
+        # This does not check for ordering of species.
+        if not self.structure.is_ordered:
+            raise ValueError("Disordered structure with partial occupancies cannot be converted into JDFTXStructure!")
+        if self.selective_dynamics is not None:
+            # Convert provided selective dynamics into JDFTX interpretable format
+            self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(self.selective_dynamics)
         for i in range(len(self.structure.species)):
             name = ""
             if isinstance(self.structure.species[i], str):
@@ -933,30 +1117,31 @@ class JDFTXStructure(MSONable):
                 if not name_str[j].isdigit():
                     name += name_str[j]
             self.structure.species[i] = name
-        if self.structure.is_ordered:
-            site_properties = {}
-            if self.selective_dynamics is not None:
-                selective_dynamics = np.array(self.selective_dynamics)
-                if not selective_dynamics.all():
-                    site_properties["selective_dynamics"] = selective_dynamics
-
-            # create new copy of structure so can add selective dynamics and sort atoms if needed
-            structure = Structure.from_sites(self.structure.sites)
-            self.structure = structure.copy(site_properties=site_properties)
-            if self.sort_structure:
-                self.structure = self.structure.get_sorted_structure()
-        else:
-            raise ValueError("Disordered structure with partial occupancies cannot be converted into JDFTXStructure!")
+        # For the optional properties, if they are all None, set to None to avoid writing them out, but check for
+        # data in structure.site_properties to populate them if available.
+        properties_to_sync = []
         if _allnone(self.selective_dynamics):
             self.selective_dynamics = None
+            properties_to_sync.append("selective_dynamics")
         if _allnone(self.velocities):
             self.velocities = None
-        if _allnone(self.constraint_types):
-            self.constraint_types = None
-        if _allnone(self.constraint_vectors):
-            self.constraint_vectors = None
-        if _allnone(self.hyperplane_group_names):
-            self.hyperplane_group_names = None
+            properties_to_sync.append("velocities")
+        # We do not continue this for constraint_types, constraint_vectors, hyperplane_group_names
+        # because these are likely inhomogeneous, and thus cannot be stored in structure.site_properties
+        for x in properties_to_sync:
+            self._sync_site_property(x)
+
+    def _sync_site_property(self, x: str) -> None:
+        """Update a single JDFTXStructure class variable from structure site properties."""
+        if self.structure is None:
+            return
+        if x in ["velocities", "constraint_types", "constraint_vectors", "group_names"]:
+            if x in self.structure.site_properties:
+                setattr(self, x, self.structure.site_properties[x])
+        elif x == "selective_dynamics" and "selective_dynamics" in self.structure.site_properties:
+            self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(
+                self.structure.site_properties["selective_dynamics"]
+            )
 
     def __repr__(self) -> str:
         """Return representation of JDFTXStructure file.
@@ -1008,28 +1193,41 @@ class JDFTXStructure(MSONable):
         return cls.from_jdftxinfile(JDFTXInfile.from_file(filename))
 
     @classmethod
-    def from_jdftxinfile(cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False) -> JDFTXStructure:
+    def from_jdftxinfile(
+        cls, jdftxinfile: JDFTXInfile, sort_structure: bool = False, fill_site_properties: bool = True
+    ) -> JDFTXStructure:
         """Get JDFTXStructure from JDFTXInfile.
 
         Args:
             jdftxinfile (JDFTXInfile): JDFTXInfile object.
             sort_structure (bool, optional): Whether to sort the structure. Useful if species are not grouped properly
                 together as JDFTx output will have species sorted.
+            fill_site_properties (bool, optional): Whether to fill in site properties for
+                `JDFTXStructure.structure: Structure` from the JDFTXInfile tags.
 
         Returns:
             JDFTXStructure: The created JDFTXStructure object.
         """
-
+        if sort_structure:
+            raise UserWarning(
+                "Structure sorting requested but is not currently implemented! Site ordering will not be changed."
+            )
         lattice = _infile_to_pmg_lattice(jdftxinfile)
         atomic_symbols = [x["species-id"] for x in jdftxinfile["ion"]]
         coords = np.array([[x["x0"], x["x1"], x["x2"]] for x in jdftxinfile["ion"]])
-        coords *= const.value("Bohr radius") * 10**10  # Bohr radius in Ang; convert to Ang
         selective_dynamics = np.array([x["moveScale"] for x in jdftxinfile["ion"]])
         # Gather optional tags
         velocities = [
             np.array([float(v) for v in [x["v"]["vx0"], x["v"]["vx1"], x["v"]["vx2"]]]) if "v" in x else None
             for x in jdftxinfile["ion"]
         ]
+        coords_are_cartesian = False  # is default for JDFTx
+        if "coords-type" in jdftxinfile:
+            coords_are_cartesian = jdftxinfile["coords-type"].lower() == "cartesian"
+        if coords_are_cartesian:
+            coords *= bohr_to_ang
+            if not _allnone(velocities):
+                velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
         constraint_types = [x.get("constraint-type", None) for x in jdftxinfile["ion"]]
         constraint_vectors = [
             [x["d0"], x["d1"], x["d2"]] if "constraint-type" in x else None for x in jdftxinfile["ion"]
@@ -1048,10 +1246,6 @@ class JDFTXStructure(MSONable):
                 [[y["group"] for y in x["HyperPlane"]] if "HyperPlane" in x else None] for x in jdftxinfile["ion"]
             ]
 
-        coords_are_cartesian = False  # is default for JDFTx
-        if "coords-type" in jdftxinfile:
-            coords_are_cartesian = jdftxinfile["coords-type"] == "Cartesian"
-
         struct: Structure = Structure(
             lattice,
             atomic_symbols,
@@ -1060,6 +1254,18 @@ class JDFTXStructure(MSONable):
             validate_proximity=False,
             coords_are_cartesian=coords_are_cartesian,
         )
+        if velocities is not None and fill_site_properties:
+            struct.add_site_property("velocities", velocities)
+        if constraint_types is not None and fill_site_properties:
+            struct.add_site_property("constraint_types", constraint_types)
+        if constraint_vectors is not None and fill_site_properties:
+            struct.add_site_property("constraint_vectors", constraint_vectors)
+        if hyperplane_groups is not None and fill_site_properties:
+            struct.add_site_property("group_names", hyperplane_groups)
+        if selective_dynamics is not None and fill_site_properties:
+            struct.add_site_property(
+                "selective_dynamics", movescale_array_to_selective_dynamics_site_prop(selective_dynamics)
+            )
         return cls(
             structure=struct,
             selective_dynamics=selective_dynamics,
@@ -1123,10 +1329,13 @@ class JDFTXStructure(MSONable):
             }
             # Gather velocities if present
             if (self.velocities is not None) and (self.velocities[i] is not None):
+                conv = 1
+                if in_cart_coords:
+                    conv = 1 / bohr_to_ang
                 ion_dict_rep["v"] = {
-                    "vx0": self.velocities[i][0] * (1 / bohr_to_ang),
-                    "vx1": self.velocities[i][1] * (1 / bohr_to_ang),
-                    "vx2": self.velocities[i][2] * (1 / bohr_to_ang),
+                    "vx0": self.velocities[i][0] * conv,
+                    "vx1": self.velocities[i][1] * conv,
+                    "vx2": self.velocities[i][2] * conv,
                 }
             # Gather constraints if present
             if ((self.constraint_types is not None) and (self.constraint_vectors is not None)) and (
@@ -1192,6 +1401,10 @@ class JDFTXStructure(MSONable):
         return cls(
             Structure.from_dict(params["structure"]),
             selective_dynamics=params["selective_dynamics"],
+            velocities=params.get("velocities"),
+            constraint_types=params.get("constraint_types"),
+            constraint_vectors=params.get("constraint_vectors"),
+            hyperplane_group_names=params.get("hyperplane_group_names"),
         )
 
 
@@ -1256,7 +1469,10 @@ def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
 
 
 def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
-    jl = jdftxinfile["lattice"]
+    jl = jdftxinfile["lattice"].copy()
+    for key in ["a", "b", "c"]:
+        if key in jl and isinstance(jl[key], float):
+            jl[key] *= bohr_to_ang
     if "modification" in jl:
         raise NotImplementedError("Special case lattices with modification not implemented yet")
     # Second boolean to check if latt-scale was passed but does nothing

@@ -497,7 +497,13 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "smearingWidth": FloatTag(write_tagname=False, optional=False),
             },
         ),
-        "elec-n-bands": IntTag(),
+        # "elec-n-bands": IntTag(),
+        "elec-n-bands": TagContainer(
+            subtags={
+                "n": IntTag(write_tagname=False, optional=False, lb=0, lb_incl=True),
+                "multiplier": FloatTag(write_tagname=False, optional=True, lb=1.0, lb_incl=True),
+            }
+        ),
         "spintype": StrTag(options=["no-spin", "spin-orbit", "vector-spin", "z-spin"]),
         "initial-magnetic-moments": InitMagMomTag(),
         "elec-initial-magnetization": TagContainer(
@@ -573,6 +579,15 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     options=["Spherical", "Cylindrical", "Planar"],
                     write_tagname=False,
                     optional=False,
+                ),
+                "center": TagContainer(
+                    allow_list_representation=True,
+                    optional=True,
+                    subtags={
+                        "x": FloatTag(write_tagname=False, optional=False),
+                        "y": FloatTag(write_tagname=False, optional=False),
+                        "z": FloatTag(write_tagname=False, optional=False),
+                    },
                 ),
             },
         ),
@@ -1131,6 +1146,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "omegaMin": FloatTag(),
                 "T": FloatTag(),
                 "omegaResolution": FloatTag(),
+                "dumpK": BoolTag(),
             }
         ),
         "barostat-velocity": TagContainer(
@@ -1158,8 +1174,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             multiline_tag=False,
             subtags={
                 "B0": FloatTag(),
-                "chainLengthP": FloatTag(),
-                "chainLengthT": FloatTag(),
+                "chainLengthP": IntTag(),
+                "chainLengthT": IntTag(),
                 "dt": FloatTag(),
                 "nSteps": IntTag(),
                 "P0": FloatTag(),  # can accept numpy.nan

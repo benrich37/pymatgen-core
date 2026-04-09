@@ -7,9 +7,15 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
-from pymatgen.core.structure import Structure
-from pymatgen.io.jdftx.inputs import JDFTXInfile, JDFTXStructure
-from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
+from pymatgen.core.structure import Site, Structure
+from pymatgen.core.units import bohr_to_ang
+from pymatgen.io.jdftx.inputs import (
+    JDFTXInfile,
+    JDFTXStructure,
+    clean_infile_of_nans,
+    selective_dynamics_site_prop_to_jdftx_interpretable,
+)
+from pymatgen.io.jdftx.jdftxinfile_default_inputs import antoinePvap, default_inputs
 from pymatgen.io.jdftx.jdftxinfile_master_format import get_tag_object
 
 from .inputs_test_utils import (
@@ -40,7 +46,7 @@ def test_jdftxinfile_structuregen():
     ("infile_fname", "bool_func"),
     [
         (ex_infile1_fname, lambda jif: all(jif["kpoint-folding"][x] == 1 for x in jif["kpoint-folding"])),
-        (ex_infile1_fname, lambda jif: jif["elec-n-bands"] == 15),
+        (ex_infile1_fname, lambda jif: jif["elec-n-bands"]["n"] == 15),
     ],
 )
 def test_JDFTXInfile_known_lambda(infile_fname: str, bool_func: Callable[[JDFTXInfile], bool]):
@@ -146,18 +152,18 @@ def test_JDFTXInfile_expected_exceptions():
     "something is wrong with this input data!"
     with pytest.raises(ValueError, match=re.escape(err_str)):
         jif._preprocess_line("barbie ken allan")
-    # include tags raise value-errors if the file cannot be found
+    # include tags raise warnings if the file cannot be found
     _filename = "barbie"
     err_str = f"The include file {_filename} ({_filename}) does not exist!"
-    with pytest.raises(ValueError, match=re.escape(err_str)):
-        JDFTXInfile.from_str(f"include {_filename}\n")
+    with pytest.warns(UserWarning, match=re.escape(err_str)):
+        JDFTXInfile.from_str(f"include {_filename}\n", dont_require_structure=True)
     # If it does exist, no error should be raised
     filename = ex_in_files_dir / "barbie"
     err_str = f"The include file {_filename} ({filename}) does not exist!"
-    str(err_str)
+    # str(err_str) # What does this do?
     # If the wrong parent_path is given for a file that does exist, error
-    with pytest.raises(ValueError, match=re.escape(err_str)):
-        JDFTXInfile.from_str(f"include {_filename}\n", path_parent=ex_in_files_dir)
+    with pytest.warns(UserWarning, match=re.escape(err_str)):
+        JDFTXInfile.from_str(f"include {_filename}\n", path_parent=ex_in_files_dir, dont_require_structure=True)
     # JDFTXInfile cannot be constructed without lattice and ion tags
     with pytest.raises(ValueError, match="This input file is missing required structure tags"):
         JDFTXInfile.from_str("dump End DOS\n")
@@ -171,9 +177,11 @@ def test_JDFTXInfile_expected_exceptions():
     with pytest.raises(ValueError, match=re.escape(err_str)):
         # Implicitly tests validate_tags
         jif[tag] = value
+    # `copy` will end up trying to validate the tags, so we need to remove the offending tag first
+    jif.pop(tag)
+    jif2 = jif.copy()
     # Setting tags with unfixable values through "update" side-steps the error, but will raise it once
     # "validate_tags" is inevitably called
-    jif2 = jif.copy()
     jif2.update({tag: value})
     with pytest.raises(ValueError, match=re.escape(err_str)):
         jif2.validate_tags(try_auto_type_fix=True)
@@ -263,23 +271,69 @@ def test_JDFTXInfile_knowns_simple(infile_fname: PathLike, knowns: dict):
 def test_jdftxstructure():
     """Test the JDFTXStructure object associated with the JDFTXInfile object"""
     jif = JDFTXInfile.from_file(ex_infile2_fname)
-    struct = jif.to_jdftxstructure(jif)
-    assert isinstance(struct, JDFTXStructure)
-    struc_str = str(struct)
+    jstruct = jif.to_jdftxstructure(jif)
+    assert isinstance(jstruct, JDFTXStructure)
+    struc_str = str(jstruct)
     assert isinstance(struc_str, str)
     newstruct = JDFTXStructure.from_str(struc_str)
     assert isinstance(newstruct, JDFTXStructure)
     # Double checking I got the column/row order right
-    assert_same_value(struct.structure.lattice, newstruct.structure.lattice)
-    assert struct.natoms == 16
+    assert_same_value(jstruct.structure.lattice, newstruct.structure.lattice)
+    assert jstruct.natoms == 16
     with open(ex_infile2_fname) as f:
         lines = list.copy(list(f))
     # Test different ways of creating a JDFTXStructure object create the same object if data is the same
     data = "\n".join(lines)
     struct2 = JDFTXStructure.from_str(data)
-    assert_equiv_jdftxstructure(struct, struct2)
-    struct3 = JDFTXStructure.from_dict(struct.as_dict())
-    assert_equiv_jdftxstructure(struct, struct3)
+    assert_equiv_jdftxstructure(jstruct, struct2)
+    struct3 = JDFTXStructure.from_dict(jstruct.as_dict())
+    assert_equiv_jdftxstructure(jstruct, struct3)
+
+
+def test_disordered_structures():
+    """Test that disordered structures are handled correctly"""
+    jif = JDFTXInfile.from_file(ex_infile2_fname)
+    struct = jif.structure
+    # Making a disordered structure by replacing some sites with partial occupancies
+    struct.sites[1] = Site(species={"Si": 0.5, "Ge": 0.5}, coords=struct.sites[1].frac_coords)
+    with pytest.raises(
+        ValueError, match="Disordered structure with partial occupancies cannot be converted into JDFTXStructure!"
+    ):
+        JDFTXStructure(structure=struct)
+
+
+def test_jdftxstructure_infile_site_properties_conversion():
+    """Test conversions related to going back and forth between JDFTXInfile and JDFTXStructure/Structure"""
+    jif = JDFTXInfile.from_file(ex_infile2_fname)
+    jif["ion"][0]["moveScale"] = 0
+    jif["ion"][1]["moveScale"] = 1
+    for i in range(len(jif["ion"])):
+        jif["ion"][i]["v"] = {"vx0": 0.0, "vx1": 0.0, "vx2": 0.0}
+    jif["ion"][3]["v"] = {"vx0": 1.0, "vx1": 2.0, "vx2": 3.0}
+    jstruct = jif.to_jdftxstructure(jif)
+    struct = jif.structure
+    jif_from_jstruc = JDFTXInfile.from_jdftxstructure(jstruct)
+    # Since velocities and moveScale are compatible to be stored as site properties, exporting to
+    # `Structure` will save them in `Structure.site_properties`. Initializing a new JDFTXInfile
+    # from this `Structure` should yield the same result as `jif_from_jstruc`.
+    jif_from_struc = JDFTXInfile.from_structure(struct)
+    # Providing a site property as an argument will override the site property in the Structure, however
+    # the format for 'selective_dynamics' in `Structure.site_properties` is not the same as that expected
+    # by JDFTXInfile.
+    # Testing here that the wrong format can be properly mapped in the JDFTx 'moveScale' format.
+    jif_from_struc_2 = JDFTXInfile.from_structure(
+        struct, selective_dynamics=struct.site_properties["selective_dynamics"]
+    )
+    # Providing selective dynamics in the JDFTx expected format should also work
+    jif_from_struc_3 = JDFTXInfile.from_structure(
+        struct,
+        selective_dynamics=selective_dynamics_site_prop_to_jdftx_interpretable(
+            struct.site_properties["selective_dynamics"]
+        ),
+    )
+    for jif2 in [jif_from_jstruc, jif_from_struc, jif_from_struc_2, jif_from_struc_3]:
+        assert isinstance(jif2, JDFTXInfile)
+        assert_idential_jif(jif["ion"], jif2["ion"])
 
 
 def test_pmg_struc():
@@ -522,6 +576,7 @@ def test_lattice_writing(value_str: str):
 )
 def test_jdftxstructure_lattice_conversion(value_str: str):
     test_vars = ["a", "b", "c", "alpha", "beta", "gamma"]
+    conv_vars = ["a", "b", "c"]
     mft_lattice_tag = get_tag_object("lattice")
     assert mft_lattice_tag is not None
     i = mft_lattice_tag.get_format_index_for_str_value("lattice", value_str)
@@ -535,7 +590,10 @@ def test_jdftxstructure_lattice_conversion(value_str: str):
         structure = infile.to_pmg_structure(infile)
         for var in test_vars:
             if var in parsed_tag:
-                assert_same_value(float(getattr(structure.lattice, var)), float(parsed_tag[var]))
+                should_be = parsed_tag[var]
+                if var in conv_vars:
+                    should_be *= bohr_to_ang
+                assert_same_value(float(getattr(structure.lattice, var)), float(should_be))
 
 
 def test_jdftxinfile_comparison():
@@ -557,3 +615,25 @@ def test_jdftxinfile_comparison():
     assert not len(
         jif1.get_filtered_differing_tags(jif1copy, exclude_tag_categories=["electronic"])
     )  # Tag categories can be filtered out
+
+
+def test_antoine_pvap():
+    assert_same_value(antoinePvap(298, 7.31549, 1794.88, -34.764), 1.06736e-10)
+
+
+def test_nan_stripping():
+    jif = JDFTXInfile.from_file(ex_infile1_fname)
+    # Single optional subtag being nan should only remove that subtag
+    jif["elec-cutoff"]["EcutRho"] = np.nan
+    jif = clean_infile_of_nans(jif)
+    assert "EcutRho" not in jif["elec-cutoff"]
+    # Single required subtag being nan should remove the whole tag
+    jif["latt-move-scale"]["s0"] = np.nan
+    jif = clean_infile_of_nans(jif)
+    assert "latt-move-scale" not in jif
+    jif.pop("fluid-solvent")
+    jif.read_line("fluid-solvent H2O 55.338 ScalarEOS epsBulk nan")
+    assert "epsBulk" in jif["fluid-solvent"][0]
+    jif = clean_infile_of_nans(jif)
+    assert "epsBulk" not in jif["fluid-solvent"][0]
+    print(jif)
