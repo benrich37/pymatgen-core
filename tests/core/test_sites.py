@@ -265,9 +265,9 @@ class TestPeriodicSite(MatSciTest):
         struct.sites[0].magmom = -5
         struct.sites[1].magmom = 5
         sorted_struct = struct.get_sorted_structure()
-        assert all(
-            "magmom" in site.properties for site in sorted_struct.sites
-        ), "magmom lost on one or more sites after get_sorted_structure"
+        assert all("magmom" in site.properties for site in sorted_struct.sites), (
+            "magmom lost on one or more sites after get_sorted_structure"
+        )
 
     def test_repr(self):
         assert repr(self.propertied_site) == "PeriodicSite: Fe2+ (2.5, 3.5, 4.5) [0.25, 0.35, 0.45]"
