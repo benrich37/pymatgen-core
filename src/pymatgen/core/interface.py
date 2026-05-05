@@ -259,7 +259,8 @@ class GrainBoundary(Structure):
         return coincident_sites
 
     def as_dict(self) -> dict:
-        """
+        """Get the MSONable dict representation.
+
         Returns:
             Dictionary representation of GrainBoundary object.
         """
@@ -332,7 +333,8 @@ class GrainBoundaryGenerator:
         symprec: float = 0.1,
         angle_tolerance: float = 1.0,
     ) -> None:
-        """
+        """Initialize a GrainBoundaryGenerator.
+
         Args:
             initial_structure (Structure): Initial input structure. It can
                 be conventional or primitive cell (primitive cell works for bcc and fcc).
@@ -401,7 +403,8 @@ class GrainBoundaryGenerator:
         rm_ratio: float = 0.7,
         quick_gen: bool = False,
     ) -> GrainBoundary:
-        """
+        """Generate a GrainBoundary from rotation axis, angle, and other parameters.
+
         Args:
             rotation_axis (tuple of 3): Rotation axis of GB e.g.: (1, 1, 0).
             rotation_angle (float, in unit of degree): rotation angle used to generate GB.
@@ -2723,7 +2726,8 @@ class Interface(Structure):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Interface from its MSONable dict representation.
+
         Args:
             dct: dict.
 

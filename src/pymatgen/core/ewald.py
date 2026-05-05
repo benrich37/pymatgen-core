@@ -490,7 +490,8 @@ class EwaldMinimizer:
     ALGO_TIME_LIMIT = 3
 
     def __init__(self, matrix, m_list, num_to_return=1, algo=ALGO_FAST):
-        """
+        """Initialize an EwaldMinimizer.
+
         Args:
             matrix: A matrix of the Ewald sum interaction energies. This is stored
                 in the class as a diagonally symmetric array and so

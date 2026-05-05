@@ -1626,13 +1626,14 @@ class Lattice(MSONable):
         hex_angle_tol: float = 5,
         hex_length_tol: float = 0.01,
     ) -> bool:
-        """
+        """Check whether the lattice corresponds to a hexagonal lattice.
+
         Args:
-            hex_angle_tol: Angle tolerance
+            hex_angle_tol: Angle tolerance.
             hex_length_tol: Length tolerance.
 
         Returns:
-            Whether lattice corresponds to hexagonal lattice.
+            bool: True if the lattice is hexagonal within tolerances.
         """
         lengths = self.lengths
         angles = self.angles

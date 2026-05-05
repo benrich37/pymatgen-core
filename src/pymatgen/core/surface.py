@@ -239,7 +239,8 @@ class Slab(Structure):
 
     @classmethod
     def from_dict(cls, dct: dict[str, Any]) -> Self:
-        """
+        """Reconstruct Slab from its MSONable dict representation.
+
         Args:
             dct: dict.
 

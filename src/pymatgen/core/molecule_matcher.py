@@ -85,7 +85,8 @@ class AbstractMolAtomMapper(MSONable, abc.ABC):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct AbstractMolAtomMapper from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -187,7 +188,8 @@ class IsomorphismMolAtomMapper(AbstractMolAtomMapper):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct IsomorphismMolAtomMapper from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -201,7 +203,8 @@ class InchiMolAtomMapper(AbstractMolAtomMapper):
     """Pair atoms by inchi labels."""
 
     def __init__(self, angle_tolerance=10.0):
-        """
+        """Initialize an InchiMolAtomMapper.
+
         Args:
             angle_tolerance (float): Angle threshold to assume linear molecule. In degrees.
         """
@@ -219,7 +222,8 @@ class InchiMolAtomMapper(AbstractMolAtomMapper):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct InchiMolAtomMapper from its MSONable dict representation.
+
         Args:
             dct (dict): Dict Representation.
 
@@ -513,7 +517,8 @@ class InchiMolAtomMapper(AbstractMolAtomMapper):
         return True
 
     def uniform_labels(self, mol1, mol2):
-        """
+        """Get a consistent labelling of equivalent atoms across two molecules.
+
         Args:
             mol1 (Molecule): Molecule 1
             mol2 (Molecule): Molecule 2.
@@ -571,7 +576,8 @@ class MoleculeMatcher(MSONable):
         "bindings. Please get it at https://openbabel.org (version >=3.0.0).",
     )
     def __init__(self, tolerance: float = 0.01, mapper=None) -> None:
-        """
+        """Initialize a MoleculeMatcher.
+
         Args:
             tolerance (float): RMSD difference threshold whether two molecules are
                 different
@@ -699,7 +705,8 @@ class MoleculeMatcher(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct MoleculeMatcher from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 

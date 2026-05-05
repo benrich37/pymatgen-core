@@ -470,7 +470,8 @@ class SymmOp(MSONable):
 
     @classmethod
     def from_xyz_str(cls, xyz_str: str) -> Self:
-        """
+        """Construct a SymmOp from an "x, y, z" style string.
+
         Args:
             xyz_str (str): "x, y, z", "-x, -y, z", "-2y+1/2, 3x+1/2, z-y+1/2", etc.
 
@@ -502,7 +503,8 @@ class SymmOp(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct SymmOp from its MSONable dict representation.
+
         Args:
             dct: dict.
 
@@ -636,7 +638,8 @@ class MagSymmOp(SymmOp):
 
     @classmethod
     def from_xyzt_str(cls, xyzt_str: str) -> Self:
-        """
+        """Construct a MagSymmOp from an "x, y, z, t" style string.
+
         Args:
             xyzt_str (str): of the form 'x, y, z, +1', '-x, -y, z, -1',
                 '-2y+1/2, 3x+1/2, z-y+1/2, +1', etc.
@@ -674,7 +677,8 @@ class MagSymmOp(SymmOp):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct MagSymmOp from its MSONable dict representation.
+
         Args:
             dct: dict.
 

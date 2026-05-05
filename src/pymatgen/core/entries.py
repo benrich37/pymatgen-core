@@ -1,14 +1,11 @@
-"""Entries are containers for calculated information, which is used in
-many analyses. This module contains entry related tools and implements
-the base Entry class, which is the basic entity that can be used to
-store calculated information. Other Entry classes such as ComputedEntry
-and PDEntry inherit from this class.
-This module implements equivalents of the basic ComputedEntry objects, which
-is the basic entity that can be used to perform many analyses. ComputedEntries
-contain calculated information, typically from VASP or other electronic
-structure codes. For example, ComputedEntries can be used as inputs for phase
-diagram analysis. Also implements functions to perform various useful operations on
-entries, such as grouping entries by structure.
+"""Entries are containers for calculated information used in many analyses.
+
+This module implements the base Entry class and ComputedEntry-related classes.
+ComputedEntries contain calculated information, typically from VASP or other
+electronic structure codes, and can be used as inputs for analyses such as
+phase diagrams. Other Entry subclasses (e.g. ComputedEntry, PDEntry) inherit
+from Entry. Utility functions for operations on entries (such as grouping
+entries by structure) are also provided.
 """
 
 from __future__ import annotations
@@ -72,10 +69,10 @@ __date__ = "Mar 03, 2020"
 
 
 class Entry(MSONable, ABC):
-    """A lightweight object containing the energy associated with
-    a specific chemical composition. This base class is not
-    intended to be instantiated directly. Note that classes
-    which inherit from Entry must define a .energy property.
+    """A lightweight object containing the energy associated with a specific chemical composition.
+
+    This base class is not intended to be instantiated directly. Subclasses of
+    Entry must define a .energy property.
     """
 
     def __init__(self, composition: Composition | str | dict[str, float], energy: float) -> None:
@@ -210,7 +207,8 @@ class EnergyAdjustment(MSONable):
         cls: dict | None = None,
         description: str = "",
     ) -> None:
-        """
+        """Initialize an EnergyAdjustment.
+
         Args:
             value (float): value of the energy adjustment in eV
             uncertainty (float): uncertainty of the energy adjustment in eV. Default: np.nan
@@ -275,7 +273,8 @@ class ConstantEnergyAdjustment(EnergyAdjustment):
         cls: dict | None = None,
         description: str = "Constant energy adjustment",
     ) -> None:
-        """
+        """Initialize a ConstantEnergyAdjustment.
+
         Args:
             value (float): the energy adjustment in eV
             uncertainty (float): uncertainty of the energy adjustment in eV. (Default: np.nan)
@@ -309,7 +308,8 @@ class ManualEnergyAdjustment(ConstantEnergyAdjustment):
     """A manual energy adjustment applied to a ComputedEntry."""
 
     def __init__(self, value: float) -> None:
-        """
+        """Initialize a ManualEnergyAdjustment.
+
         Args:
             value (float): the energy adjustment in eV.
         """
@@ -332,7 +332,8 @@ class CompositionEnergyAdjustment(EnergyAdjustment):
         cls: dict | None = None,
         description: str = "Composition-based energy adjustment",
     ) -> None:
-        """
+        """Initialize a CompositionEnergyAdjustment.
+
         Args:
             adj_per_atom (float): energy adjustment to apply per atom, in eV/atom
             n_atoms (float): number of atoms.
@@ -391,7 +392,8 @@ class TemperatureEnergyAdjustment(EnergyAdjustment):
         cls: dict | None = None,
         description: str = "Temperature-based energy adjustment",
     ) -> None:
-        """
+        """Initialize a TemperatureEnergyAdjustment.
+
         Args:
             adj_per_deg (float): energy adjustment to apply per degree K, in eV/atom
             temp (float): temperature in Kelvin
@@ -493,10 +495,7 @@ class ComputedEntry(Entry):
 
     @property
     def uncorrected_energy(self) -> float:
-        """
-        Returns:
-            float: the *uncorrected* energy of the entry.
-        """
+        """The *uncorrected* energy of the entry."""
         return self._energy
 
     @property
@@ -506,18 +505,12 @@ class ComputedEntry(Entry):
 
     @property
     def uncorrected_energy_per_atom(self) -> float:
-        """
-        Returns:
-            float: the *uncorrected* energy of the entry, normalized by atoms in eV/atom.
-        """
+        """The *uncorrected* energy of the entry, normalized by atoms in eV/atom."""
         return self.uncorrected_energy / self.composition.num_atoms
 
     @property
     def correction(self) -> float:
-        """
-        Returns:
-            float: the total energy correction / adjustment applied to the entry in eV.
-        """
+        """The total energy correction / adjustment applied to the entry in eV."""
         # either sum of adjustments or ufloat with nan std_dev, so that no corrections still result in ufloat object:
         corr = sum(ufloat(ea.value, ea.uncertainty) for ea in self.energy_adjustments if ea.value) or ufloat(
             0.0, np.nan
@@ -531,18 +524,12 @@ class ComputedEntry(Entry):
 
     @property
     def correction_per_atom(self) -> float:
-        """
-        Returns:
-            float: the total energy correction / adjustment applied to the entry in eV/atom.
-        """
+        """The total energy correction / adjustment applied to the entry in eV/atom."""
         return self.correction / self.composition.num_atoms
 
     @property
     def correction_uncertainty(self) -> float:
-        """
-        Returns:
-            float: the uncertainty of the energy adjustments applied to the entry in eV.
-        """
+        """The uncertainty of the energy adjustments applied to the entry in eV."""
         # either sum of adjustments or ufloat with nan std_dev, so that no corrections still result in ufloat object:
         unc = sum(
             (ufloat(ea.value, ea.uncertainty) if not np.isnan(ea.uncertainty) and ea.value else ufloat(ea.value, 0))
@@ -556,10 +543,7 @@ class ComputedEntry(Entry):
 
     @property
     def correction_uncertainty_per_atom(self) -> float:
-        """
-        Returns:
-            float: the uncertainty of the energy adjustments applied to the entry in eV/atom.
-        """
+        """The uncertainty of the energy adjustments applied to the entry in eV/atom."""
         return self.correction_uncertainty / self.composition.num_atoms
 
     def normalize(self, mode: Literal["formula_unit", "atom"] = "formula_unit") -> ComputedEntry:
@@ -639,7 +623,8 @@ class ComputedEntry(Entry):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct ComputedEntry from its MSONable dict representation.
+
         Args:
            dct (dict): Dict representation.
 
@@ -776,7 +761,8 @@ class ComputedStructureEntry(ComputedEntry):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct ComputedStructureEntry from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -1020,7 +1006,8 @@ class EntrySet(collections.abc.MutableSet, MSONable):
     """
 
     def __init__(self, entries: Iterable[PDEntry | ComputedEntry | ComputedStructureEntry]):
-        """
+        """Initialize an EntrySet.
+
         Args:
             entries: All the entries.
         """
@@ -1053,10 +1040,7 @@ class EntrySet(collections.abc.MutableSet, MSONable):
 
     @property
     def chemsys(self) -> set:
-        """
-        Returns:
-            set representing the chemical system, e.g. {"Li", "Fe", "P", "O"}.
-        """
+        """Set of element symbols representing the chemical system, e.g. {"Li", "Fe", "P", "O"}."""
         chemsys = set()
         for e in self.entries:
             chemsys.update([el.symbol for el in e.composition])

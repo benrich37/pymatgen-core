@@ -70,7 +70,8 @@ class VoronoiAnalyzer:
     """
 
     def __init__(self, cutoff=5.0, qhull_options="Qbb Qc Qz"):
-        """
+        """Initialize a VoronoiAnalyzer.
+
         Args:
             cutoff (float): cutoff distance to search for neighbors of a given atom
                 (default = 5.0)
@@ -244,7 +245,8 @@ class VoronoiConnectivity:
     """
 
     def __init__(self, structure: Structure, cutoff=10):
-        """
+        """Initialize a VoronoiConnectivity.
+
         Args:
             structure (Structure): Input structure
             cutoff (float): Cutoff distance.
@@ -412,7 +414,8 @@ class OxideType:
     """Separate class for determining oxide type."""
 
     def __init__(self, structure: Structure, relative_cutoff=1.1):
-        """
+        """Initialize an OxideType.
+
         Args:
             structure: Input structure.
             relative_cutoff: Relative_cutoff * act. cutoff stipulates the max.

@@ -50,7 +50,8 @@ class Spectrum(MSONable):
     YLABEL = "y"
 
     def __init__(self, x: ArrayLike, y: ArrayLike, *args, **kwargs) -> None:
-        """
+        """Initialize a Spectrum.
+
         Args:
             x (ndarray): A ndarray of N values.
             y (ndarray): A ndarray of N x k values. The first dimension must be
@@ -228,8 +229,5 @@ class Spectrum(MSONable):
         return [get_linear_interpolated_value(self.x, self.y[:, k], x) for k in range(self.ydim[1])]
 
     def copy(self) -> Self:
-        """
-        Returns:
-            Copy of Spectrum object.
-        """
+        """Get a copy of the Spectrum object."""
         return type(self)(self.x, self.y, *self._args, **self._kwargs)

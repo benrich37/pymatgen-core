@@ -718,7 +718,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
     """
 
     def __init__(self, tensor_list: Sequence, base_class=Tensor) -> None:
-        """
+        """Initialize a TensorCollection.
+
         Args:
             tensor_list: List of tensors.
             base_class: Class to be used.
@@ -735,7 +736,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return iter(self.tensors)
 
     def zeroed(self, tol: float = 1e-3) -> Self:
-        """
+        """Get a TensorCollection with values smaller than tol set to zero.
+
         Args:
             tol: Tolerance.
 
@@ -773,7 +775,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return type(self)([tensor.symmetrized for tensor in self])
 
     def is_symmetric(self, tol: float = 1e-5) -> bool:
-        """
+        """Check whether all tensors in the collection are symmetric.
+
         Args:
             tol: tolerance.
 
@@ -803,7 +806,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         structure: Structure,
         tol: float = 1e-2,
     ) -> bool:
-        """
+        """Check whether all tensors in the collection are fitted to a Structure.
+
         Args:
             structure: Structure
             tol: tolerance.
@@ -824,7 +828,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return [tensor.rank for tensor in self]
 
     def is_voigt_symmetric(self, tol: float = 1e-6) -> bool:
-        """
+        """Check whether all tensors in the collection are Voigt-symmetric.
+
         Args:
             tol: tolerance.
 
@@ -886,7 +891,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return type(self)([tensor.voigt_symmetrized for tensor in self])
 
     def as_dict(self, voigt: bool = False) -> dict:
-        """
+        """Get the MSONable dict representation.
+
         Args:
             voigt: Whether to use Voigt form.
 

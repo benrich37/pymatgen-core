@@ -129,7 +129,8 @@ class AbstractComparator(MSONable, abc.ABC):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct AbstractComparator from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -306,7 +307,8 @@ class OccupancyComparator(AbstractComparator):
     """
 
     def are_equal(self, sp1, sp2) -> bool:
-        """
+        """Check if two species occupancies are equal.
+
         Args:
             sp1: First species. A dict of {specie/element: amt} as per the
                 definition in Site and PeriodicSite.
@@ -319,7 +321,8 @@ class OccupancyComparator(AbstractComparator):
         return set(sp1.element_composition.values()) == set(sp2.element_composition.values())
 
     def get_hash(self, composition):
-        """
+        """Get a placeholder hash for the composition.
+
         Args:
             composition: Composition.
 
@@ -387,7 +390,8 @@ class StructureMatcher(MSONable):
         supercell_size: Literal["num_sites", "num_atoms", "volume"] = "num_sites",
         ignored_species: Sequence[SpeciesLike] = (),
     ) -> None:
-        """
+        """Initialize a StructureMatcher.
+
         Args:
             ltol (float): Fractional length tolerance. Default is 0.2.
             stol (float): Site tolerance. Defined as the fraction of the
@@ -905,7 +909,8 @@ class StructureMatcher(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct StructureMatcher from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 

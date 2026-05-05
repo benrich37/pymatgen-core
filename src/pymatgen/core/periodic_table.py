@@ -280,27 +280,20 @@ class ElementBase(Enum):
 
     @property
     def atomic_radius(self) -> FloatWithUnit | None:
-        """
-        Returns:
-            float | None: The atomic radius of the element in Ångstroms. Can be None for
-            some elements like noble gases.
+        """The atomic radius of the element in Angstroms.
+
+        Can be None for some elements like noble gases.
         """
         return self._atomic_radius
 
     @property
     def atomic_mass(self) -> FloatWithUnit:
-        """
-        Returns:
-            float: The atomic mass of the element in amu.
-        """
+        """The atomic mass of the element in amu."""
         return self._atomic_mass
 
     @property
     def atomic_mass_number(self) -> FloatWithUnit | None:
-        """
-        Returns:
-            float: The atomic mass of the element in amu.
-        """
+        """The atomic mass number of the element in amu."""
         return self._atomic_mass_number
 
     @property
@@ -1008,7 +1001,8 @@ class Species(MSONable, Stringify):
         oxidation_state: float | None = None,
         spin: float | None = None,
     ) -> None:
-        """
+        """Initialize a Species.
+
         Args:
             symbol (str): Element symbol optionally incl. oxidation state. E.g. Fe, Fe2+, O2-.
             oxidation_state (float): Explicit oxidation state of element, e.g. -2, -1, 0, 1, 2, ...
@@ -1403,7 +1397,8 @@ class Species(MSONable, Stringify):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Species from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -1437,7 +1432,8 @@ class DummySpecies(Species):
         oxidation_state: float | None = 0,
         spin: float | None = None,
     ) -> None:
-        """
+        """Initialize a DummySpecies.
+
         Args:
             symbol (str): An assigned symbol for the dummy specie. Strict
                 rules are applied to the choice of the symbol. The dummy
@@ -1577,7 +1573,8 @@ class DummySpecies(Species):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct DummySpecies from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 

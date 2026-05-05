@@ -409,7 +409,8 @@ class LibxcFunc(Enum):
     # end_include_dont_touch
 
     def __init__(self, _num: int) -> None:
-        """
+        """Initialize a LibxcFunc.
+
         Args:
             _num: Number for the xc.
         """

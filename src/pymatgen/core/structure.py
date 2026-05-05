@@ -97,7 +97,8 @@ class Neighbor(Site):
         index: int = 0,
         label: str | None = None,
     ) -> None:
-        """
+        """Initialize a Neighbor.
+
         Args:
             species: Same as Site
             coords: Same as Site, but must be fractional.
@@ -159,7 +160,8 @@ class PeriodicNeighbor(PeriodicSite):
         image: tuple[int, int, int] = (0, 0, 0),
         label: str | None = None,
     ) -> None:
-        """
+        """Initialize a PeriodicNeighbor.
+
         Args:
             species (Composition): Same as PeriodicSite
             coords (np.ndarray): Same as PeriodicSite, but must be fractional.

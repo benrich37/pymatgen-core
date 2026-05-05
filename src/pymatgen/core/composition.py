@@ -316,10 +316,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         return " ".join(f"{key}{formula_double_format(val, ignore_ones=False)}" for key, val in self.as_dict().items())
 
     def to_pretty_string(self) -> str:
-        """
-        Returns:
-            str: Same output as __str__() but without spaces.
-        """
+        """Get the same output as __str__() but without spaces."""
         return re.sub(r"\s+", "", str(self))
 
     @property
@@ -598,7 +595,8 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
 
     @staticmethod
     def _parse_formula(formula: str, strict: bool = True) -> dict[str, float]:
-        """
+        """Parse a chemical formula into an {element: amount} dict.
+
         Args:
             formula (str): A string formula, e.g. Fe2O3, Li3Fe2(PO4)3.
             strict (bool): Whether to throw an error if formula string is invalid (e.g. empty).
@@ -752,11 +750,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         return cls.from_weight_dict(elem_map, strict=strict)  # type:ignore[arg-type]
 
     def get_el_amt_dict(self) -> dict[str, float]:
-        """
-        Returns:
-            dict[str, float]: element symbol and (unreduced) amount. E.g.
-                {"Fe": 4.0, "O": 6.0}.
-        """
+        """Get a dict of element symbols mapped to their (unreduced) amount, e.g. {"Fe": 4.0, "O": 6.0}."""
         dct: dict[str, float] = defaultdict(float)
         for el, amt in self.items():
             dct[el.symbol] += amt
@@ -776,10 +770,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         return dict(dct)
 
     def as_reduced_dict(self) -> dict[str, float]:
-        """
-        Returns:
-            dict[str, float]: element symbols mapped to reduced amount e.g. {"Fe": 2.0, "O": 3.0}.
-        """
+        """Get a dict of element symbols mapped to their reduced amount, e.g. {"Fe": 2.0, "O": 3.0}."""
         return self.reduced_composition.as_dict()
 
     @property
@@ -789,10 +780,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         return self.as_reduced_dict()
 
     def as_weight_dict(self) -> dict[str, float]:
-        """
-        Returns:
-            dict[str, float]: weight fractions of each component, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}.
-        """
+        """Get a dict of element symbols mapped to weight fractions, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}."""
         return {str(el): self.get_wt_fraction(el) for el in self.elements}
 
     @property
@@ -807,7 +795,8 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         Literal["reduced_cell_composition", "unit_cell_composition", "reduced_cell_formula", "elements", "nelements"],
         Any,
     ]:
-        """
+        """Get a summary dict of the composition.
+
         Returns:
             dict with the following keys:
                 - reduced_cell_composition
@@ -1412,7 +1401,8 @@ class ChemicalPotential(dict, MSONable):
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        """
+        """Initialize a ChemicalPotential.
+
         Args:
             *args: any valid dict init arguments
             **kwargs: any valid dict init arguments.
