@@ -471,7 +471,8 @@ class AtomConfig(MSONable):
             file.write(self.get_str(**kwargs))  # type:ignore[arg-type]
 
     def as_dict(self):
-        """
+        """Get the MSONable dict representation.
+
         Returns:
             dict.
         """

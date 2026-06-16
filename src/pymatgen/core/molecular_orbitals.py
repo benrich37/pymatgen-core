@@ -33,7 +33,8 @@ class MolecularOrbitals:
     """
 
     def __init__(self, formula: str) -> None:
-        """
+        """Initialize a MolecularOrbitals.
+
         Args:
             formula (str): Chemical formula. Must have integer subscripts. Ex: 'SrTiO3'.
 
@@ -57,10 +58,7 @@ class MolecularOrbitals:
         self.band_edges = self.obtain_band_edges()
 
     def max_electronegativity(self) -> float:
-        """
-        Returns:
-            The maximum pairwise electronegativity difference.
-        """
+        """Get the maximum pairwise electronegativity difference among the elements."""
         maximum: float = 0.0
         for e1, e2 in combinations(self.elements, 2):
             maximum = max(abs(Element(e1).X - Element(e2).X), maximum)

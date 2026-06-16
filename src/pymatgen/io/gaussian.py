@@ -7,11 +7,11 @@ import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
-import scipy.constants as cst
 from monty.io import zopen
 from scipy.stats import norm
 
 from pymatgen.core import Composition, Element, Molecule
+from pymatgen.core import constants as cst
 from pymatgen.core.operations import SymmOp
 from pymatgen.core.units import Ha_to_eV
 from pymatgen.electronic_structure.core import Spin
@@ -25,10 +25,10 @@ if TYPE_CHECKING:
     from pymatgen.util.typing import PathLike
 
 __author__ = "Shyue Ping Ong, Germain Salvato-Vallverdu, Xin Chen"
-__copyright__ = "Copyright 2013, The Materials Virtual Lab"
+__copyright__ = "Copyright 2013, The Materialyze Lab"
 __version__ = "0.1"
 __maintainer__ = "Shyue Ping Ong"
-__email__ = "ongsp@ucsd.edu"
+__email__ = "shyue@nus.edu"
 __date__ = "8/1/15"
 
 
@@ -102,7 +102,8 @@ class GaussianInput:
         dieze_tag="#P",
         gen_basis=None,
     ):
-        """
+        """Initialize a GaussianInput.
+
         Args:
             mol: Input molecule. It can either be a Molecule object,
                 a string giving the geometry in a format supported by Gaussian,
@@ -468,7 +469,8 @@ class GaussianInput:
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct GaussianInput from its MSONable dict representation.
+
         Args:
             dct: dict.
 
@@ -576,7 +578,8 @@ class GaussianOutput:
     """
 
     def __init__(self, filename: PathLike) -> None:
-        """
+        """Initialize a GaussianOutput.
+
         Args:
             filename: Filename of Gaussian output file.
         """
@@ -1330,3 +1333,61 @@ class GaussianOutput:
             link0_parameters=link0_parameters,
             dieze_tag=dieze_tag,
         )
+
+
+# ----------------------------------------------------------------------------
+# pymatgen.io.registry plugin: Molecule <-> Gaussian input / Gaussian output
+# ----------------------------------------------------------------------------
+
+
+def _gaussian_read_str(input_string: str, **kwargs):
+    from pymatgen.io.registry import filter_kwargs
+
+    return GaussianInput.from_str(input_string, **filter_kwargs(GaussianInput.from_str, kwargs)).molecule
+
+
+def _gaussian_write_str(molecule, **kwargs) -> str:
+    return str(GaussianInput(molecule, **kwargs))
+
+
+def _gaussian_write_file(molecule, filename, **kwargs) -> None:
+    GaussianInput(molecule, **kwargs).write_file(filename)
+
+
+def _gaussian_out_read_file(filename: str, **kwargs):
+    return GaussianOutput(filename).final_structure
+
+
+def _register_formats() -> None:
+    from pymatgen.io.registry import MoleculeFormat, register_molecule_format
+
+    register_molecule_format(
+        MoleculeFormat(
+            name="gaussian",
+            patterns=("*.gjf*", "*.g03*", "*.g09*", "*.com*", "*.inp*"),
+            read_str=_gaussian_read_str,
+            write_str=_gaussian_write_str,
+            write_file=_gaussian_write_file,
+        )
+    )
+    # Common aliases for the gaussian input format.
+    for alias in ("gjf", "g03", "g09", "com", "inp"):
+        register_molecule_format(
+            MoleculeFormat(
+                name=alias,
+                patterns=(f"*.{alias}*",),
+                read_str=_gaussian_read_str,
+                write_str=_gaussian_write_str,
+                write_file=_gaussian_write_file,
+            )
+        )
+    register_molecule_format(
+        MoleculeFormat(
+            name="gaussian-out",
+            patterns=("*.out*", "*.lis*", "*.log*"),
+            read_file=_gaussian_out_read_file,
+        )
+    )
+
+
+_register_formats()

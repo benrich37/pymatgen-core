@@ -446,7 +446,8 @@ class AbinitPseudo(Pseudo):
     """An AbinitPseudo is a pseudopotential whose file contains an abinit header."""
 
     def __init__(self, path, header):
-        """
+        """Initialize an AbinitPseudo.
+
         Args:
             path: Filename.
             header: AbinitHeader instance.
@@ -1170,7 +1171,8 @@ class PawXmlSetup(Pseudo, PawPseudo):
     """Setup class for PawXml."""
 
     def __init__(self, filepath):
-        """
+        """Initialize a PawXmlSetup.
+
         Args:
             filepath (str): Path to the XML file.
         """
@@ -1566,7 +1568,8 @@ class PseudoTable(collections.abc.Sequence, MSONable):
         return cls(pseudos).sort_by_z()
 
     def __init__(self, pseudos: Sequence[Pseudo | str]) -> None:
-        """
+        """Initialize a PseudoTable.
+
         Args:
             pseudos: List of pseudopotentials or filepaths.
         """

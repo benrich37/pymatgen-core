@@ -138,14 +138,19 @@ class Tensor(np.ndarray, MSONable):
         other_arrays: list[NDArray[np.float64]],
         einsum_string: str | None = None,
     ) -> NDArray[np.float64]:
-        """
-        Performs a tensor contraction using the Einstein summation convention. The function either uses a provided
-        Einstein summation notation (``einsum_string``) or generates one based on the dimensions of the arrays involved.
+        """Perform a tensor contraction using the Einstein summation convention.
 
-        :param other_arrays: A sequence of NumPy arrays to be included in the Einstein summation operation.
-        :param einsum_string: An optional string representing the Einstein summation notation. If not provided,
-            it will be auto-generated based on the ranks of the involved arrays.
-        :return: Resultant NumPy array after performing the Einstein summation operation.
+        Either uses a provided Einstein summation notation (``einsum_string``) or generates one based on the
+        dimensions of the arrays involved.
+
+        Args:
+            other_arrays (list[NDArray[np.float64]]): A sequence of NumPy arrays to be included in the
+                Einstein summation operation.
+            einsum_string (str | None): An optional string representing the Einstein summation notation.
+                If not provided, it will be auto-generated based on the ranks of the involved arrays.
+
+        Returns:
+            NDArray[np.float64]: Resultant NumPy array after performing the Einstein summation operation.
         """
         other_arrays = [np.array(a) for a in other_arrays]
         if not einsum_string:
@@ -718,7 +723,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
     """
 
     def __init__(self, tensor_list: Sequence, base_class=Tensor) -> None:
-        """
+        """Initialize a TensorCollection.
+
         Args:
             tensor_list: List of tensors.
             base_class: Class to be used.
@@ -735,7 +741,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return iter(self.tensors)
 
     def zeroed(self, tol: float = 1e-3) -> Self:
-        """
+        """Get a TensorCollection with values smaller than tol set to zero.
+
         Args:
             tol: Tolerance.
 
@@ -773,7 +780,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return type(self)([tensor.symmetrized for tensor in self])
 
     def is_symmetric(self, tol: float = 1e-5) -> bool:
-        """
+        """Check whether all tensors in the collection are symmetric.
+
         Args:
             tol: tolerance.
 
@@ -803,7 +811,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         structure: Structure,
         tol: float = 1e-2,
     ) -> bool:
-        """
+        """Check whether all tensors in the collection are fitted to a Structure.
+
         Args:
             structure: Structure
             tol: tolerance.
@@ -824,7 +833,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return [tensor.rank for tensor in self]
 
     def is_voigt_symmetric(self, tol: float = 1e-6) -> bool:
-        """
+        """Check whether all tensors in the collection are Voigt-symmetric.
+
         Args:
             tol: tolerance.
 
@@ -886,7 +896,8 @@ class TensorCollection(collections.abc.Sequence, MSONable):
         return type(self)([tensor.voigt_symmetrized for tensor in self])
 
     def as_dict(self, voigt: bool = False) -> dict:
-        """
+        """Get the MSONable dict representation.
+
         Args:
             voigt: Whether to use Voigt form.
 

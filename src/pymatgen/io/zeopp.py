@@ -81,7 +81,8 @@ class ZeoCssr(Cssr):
     """
 
     def __init__(self, structure: Structure):
-        """
+        """Initialize a ZeoCssr.
+
         Args:
             structure: A structure to create ZeoCssr object.
         """
@@ -170,7 +171,8 @@ class ZeoVoronoiXYZ(XYZ):
     """
 
     def __init__(self, mol):
-        """
+        """Initialize a ZeoVoronoiXYZ.
+
         Args:
             mol: Input molecule holding the voronoi node information.
         """

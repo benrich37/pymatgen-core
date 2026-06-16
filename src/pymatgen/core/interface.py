@@ -13,7 +13,6 @@ from itertools import chain, combinations, product
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
-from monty.fractions import lcm
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
@@ -38,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 __author__ = "Xiang-Guo Li"
-__copyright__ = "Copyright 2018, The Materials Virtual Lab"
+__copyright__ = "Copyright 2018, The Materialyze Lab"
 __version__ = "0.1"
 __maintainer__ = "Xiang-Guo Li"
 __email__ = "xil110@ucsd.edu"
@@ -259,7 +258,8 @@ class GrainBoundary(Structure):
         return coincident_sites
 
     def as_dict(self) -> dict:
-        """
+        """Get the MSONable dict representation.
+
         Returns:
             Dictionary representation of GrainBoundary object.
         """
@@ -332,7 +332,8 @@ class GrainBoundaryGenerator:
         symprec: float = 0.1,
         angle_tolerance: float = 1.0,
     ) -> None:
-        """
+        """Initialize a GrainBoundaryGenerator.
+
         Args:
             initial_structure (Structure): Initial input structure. It can
                 be conventional or primitive cell (primitive cell works for bcc and fcc).
@@ -401,7 +402,8 @@ class GrainBoundaryGenerator:
         rm_ratio: float = 0.7,
         quick_gen: bool = False,
     ) -> GrainBoundary:
-        """
+        """Generate a GrainBoundary from rotation axis, angle, and other parameters.
+
         Args:
             rotation_axis (tuple of 3): Rotation axis of GB e.g.: (1, 1, 0).
             rotation_angle (float, in unit of degree): rotation angle used to generate GB.
@@ -583,7 +585,7 @@ class GrainBoundaryGenerator:
 
                 _plane = np.matmul(_rotation_axis, metric)
                 fractions = [Fraction(x).limit_denominator() for x in _plane]
-                least_mul = reduce(lcm, [fraction.denominator for fraction in fractions])
+                least_mul = reduce(math.lcm, [fraction.denominator for fraction in fractions])
                 _plane = cast("tuple[int, int, int]", tuple(round(x * least_mul) for x in _plane))
 
         else:
@@ -865,7 +867,7 @@ class GrainBoundaryGenerator:
                 index.pop(min_index)
                 frac1 = Fraction(lat[index[0]] ** 2 / lat[min_index] ** 2).limit_denominator(max_denominator)
                 frac2 = Fraction(lat[index[1]] ** 2 / lat[min_index] ** 2).limit_denominator(max_denominator)
-                com_lcm = lcm(frac1.denominator, frac2.denominator)
+                com_lcm = math.lcm(frac1.denominator, frac2.denominator)
                 ratio[min_index] = com_lcm
                 ratio[index[0]] = frac1.numerator * round(com_lcm / frac1.denominator)
                 ratio[index[1]] = frac2.numerator * round(com_lcm / frac2.denominator)
@@ -1018,7 +1020,7 @@ class GrainBoundaryGenerator:
 
                 surface = np.matmul(r_axis, metric)
                 fractions = [Fraction(x).limit_denominator() for x in surface]
-                least_mul = reduce(lcm, [fraction.denominator for fraction in fractions])
+                least_mul = reduce(math.lcm, [fraction.denominator for fraction in fractions])
                 surface = cast(
                     "tuple[int, int, int] | tuple[int, int, int,int]",
                     tuple(round(x * least_mul) for x in surface),
@@ -1266,7 +1268,7 @@ class GrainBoundaryGenerator:
         if surface is None:
             raise ValueError("surface is None.")
         fractions = [Fraction(x).limit_denominator() for x in surface]
-        least_mul = reduce(lcm, [fraction.denominator for fraction in fractions])
+        least_mul = reduce(math.lcm, [fraction.denominator for fraction in fractions])
         surface = cast("tuple[int, int, int]", tuple(round(x * least_mul) for x in surface))
         if reduce(math.gcd, surface) != 1:
             index = reduce(math.gcd, surface)
@@ -1293,7 +1295,7 @@ class GrainBoundaryGenerator:
 
         # With the rotation matrix to construct the CSL lattice, check reference for details
         fractions = [Fraction(x).limit_denominator() for x in new_rot[:, kk]]
-        least_mul = reduce(lcm, [fraction.denominator for fraction in fractions])
+        least_mul = reduce(math.lcm, [fraction.denominator for fraction in fractions])
         scale = np.zeros((3, 3))
         scale[hh, hh] = 1
         scale[kk, kk] = least_mul
@@ -2135,7 +2137,7 @@ class GrainBoundaryGenerator:
                 index_len = len(miller_nonzero)
                 for i in range(index_len):
                     for j in range(i + 1, index_len):
-                        lcm_miller = lcm(miller[miller_nonzero[i]], miller[miller_nonzero[j]])
+                        lcm_miller = math.lcm(miller[miller_nonzero[i]], miller[miller_nonzero[j]])
                         scl_factor = [0, 0, 0]
                         scl_factor[miller_nonzero[i]] = -round(lcm_miller / miller[miller_nonzero[i]])
                         scl_factor[miller_nonzero[j]] = round(lcm_miller / miller[miller_nonzero[j]])
@@ -2341,7 +2343,7 @@ class GrainBoundaryGenerator:
         return mat
 
     @staticmethod
-    def vec_to_surface(vec: tuple[float, float, float]) -> tuple[int, ...]:
+    def vec_to_surface(vec: tuple[float, float, float] | NDArray) -> tuple[int, ...]:
         """Transform a float vector to a surface miller index with integers.
 
         Args:
@@ -2361,20 +2363,26 @@ class GrainBoundaryGenerator:
         if len(index) == 1:
             miller[index[0]] = 1
         else:
-            min_index = np.argmin([i for i in vec if i != 0])
-            true_index = index[min_index]
-            index.pop(min_index)
-            frac = [Fraction(vec[value] / vec[true_index]).limit_denominator(100) for value in index]
-
+            true_index = min(index, key=lambda i: abs(vec[i]))
+            index.remove(true_index)
+            frac = []
+            for value in index:
+                ratio = vec[value] / vec[true_index]
+                # The denominator limit of 100 is a deliberate sanity bound for Miller indices.
+                approx = Fraction(ratio).limit_denominator(100)
+                tol = 1e-8 * max(abs(ratio), 1)
+                if abs(ratio - float(approx)) > tol:
+                    raise ValueError(f"Cannot convert vector {vec} to a valid Miller index within tolerance.")
+                frac.append(approx)
             if len(index) == 1:
                 miller[true_index] = frac[0].denominator
                 miller[index[0]] = frac[0].numerator
             else:
-                com_lcm = lcm(frac[0].denominator, frac[1].denominator)
+                com_lcm = math.lcm(frac[0].denominator, frac[1].denominator)
                 miller[true_index] = com_lcm
                 miller[index[0]] = frac[0].numerator * round(com_lcm / frac[0].denominator)
                 miller[index[1]] = frac[1].numerator * round(com_lcm / frac[1].denominator)
-        return cast("tuple[int, int, int]", miller)
+        return cast("tuple[int, int, int]", tuple(miller))
 
 
 def fix_pbc(structure: Structure, matrix: NDArray = None) -> Structure:
@@ -2723,7 +2731,8 @@ class Interface(Structure):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Interface from its MSONable dict representation.
+
         Args:
             dct: dict.
 

@@ -157,7 +157,8 @@ class QChemDictSet(QCInput):
         vdw_mode: Literal["atomic", "sequential"] = "atomic",
         extra_scf_print: bool = False,
     ):
-        """
+        """Initialize a QChemDictSet.
+
         Args:
             molecule (Pymatgen Molecule object): Molecule to run QChem on.
             job_type (str): QChem job type to run. Valid options are "opt" for optimization,
@@ -637,7 +638,8 @@ class QChemDictSet(QCInput):
         )
 
     def write(self, input_file: PathLike) -> None:
-        """
+        """Write the Q-Chem input file, plus a solvent_data sidecar if needed.
+
         Args:
             input_file (PathLike): Filename.
         """
@@ -672,7 +674,8 @@ class SinglePointSet(QChemDictSet):
         extra_scf_print: bool = False,
         overwrite_inputs: dict | None = None,
     ):
-        """
+        """Initialize a SinglePointSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             job_type (str): QChem job type to run. Valid options are "opt" for optimization,
@@ -900,7 +903,8 @@ class OptSet(QChemDictSet):
         cdft_constraints: list[list[dict]] | None = None,
         overwrite_inputs: dict | None = None,
     ):
-        """
+        """Initialize an OptSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             job_type (str): QChem job type to run. Valid options are "opt" for optimization,
@@ -1113,7 +1117,8 @@ class TransitionStateSet(QChemDictSet):
         overwrite_inputs: dict | None = None,
         vdw_mode="atomic",
     ):
-        """
+        """Initialize a TransitionStateSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             basis_set (str): Basis set to use. (Default: "def2-svpd")
@@ -1249,7 +1254,8 @@ class ForceSet(QChemDictSet):
         cdft_constraints: list[list[dict]] | None = None,
         overwrite_inputs: dict | None = None,
     ):
-        """
+        """Initialize a ForceSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             basis_set (str): Basis set to use. (Default: "def2-tzvpd")
@@ -1442,7 +1448,8 @@ class FreqSet(QChemDictSet):
         cdft_constraints: list[list[dict]] | None = None,
         overwrite_inputs: dict | None = None,
     ):
-        """
+        """Initialize a FreqSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             basis_set (str): Basis set to use. (Default: "def2-svpd")
@@ -1644,7 +1651,8 @@ class PESScanSet(QChemDictSet):
         overwrite_inputs: dict | None = None,
         vdw_mode: Literal["atomic", "sequential"] = "atomic",
     ):
-        """
+        """Initialize a PESScanSet.
+
         Args:
             molecule (Pymatgen Molecule object)
             opt_variables (dict): A dictionary of opt sections, where each opt section is a key

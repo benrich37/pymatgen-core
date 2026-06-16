@@ -120,7 +120,8 @@ class XcFunc(MSONable):
         x: LibxcFunc | None = None,
         c: LibxcFunc | None = None,
     ) -> None:
-        """
+        """Initialize a XcFunc.
+
         Args:
             xc: LibxcFunc for XC functional.
             x: LibxcFunc for exchange part. Mutually exclusive with xc.

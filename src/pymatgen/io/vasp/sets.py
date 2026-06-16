@@ -1,6 +1,6 @@
 """
 This module defines the VaspInputSet abstract base class and a concrete implementation for the parameters developed
-and tested by the core team of pymatgen, including the Materials Virtual Lab, Materials Project and the MIT high
+and tested by the core team of pymatgen, including the Materialyze Lab, Materials Project and the MIT high
 throughput project. The basic concept behind an input set is to specify a scheme to generate a consistent set of VASP
 inputs from a structure without further user intervention. This ensures comparability across runs.
 
@@ -29,6 +29,7 @@ The above are recommendations. The following are **UNBREAKABLE** rules:
 from __future__ import annotations
 
 import abc
+import functools
 import itertools
 import os
 import re
@@ -47,6 +48,7 @@ from monty.serialization import loadfn
 
 from pymatgen.core import Element, PeriodicSite, SiteCollection, Species, Structure
 from pymatgen.core.structure_matcher import StructureMatcher
+from pymatgen.core.units import Ry_to_eV, bohr_to_angstrom
 from pymatgen.io.core import InputGenerator
 from pymatgen.io.vasp.inputs import Incar, Kpoints, PmgVaspPspDirError, Poscar, Potcar, VaspInput
 from pymatgen.io.vasp.outputs import Outcar, Vasprun
@@ -80,7 +82,11 @@ if TYPE_CHECKING:
 MODULE_DIR = os.path.dirname(__file__)
 
 
+@functools.cache
 def _load_yaml_config(fname):
+    # Cached so each YAML (and each PARENT chain) is parsed at most once across
+    # all VaspInputSet subclasses. The merge below never mutates the parent dict
+    # or its values, so sharing the cached object across callers is safe.
     fname = f"{MODULE_DIR}/{fname}"
     if not fname.endswith(".yaml"):
         fname += ".yaml"
@@ -386,7 +392,8 @@ class VaspInputSet(InputGenerator, abc.ABC):
         )
 
     def as_dict(self, verbosity: int = 2) -> dict:
-        """
+        """Get the MSONable dict representation.
+
         Args:
             verbosity: Verbosity for generated dict. If 1, structure is
             excluded.
@@ -900,7 +907,7 @@ class VaspInputSet(InputGenerator, abc.ABC):
         zero_weighted_kpoints = None
         if kconfig.get("zero_weighted_line_density"):
             # zero_weighted k-points along line mode path
-            kpath = HighSymmKpath(self.structure)
+            kpath = HighSymmKpath(self.structure, **kconfig.get("kpath_kwargs", {}))
             frac_k_points, k_points_labels = kpath.get_kpoints(
                 line_density=kconfig["zero_weighted_line_density"],
                 coords_are_cartesian=False,
@@ -1117,8 +1124,8 @@ class VaspInputSet(InputGenerator, abc.ABC):
         """
         # TODO throw error for Ultrasoft potentials
 
-        _RYTOEV = 13.605826
-        _AUTOA = 0.529177249
+        _RYTOEV = Ry_to_eV
+        _AUTOA = bohr_to_angstrom
 
         # TODO Only do this for VASP 6 for now. Older version require more advanced logic
 
@@ -2522,7 +2529,8 @@ class MVLSlabSet(VaspInputSet):
         )
 
     def as_dict(self, verbosity: int = 2) -> dict[str, Any]:
-        """
+        """Get the MSONable dict representation.
+
         Args:
             verbosity (int): Verbosity of dict. e.g. whether to include Structure.
 
@@ -2700,7 +2708,7 @@ class MITMDSet(VaspInputSet):
 
 class NEBSet(VaspInputSet):
     """An input set for NEB calculations. These are based on NEB parameters that have been extensively tested by the
-    Materials Virtual Lab.
+    Materialyze Lab.
 
     Note that EDIFF is not on a per atom basis for this input set.
     """
@@ -2708,7 +2716,8 @@ class NEBSet(VaspInputSet):
     def __init__(
         self, structures: list[Structure], unset_encut: bool = False, parent_set="MPRelaxSet", **kwargs
     ) -> None:
-        """
+        """Initialize a NEBSet.
+
         Args:
             structures: List of Structure objects.
             unset_encut (bool): Whether to unset ENCUT.
@@ -2864,7 +2873,8 @@ class MITNEBSet(NEBSet):
     """
 
     def __init__(self, structures: list[Structure], **kwargs) -> None:
-        """
+        """Initialize a MITNEBSet.
+
         Args:
             structures: List of Structure objects.
             **kwargs: Other kwargs supported by VaspInputSet.

@@ -57,7 +57,8 @@ class Polymer:
         link_distance: float = 1.0,
         linear_chain: bool = False,
     ) -> None:
-        """
+        """Initialize a Polymer.
+
         Args:
             start_monomer (Molecule): Starting molecule
             s_head (int): starting atom index of the start_monomer molecule
@@ -196,7 +197,8 @@ class PackmolRunner:
         output_file: str = "packed.xyz",
         bin: str = "packmol",  # noqa: A002
     ) -> None:
-        """
+        """Initialize a PackmolRunner.
+
         Args:
             mols:
                 list of Molecules to pack
@@ -441,7 +443,8 @@ class LammpsRunner:
     """LAMMPS wrapper."""
 
     def __init__(self, input_filename: str = "lammps.in", bin: str = "lammps") -> None:  # noqa: A002
-        """
+        """Initialize a LammpsRunner.
+
         Args:
             input_filename (str): input file name
             bin (str): command to run, excluding the input file name.

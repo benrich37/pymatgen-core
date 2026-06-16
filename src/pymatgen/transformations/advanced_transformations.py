@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 from joblib import Parallel, delayed
 from monty.dev import requires
-from monty.fractions import lcm
 from monty.json import MSONable
 
 from pymatgen.command_line.enumlib_caller import EnumError, EnumlibAdaptor
@@ -62,7 +61,8 @@ class ChargeBalanceTransformation(AbstractTransformation):
     """
 
     def __init__(self, charge_balance_sp):
-        """
+        """Initialize a ChargeBalanceTransformation.
+
         Args:
             charge_balance_sp: specie to add or remove. Currently only removal
                 is supported.
@@ -100,7 +100,8 @@ class SuperTransformation(AbstractTransformation):
     """
 
     def __init__(self, transformations, nstructures_per_trans=1):
-        """
+        """Initialize a SuperTransformation.
+
         Args:
             transformations ([transformations]): List of transformations to apply
                 to a structure. One transformation is applied to each output
@@ -262,7 +263,8 @@ class EnumerateStructureTransformation(AbstractTransformation):
         timeout: float | None = None,
         n_jobs: int = -1,
     ):
-        """
+        """Initialize an EnumerateStructureTransformation.
+
         Args:
             min_cell_size:
                 The minimum cell size wanted. Must be an int. Defaults to 1.
@@ -484,7 +486,8 @@ class SubstitutionPredictorTransformation(AbstractTransformation):
     """
 
     def __init__(self, threshold=1e-2, scale_volumes=True, **kwargs):
-        """
+        """Initialize a SubstitutionPredictorTransformation.
+
         Args:
             threshold: Threshold for substitution.
             scale_volumes: Whether to scale volumes after substitution.
@@ -554,7 +557,8 @@ class MagOrderParameterConstraint(MSONable):
         site_constraint_name=None,
         site_constraints=None,
     ):
-        """
+        """Initialize a MagOrderParameterConstraint.
+
         Args:
             order_parameter (float): any number from 0.0 to 1.0,
                 typically 0.5 (antiferromagnetic) or 1.0 (ferromagnetic)
@@ -611,7 +615,8 @@ class MagOrderingTransformation(AbstractTransformation):
     """
 
     def __init__(self, mag_species_spin, order_parameter=0.5, energy_model=None, **kwargs):
-        """
+        """Initialize a MagOrderingTransformation.
+
         Args:
             mag_species_spin: A mapping of elements/species to their
                 spin magnitudes, e.g. {"Fe3+": 5, "Mn3+": 4}
@@ -658,11 +663,6 @@ class MagOrderingTransformation(AbstractTransformation):
         """Determine the smallest supercell that is able to enumerate
         the provided structure with the given order parameter.
         """
-
-        def lcm(n1, n2):
-            """Find least common multiple of two numbers."""
-            return n1 * n2 / math.gcd(n1, n2)
-
         # assumes all order parameters for a given species are the same
         mag_species_order_parameter = {}
         mag_species_occurrences = {}
@@ -685,13 +685,14 @@ class MagOrderingTransformation(AbstractTransformation):
             denom = Fraction(order_parameter).limit_denominator(100).denominator
             num_atom_per_specie = mag_species_occurrences[sp]
             n_gcd = math.gcd(denom, num_atom_per_specie)
-            smallest_n.append(lcm(int(n_gcd), denom) / n_gcd)
+            smallest_n.append(math.lcm(int(n_gcd), denom) / n_gcd)
 
         return max(smallest_n)
 
     @staticmethod
     def _add_dummy_species(structure, order_parameters):
-        """
+        """Decorate the structure with DummySpecies based on order-parameter constraints.
+
         Args:
             structure: ordered Structure
             order_parameters: list of MagOrderParameterConstraints.
@@ -931,8 +932,13 @@ def find_codopant(
                 radius = sp.ionic_radius
                 if radius is not None:
                     candidates.append((radius, sp))
-        except Exception:
+        except (ValueError, KeyError):
             pass
+    if not candidates:
+        raise ValueError(
+            f"No species found with oxidation state {oxidation_state} and a known ionic radius "
+            f"(target: {target}, allowed_elements: {allowed_elements})."
+        )
     return min(candidates, key=lambda tup: abs(tup[0] / ref_radius - 1))[1]
 
 
@@ -950,7 +956,8 @@ class DopingTransformation(AbstractTransformation):
         allowed_doping_species=None,
         **kwargs,
     ):
-        """
+        """Initialize a DopingTransformation.
+
         Args:
             dopant (Species-like): e.g. Al3+. Must have oxidation state.
             ionic_radius_tol (float): e.g. Fractional allowable ionic radii
@@ -990,7 +997,8 @@ class DopingTransformation(AbstractTransformation):
         structure: Structure,
         return_ranked_list: bool | int = False,
     ) -> list[dict[str, Any]] | Structure:
-        """
+        """Apply the doping transformation to a structure.
+
         Args:
             structure (Structure): Input structure to dope.
             return_ranked_list (bool | int, optional): If is int, that number of structures is returned.
@@ -1065,7 +1073,7 @@ class DopingTransformation(AbstractTransformation):
                 )
 
                 if sp_to_remove == sp:
-                    common_charge = lcm(int(abs(sp.oxi_state)), int(abs(ox)))  # type: ignore[arg-type]
+                    common_charge = math.lcm(int(abs(sp.oxi_state)), int(abs(ox)))  # type: ignore[arg-type]
                     n_dopant = common_charge / abs(ox)
                     nsp_to_remove = common_charge / abs(sp.oxi_state)  # type: ignore[arg-type]
                     logger.info(f"Doping {nsp_to_remove} {sp} with {n_dopant} {self.dopant}.")
@@ -1080,7 +1088,7 @@ class DopingTransformation(AbstractTransformation):
                 else:
                     ox_diff = int(abs(round(sp.oxi_state - ox)))
                     vac_ox = int(abs(sp_to_remove.oxi_state)) * ox_diff  # type: ignore[arg-type]
-                    common_charge = lcm(vac_ox, ox_diff)
+                    common_charge = math.lcm(vac_ox, ox_diff)
                     n_dopant = common_charge / ox_diff
                     nx_to_remove = common_charge / vac_ox
                     nx = supercell.composition[sp_to_remove]
@@ -1109,7 +1117,7 @@ class DopingTransformation(AbstractTransformation):
                 ox_diff = int(abs(round(sp.oxi_state - ox)))
                 anion_ox = int(abs(sp_to_remove.oxi_state))  # type: ignore[arg-type]
                 nx = supercell.composition[sp_to_remove]
-                common_charge = lcm(anion_ox, ox_diff)
+                common_charge = math.lcm(anion_ox, ox_diff)
                 n_dopant = common_charge / ox_diff
                 nx_to_remove = common_charge / anion_ox
                 logger.info(f"Doping {n_dopant} {sp} with {self.dopant} and removing {nx_to_remove} {sp_to_remove}.")
@@ -1151,7 +1159,8 @@ class SlabTransformation(AbstractTransformation):
         shift=0,
         tol=0.1,
     ):
-        """
+        """Initialize a SlabTransformation.
+
         Args:
             miller_index (3-tuple or list): miller index of slab
             min_slab_size (float): minimum slab size in angstroms
@@ -1220,14 +1229,16 @@ class DisorderOrderedTransformation(AbstractTransformation):
     """
 
     def __init__(self, max_sites_to_merge=2):
-        """
+        """Initialize a DisorderOrderedTransformation.
+
         Args:
             max_sites_to_merge: only merge this number of sites together.
         """
         self.max_sites_to_merge = max_sites_to_merge
 
     def apply_transformation(self, structure: Structure, return_ranked_list: bool | int = False):
-        """
+        """Apply the disorder-to-ordered transformation to a structure.
+
         Args:
             structure: ordered structure
             return_ranked_list (bool | int, optional): If return_ranked_list is int, that number of structures.
@@ -1343,7 +1354,8 @@ class GrainBoundaryTransformation(AbstractTransformation):
         rm_ratio=0.7,
         quick_gen=False,
     ):
-        """
+        """Initialize a GrainBoundaryTransformation.
+
         Args:
             rotation_axis (list): Rotation axis of GB in the form of a list of integer
                 e.g.: [1, 1, 0]
@@ -1465,7 +1477,8 @@ class CubicSupercellTransformation(AbstractTransformation):
         angle_tolerance: float = 1e-3,
         step_size: float = 0.1,
     ):
-        """
+        """Initialize a CubicSupercellTransformation.
+
         Args:
             max_atoms: Maximum number of atoms allowed in the supercell.
             min_atoms: Minimum number of atoms allowed in the supercell.
@@ -1688,7 +1701,8 @@ class AddAdsorbateTransformation(AbstractTransformation):
         self.find_args = find_args
 
     def apply_transformation(self, structure: Structure, return_ranked_list: bool | int = False):
-        """
+        """Apply the slab adsorbate transformation to a Slab structure.
+
         Args:
             structure: Must be a Slab structure
             return_ranked_list (bool | int, optional): If return_ranked_list is int, that number of structures.
@@ -1813,7 +1827,8 @@ class SubstituteSurfaceSiteTransformation(AbstractTransformation):
         range_tol=1e-2,
         dist_from_surf=0,
     ):
-        """
+        """Initialize a SubstituteSurfaceSiteTransformation.
+
         Args:
             atom (str): atom corresponding to substitutional dopant
             selective_dynamics (bool): flag for whether to assign
@@ -1843,7 +1858,8 @@ class SubstituteSurfaceSiteTransformation(AbstractTransformation):
     def apply_transformation(
         self, structure: Structure, return_ranked_list: bool | int = False
     ) -> list[dict] | Structure:
-        """
+        """Apply the slab substitution transformation to a Slab structure.
+
         Args:
             structure: Must be a Slab structure
             return_ranked_list (bool | int, optional): If return_ranked_list is int, that number of structures.
@@ -1917,14 +1933,15 @@ class SQSTransformation(AbstractTransformation):
         reduction_algo: Literal["niggli", "LLL"] = "LLL",
         sqs_method: Literal["mcsqs", "icet-enumeration", "icet-monte_carlo"] = "mcsqs",
     ):
-        """
+        """Initialize a SQSTransformation.
+
         Args:
             scaling (int or list): Scaling factor to determine supercell. Two options are possible:
                 a. (preferred) Scales number of atoms, e.g. for a structure with 8 atoms,
                     scaling=4 would lead to a 32 atom supercell
                 b. A sequence of three scaling factors, e.g. [2, 1, 1], which
                     specifies that the supercell should have dimensions 2a x b x c
-            cluster_size_and_shell (Optional[Dict[int, int]]): Dictionary of cluster interactions with entries in
+            cluster_size_and_shell (dict[int, int] | None): Dictionary of cluster interactions with entries in
                 the form number of atoms: nearest neighbor shell
             search_time (float, optional): If sqs_method == "mcsqs", the time spent looking for the ideal SQS
                 in minutes (default: 60)
@@ -2183,7 +2200,8 @@ class MonteCarloRattleTransformation(AbstractTransformation):
 
     @requires(hiphive, "hiphive is required for MonteCarloRattleTransformation")
     def __init__(self, rattle_std: float, min_distance: float, seed: int | None = None, **kwargs):
-        """
+        """Initialize a MonteCarloRattleTransformation.
+
         Args:
             rattle_std: Rattle amplitude (standard deviation in normal
                 distribution). Note: this value is not *directly* connected to the

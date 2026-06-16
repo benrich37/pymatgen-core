@@ -583,7 +583,8 @@ class PWOutput:
     }
 
     def __init__(self, filename):
-        """
+        """Initialize a PWOutput.
+
         Args:
             filename (str): Filename.
         """
@@ -632,7 +633,8 @@ class PWOutput:
         self.data.update(matches)
 
     def get_celldm(self, idx: int):
-        """
+        """Get the cell dimension at the given index.
+
         Args:
             idx (int): index.
 

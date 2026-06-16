@@ -417,7 +417,8 @@ class Smearing(AbivarAble, MSONable):
     }
 
     def __init__(self, occopt, tsmear):
-        """
+        """Initialize a Smearing.
+
         Args:
             occopt: Integer specifying the smearing technique.
             tsmear: Smearing parameter in Hartree units.
@@ -527,7 +528,8 @@ class ElectronsAlgorithm(dict, AbivarAble, MSONable):
     }
 
     def __init__(self, *args, **kwargs):
-        """
+        """Initialize an ElectronsAlgorithm.
+
         Args:
             iprcell: 1 if the cell is fixed, 2 if the cell is relaxed.
             iscf: SCF algorithm.
@@ -1047,7 +1049,8 @@ class RelaxationMethod(AbivarAble, MSONable):
     OPTCELL_DEFAULT = 2
 
     def __init__(self, *args, **kwargs):
-        """
+        """Initialize a RelaxationMethod.
+
         Args:
             ionmov: The type of relaxation for the ions.
             optcell: The type of relaxation for the unit cell.
@@ -1193,7 +1196,8 @@ class PPModel(AbivarAble, MSONable):
         return cls(mode=mode, plasmon_freq=plasmon_freq)
 
     def __init__(self, mode="godby", plasmon_freq=None):
-        """
+        """Initialize a PPModel.
+
         Args:
             mode: ppmodel type
             plasmon_freq: Plasmon frequency in Ha.
@@ -1266,7 +1270,8 @@ class HilbertTransform(AbivarAble):
         nfreqim=None,
         freqremin=None,
     ):
-        """
+        """Initialize a HilbertTransform.
+
         Args:
             nomegasf: Number of points for sampling the spectral function along the real axis.
             domegasf: Step in Ha for the linear mesh used for the spectral function.
@@ -1306,7 +1311,8 @@ class ModelDielectricFunction(AbivarAble):
     """Model dielectric function used for BSE calculation."""
 
     def __init__(self, mdf_epsinf):
-        """
+        """Initialize a ModelDielectricFunction.
+
         Args:
             mdf_epsinf: Value of epsilon_infinity.
         """
@@ -1348,7 +1354,8 @@ class Screening(AbivarAble):
         ecutwfn=None,
         inclvkb=2,
     ):
-        """
+        """Initialize a Screening.
+
         Args:
             ecuteps: Cutoff energy for the screening (Ha units).
             nband Number of bands for the Green's function
@@ -1448,7 +1455,8 @@ class SelfEnergy(AbivarAble):
         ecutwfn=None,
         gwpara=2,
     ):
-        """
+        """Initialize a SelfEnergy.
+
         Args:
             se_type: Type of self-energy (str)
             sc_mode: Self-consistency mode.

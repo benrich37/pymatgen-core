@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # required for the codecov OIDC upload below
 
 jobs:
   test:
@@ -45,7 +46,6 @@ jobs:
           - os: windows-latest
             python: "3.13"  # Test lowest supported Python version
             resolution: lowest-direct
-            extras: optional
           - os: macos-latest
             python: "3.13"
             resolution: lowest-direct
@@ -63,12 +63,24 @@ jobs:
       OPT_BIN_DIR: ${{ github.workspace }}/opt/bin # for optional Ubuntu dependencies
     steps:
       - name: Check out repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
+      # setup-micromamba is broken on Windows runners since ~2026-05-14
+      # (micromamba shell init fails with STATUS_DLL_NOT_FOUND, exit 3221225781).
+      # Upstream: https://github.com/mamba-org/setup-micromamba/issues/306
+      # The Windows job has no conda-only dependencies, so plain setup-python
+      # is sufficient. Revert to micromamba on Windows once #306 is fixed.
+      - name: Set up Python (Windows)
+        if: matrix.config.os == 'windows-latest'
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.config.python }}
+
       - name: Create mamba environment
-        uses: mamba-org/setup-micromamba@v2
+        if: matrix.config.os != 'windows-latest'
+        uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: pmg
           cache-environment: true
@@ -83,7 +95,18 @@ jobs:
             # openff-toolkit # TODO: doesn't support Python 3.13 yet
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
+
+      # On Ubuntu/macOS the micromamba ``pmg`` env serves as the install
+      # target for ``uv pip install``. Windows has no micromamba env (see
+      # above), so create a uv venv explicitly so subsequent uv/pytest
+      # steps have a target on PATH.
+      - name: Create uv venv (Windows)
+        if: matrix.config.os == 'windows-latest'
+        run: |
+          uv venv .venv --python ${{ matrix.config.python }}
+          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          echo "$PWD/.venv/Scripts" >> $GITHUB_PATH
 
       - name: Install pymatgen and dependencies via uv
         run: |
@@ -96,7 +119,7 @@ jobs:
       - name: Restore cache for optional Ubuntu/MacOS dependencies
         if: matrix.config.os == 'ubuntu-latest' || matrix.config.os == 'macos-latest'
         id: optbin-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.OPT_BIN_DIR }}
           key: opt-bin-${{ runner.os }}-${{ hashFiles('.github/workflows/_install_opt_unit_deps.sh') }}
@@ -114,7 +137,13 @@ jobs:
         run: |
           pytest --cov=pymatgen --cov-report=xml tests --color=yes
       - name: Codecov
-        if: github.ref == 'refs/heads/main' && matrix.config.os == 'ubuntu-latest' && matrix.config.python == '3.11'
-        uses: codecov/codecov-action@v5
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        # Upload from the ubuntu shard that installs `extras: optional` so
+        # codecov reflects the full test surface. The python 3.11 shard runs
+        # without extras and was previously uploading misleadingly low numbers
+        # for any file gated on ase/seekpath/phonopy/etc.
+        # Uses GitHub OIDC (no shared secret); requires "Tokenless Upload"
+        # to be enabled at https://app.codecov.io/gh/materialsproject/pymatgen-core
+        if: github.ref == 'refs/heads/main' && matrix.config.os == 'ubuntu-latest' && matrix.config.extras == 'optional'
+        uses: codecov/codecov-action@v6
+        with:
+          use_oidc: true

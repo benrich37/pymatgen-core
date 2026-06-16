@@ -509,7 +509,8 @@ class ParallelEfficiency(dict):
     """Store results concerning the parallel efficiency of the job."""
 
     def __init__(self, filenames, ref_idx, *args, **kwargs):
-        """
+        """Initialize a ParallelEfficiency.
+
         Args:
             filenames: List of filenames
             ref_idx: Index of the Reference time (calculation done with the smallest number of cpus).
@@ -595,7 +596,8 @@ class AbinitTimerSection:
         return AbinitTimerSection("fake", 0.0, 0.0, 0.0, 0.0, -1, 0.0)
 
     def __init__(self, name, cpu_time, cpu_fract, wall_time, wall_fract, ncalls, gflops):
-        """
+        """Initialize an AbinitTimerSection.
+
         Args:
             name: Name of the sections.
             cpu_time: CPU time in seconds.
@@ -647,7 +649,8 @@ class AbinitTimer:
     """Container class storing the timing results."""
 
     def __init__(self, sections, info, cpu_time, wall_time):
-        """
+        """Initialize an AbinitTimer.
+
         Args:
             sections: List of sections
             info: Dictionary with extra info.

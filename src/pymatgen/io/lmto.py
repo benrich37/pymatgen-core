@@ -38,7 +38,8 @@ class LMTOCtrl:
     """
 
     def __init__(self, structure: Structure | IStructure, header: str | None = None, version: str = "LMASA-47") -> None:
-        """
+        """Initialize a LMTOCtrl.
+
         Args:
             structure (Structure): pymatgen object.
             header (str): The header for the CTRL file. Defaults to None.
@@ -315,7 +316,8 @@ class LMTOCopl:
     """
 
     def __init__(self, filename="COPL", to_eV=False):
-        """
+        """Initialize a LMTOCopl.
+
         Args:
             filename: filename of the COPL file. Defaults to "COPL".
             to_eV: LMTO-ASA gives energies in Ry. To convert energies into
@@ -400,3 +402,30 @@ class LMTOCopl:
         species = tuple(re.split(r"\d+", spec)[0] for spec in sites[:3:2])
         label = f"{species[0]}{site_indices[0] + 1}-{species[1]}{site_indices[1] + 1}"
         return label, length, site_indices
+
+
+# ----------------------------------------------------------------------------
+# pymatgen.io.registry plugin: Structure <-> LMTO CTRL
+# ----------------------------------------------------------------------------
+
+
+def _lmto_read_file(filename: str, **kwargs):
+    from pymatgen.io.registry import filter_kwargs
+
+    kwargs.pop("primitive", None)
+    return LMTOCtrl.from_file(filename=filename, **filter_kwargs(LMTOCtrl.from_file, kwargs)).structure
+
+
+def _register_formats() -> None:
+    from pymatgen.io.registry import StructureFormat, register_structure_format
+
+    register_structure_format(
+        StructureFormat(
+            name="lmto",
+            patterns=("CTRL*",),
+            read_file=_lmto_read_file,
+        )
+    )
+
+
+_register_formats()

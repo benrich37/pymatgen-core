@@ -50,7 +50,8 @@ class QCOutput(MSONable):
     """Parse QChem output files."""
 
     def __init__(self, filename: str):
-        """
+        """Initialize a QCOutput.
+
         Args:
             filename (str): Filename to parse.
         """

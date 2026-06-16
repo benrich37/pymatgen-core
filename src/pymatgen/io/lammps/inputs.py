@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from pymatgen.util.typing import PathLike
 
 __author__ = "Kiran Mathew, Brandon Wood, Zhi Deng, Manas Likhit, Guillaume Brunin (Matgenix)"
-__copyright__ = "Copyright 2018, The Materials Virtual Lab"
+__copyright__ = "Copyright 2018, The Materialyze Lab"
 __version__ = "2.0"
 __maintainer__ = "Zhi Deng, Guillaume Brunin (Matgenix)"
 __email__ = "z4deng@eng.ucsd.edu, info@matgenix.com"
@@ -67,7 +67,8 @@ class LammpsInputFile(InputFile):
     """
 
     def __init__(self, stages: list | None = None) -> None:
-        """
+        """Initialize a LammpsInputFile.
+
         Args:
             stages: list of LAMMPS input settings.
         """
@@ -988,7 +989,8 @@ class LammpsTemplateGen(TemplateInputGen):
         data: LammpsData | CombinedData | None = None,
         data_filename: str = "system.data",
     ) -> InputSet:
-        """
+        """Build a LAMMPS InputSet from a script template and an optional data file.
+
         Args:
             script_template: String template for input script with
                 placeholders. The format for placeholders has to be

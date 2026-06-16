@@ -157,7 +157,8 @@ class Lobsterin(UserDict, MSONable):
     }
 
     def __init__(self, settingsdict: dict) -> None:
-        """
+        """Initialize a Lobsterin.
+
         Args:
             settingsdict: dict to initialize Lobsterin.
         """
@@ -281,7 +282,8 @@ class Lobsterin(UserDict, MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Lobsterin from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -399,7 +401,8 @@ class Lobsterin(UserDict, MSONable):
         address_basis_file_min: PathLike | None = None,
         address_basis_file_max: PathLike | None = None,
     ) -> list[dict]:
-        """
+        """Get all possible basis function dicts for a structure.
+
         Args:
             structure: Structure object
             potcar_symbols: list of the potcar symbols

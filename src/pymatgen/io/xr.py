@@ -34,7 +34,8 @@ class Xr:
     """For working with XR files."""
 
     def __init__(self, structure: Structure):
-        """
+        """Initialize a Xr.
+
         Args:
             structure (Structure | IStructure): Structure object to create the Xr object.
         """

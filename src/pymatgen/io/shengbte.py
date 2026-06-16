@@ -89,7 +89,8 @@ class Control(MSONable, dict):
         temperature: float | dict[str, float] = 300,
         **kwargs,
     ):
-        """
+        """Initialize a Control.
+
         Args:
             ngrid: Reciprocal space grid density as a list of 3 ints.
             temperature: The temperature to calculate the lattice thermal

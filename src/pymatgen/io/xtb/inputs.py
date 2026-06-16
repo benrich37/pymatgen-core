@@ -33,7 +33,8 @@ class CRESTInput(MSONable):
         coords_filename: str | None = "crest_in.xyz",
         constraints: dict[str, list[int] | float] | None = None,
     ):
-        """
+        """Initialize a CRESTInput.
+
         Args:
             molecule (Molecule): Molecule object
             working_dir (str): Directory to write input files to
@@ -61,7 +62,8 @@ class CRESTInput(MSONable):
 
     @staticmethod
     def constrains_template(molecule, reference_fnm, constraints) -> str:
-        """
+        """Build the contents of an xTB .constrains file.
+
         Args:
             molecule (Molecule): Molecule the constraints will be performed on
             reference_fnm (str): Name of file containing reference structure in same directory

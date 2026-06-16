@@ -41,7 +41,8 @@ class Nwchem2Fiesta(MSONable):
     """
 
     def __init__(self, folder, filename="nwchem", log_file="log_n2f"):
-        """
+        """Initialize a Nwchem2Fiesta.
+
         Args:
             folder: where are stored the nwchem
             filename: name of nwchem files read by NWCHEM2FIESTA (filename.nw, filename.nwout and filename.movecs)
@@ -85,7 +86,8 @@ class Nwchem2Fiesta(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Nwchem2Fiesta from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -109,7 +111,8 @@ class FiestaRun(MSONable):
         grid: tuple[int, int, int] = (2, 2, 2),
         log_file: str = "log",
     ) -> None:
-        """
+        """Initialize a FiestaRun.
+
         Args:
             folder: Folder to look for runs.
             grid:
@@ -187,7 +190,8 @@ class FiestaRun(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct FiestaRun from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -206,7 +210,8 @@ class BasisSetReader:
     """
 
     def __init__(self, filename):
-        """
+        """Initialize a BasisSetReader.
+
         Args:
             filename: Filename to read.
         """
@@ -305,7 +310,8 @@ class FiestaInput(MSONable):
         gw_options: dict[str, str] | None = None,
         bse_tddft_options: dict[str, str] | None = None,
     ):
-        """
+        """Initialize a FiestaInput.
+
         Args:
             mol: pymatgen mol
             correlation_grid: dict
@@ -547,7 +553,8 @@ $geometry
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct FiestaInput from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -722,7 +729,8 @@ class FiestaOutput:
     """
 
     def __init__(self, filename):
-        """
+        """Initialize a FiestaOutput.
+
         Args:
             filename: Filename to read.
         """
@@ -813,7 +821,8 @@ class BSEOutput:
     """
 
     def __init__(self, filename):
-        """
+        """Initialize a BSEOutput.
+
         Args:
             filename: Filename to read.
         """

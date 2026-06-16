@@ -143,7 +143,8 @@ class AdfKey(MSONable):
         return str(self) == str(other)
 
     def has_subkey(self, subkey: str | AdfKey) -> bool:
-        """
+        """Check whether this AdfKey contains the given subkey.
+
         Args:
             subkey (str | AdfKey): A key name or AdfKey object.
 
@@ -228,7 +229,8 @@ class AdfKey(MSONable):
                 self.options.pop(option)
 
     def has_option(self, option: str) -> bool:
-        """
+        """Check whether this AdfKey has the given option.
+
         Args:
             option (str): The option.
 

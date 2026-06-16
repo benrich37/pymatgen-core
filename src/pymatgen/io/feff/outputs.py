@@ -36,7 +36,8 @@ class LDos(MSONable):
     """Parser for ldos files ldos01, ldos02, ..."""
 
     def __init__(self, complete_dos, charge_transfer):
-        """
+        """Initialize a LDos.
+
         Args:
             complete_dos (CompleteDos): complete dos object
             charge_transfer (dict): computed charge transfer between atoms
@@ -275,7 +276,8 @@ class Xmu(MSONable):
     """
 
     def __init__(self, header, parameters, absorbing_atom, data):
-        """
+        """Initialize a Xmu.
+
         Args:
             header: Header object
             parameters: Tags object
@@ -381,7 +383,8 @@ class Eels(MSONable):
     """Parse eels.dat file."""
 
     def __init__(self, data):
-        """
+        """Initialize an Eels.
+
         Args:
             data (numpy.ndarray): data from eels.dat file
         """

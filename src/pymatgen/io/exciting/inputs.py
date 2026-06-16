@@ -8,11 +8,11 @@ import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING
 
 import numpy as np
-import scipy.constants as const
 from monty.io import zopen
 from monty.json import MSONable
 
 from pymatgen.core import Element, Lattice, Structure
+from pymatgen.core import constants as const
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.symmetry.bandstructure import HighSymmKpath
 
@@ -53,7 +53,8 @@ class ExcitingInput(MSONable):
         title: str | None = None,
         lockxyz: ArrayLike | None = None,
     ) -> None:
-        """
+        """Initialize an ExcitingInput.
+
         Args:
             structure (Structure): Structure object.
             title (str): Optional title for exciting input. Defaults to unit
@@ -174,7 +175,8 @@ class ExcitingInput(MSONable):
 
     @classmethod
     def from_file(cls, filename: PathLike) -> Self:
-        """
+        """Construct a ExcitingInput from a file.
+
         Args:
             filename: Filename.
 
@@ -416,3 +418,38 @@ class ExcitingInput(MSONable):
 
             else:
                 warnings.warn(f"cannot deal with {key} = {value}", stacklevel=2)
+
+
+# ----------------------------------------------------------------------------
+# pymatgen.io.registry plugin: Structure <- exciting input.xml (read-only)
+# ----------------------------------------------------------------------------
+
+
+def _exciting_read_str(input_string: str, **kwargs):
+    from pymatgen.io.registry import filter_kwargs
+
+    kwargs.pop("primitive", None)
+    return ExcitingInput.from_str(input_string, **filter_kwargs(ExcitingInput.from_str, kwargs)).structure
+
+
+def _exciting_read_file(filename: str, **kwargs):
+    from pymatgen.io.registry import filter_kwargs
+
+    kwargs.pop("primitive", None)
+    return ExcitingInput.from_file(filename, **filter_kwargs(ExcitingInput.from_file, kwargs)).structure
+
+
+def _register_formats() -> None:
+    from pymatgen.io.registry import StructureFormat, register_structure_format
+
+    register_structure_format(
+        StructureFormat(
+            name="exciting",
+            patterns=("input*.xml",),
+            read_str=_exciting_read_str,
+            read_file=_exciting_read_file,
+        )
+    )
+
+
+_register_formats()

@@ -53,7 +53,7 @@ _SUMM_STATS = _gen_potcar_summary_stats(append=False, vasp_psp_dir=str(FAKE_POTC
 def _mock_complete_potcar_summary_stats(monkeypatch: pytest.MonkeyPatch) -> None:
     # Override POTCAR library to use fake scrambled POTCARs
     monkeypatch.setitem(SETTINGS, "PMG_VASP_PSP_DIR", str(FAKE_POTCAR_DIR))
-    monkeypatch.setattr(PotcarSingle, "_potcar_summary_stats", _SUMM_STATS)
+    monkeypatch.setattr("pymatgen.io.vasp.inputs._load_potcar_summary_stats", lambda: _SUMM_STATS)
 
     # The fake POTCAR library is pretty big even with just a few sub-libraries
     # just copying over entries to work with PotcarSingle.is_valid
@@ -658,7 +658,7 @@ class TestIncar(MatSciTest):
         assert float(incar["EDIFF"]) == approx(1e-4), "Wrong EDIFF"
         assert isinstance(incar["LORBIT"], int)
 
-    def test_lattice_constaints(self):
+    def test_lattice_constraints_and_ROPT(self):
         incar_str = """
         ALGO = Fast
 EDIFF = 0.00045000000000000004
@@ -676,9 +676,16 @@ MAGMOM = 9*0.6
 NELM = 100
 NSW = 99
 PREC = Accurate
+ROPT = 1e-3 1e-3
 SIGMA = 0.05"""
         incar = Incar.from_str(incar_str)
         assert incar["LATTICE_CONSTRAINTS"] == [False, False, True]
+        assert incar["ROPT"] == [1e-3, 1e-3]
+        assert incar["MAGMOM"] == [0.6] * 9
+        assert incar["PREC"] == "Accurate"
+
+        incar = Incar.from_str("ROPT = 2*1e-3")
+        assert incar["ROPT"] == [1e-3, 1e-3]
 
     def test_check_for_duplicate(self):
         incar_str: str = """encut = 400
@@ -1705,28 +1712,6 @@ class TestPotcarSingle:
         ):
             PotcarSingle.from_file(filename)
 
-    def test_faulty_potcar_has_wrong_hash(self):
-        filename = f"{FAKE_POTCAR_DIR}/modified_potcars_data/POT_GGA_PAW_PBE_54/POTCAR.Fe_pv_with_hash.gz"
-        psingle = PotcarSingle.from_file(filename)
-        assert not psingle.is_valid
-        assert psingle.sha256_computed_file_hash != psingle.hash_sha256_from_file
-
-    def test_verify_correct_potcar_with_sha256(self):
-        filename = f"{FAKE_POTCAR_DIR}/POT_GGA_PAW_PBE_54/POTCAR.Fe_pv_with_hash.gz"
-        psingle = PotcarSingle.from_file(filename)
-        assert psingle.sha256_computed_file_hash == psingle.hash_sha256_from_file
-
-    def test_multi_potcar_with_and_without_sha256(self):
-        filename = f"{FAKE_POTCAR_DIR}/POT_GGA_PAW_PBE_54/POTCAR.Fe_O.gz"
-        potcars = Potcar.from_file(filename)
-        # Still need to test the if POTCAR can be read.
-        # No longer testing for hashes
-        for psingle in potcars:
-            if psingle.hash_sha256_from_file:
-                assert psingle.sha256_computed_file_hash == psingle.hash_sha256_from_file
-            else:
-                assert psingle.is_valid
-
     def test_default_functional(self):
         with patch.dict(SETTINGS, PMG_DEFAULT_FUNCTIONAL="PBE"):
             potcar = PotcarSingle.from_symbol_and_functional("Fe")
@@ -1772,24 +1757,6 @@ class TestPotcarSingle:
         )
         assert repr(self.psingle_Mn_pv) == expected_repr
 
-    def test_hash(self):
-        assert self.psingle_Mn_pv.md5_header_hash == "b45747d8ceeee91c3b27e8484db32f5a"
-        assert self.psingle_Fe.md5_header_hash == "adcc7d2abffa088eccc74948a68235d6"
-
-    def test_potcar_file_hash(self):
-        assert self.psingle_Mn_pv.md5_computed_file_hash == "e66e5662ec6e46d6f10ce0bb07b3b742"
-        assert self.psingle_Fe.md5_computed_file_hash == "ae761615a0734cc5a2a1db0d5919f12d"
-
-    def test_sha256_file_hash(self):
-        assert (
-            self.psingle_Mn_pv.sha256_computed_file_hash
-            == "3890fe92124e18500817b565a6048a317968613e226ab7b7c2a2d4ca62451e3a"
-        )
-        assert (
-            self.psingle_Fe.sha256_computed_file_hash
-            == "7bcf5ad80200e5d74ba63b45d87825b31e6cae2bcd03cebda2f1cbec9870c1cf"
-        )
-
     def test_eq(self):
         assert self.psingle_Mn_pv == self.psingle_Mn_pv
         assert self.psingle_Fe == self.psingle_Fe
@@ -1805,7 +1772,7 @@ class TestPotcarSingle:
         for psingle in [self.psingle_Fe, self.psingle_Fe_54, self.psingle_Mn_pv]:
             expected_spec = {
                 "titel": psingle.TITEL,
-                "hash": psingle.md5_header_hash,
+                "hash": None,
                 "summary_stats": psingle._summary_stats,
                 "symbol": psingle.symbol,
             }
@@ -2001,6 +1968,24 @@ class TestVaspInput(MatSciTest):
         assert vis_potcar_spec.incar["NSW"] == 99
         vis_potcar_spec.incar["NSW"] = 100
         assert vis_potcar_spec.incar["NSW"] == 100
+
+    def test_as_from_dict_potcar_spec(self):
+        vis_potcar_spec = VaspInput(
+            self.vasp_input.incar,
+            self.vasp_input.kpoints,
+            self.vasp_input.poscar,
+            "\n".join(self.vasp_input.potcar.symbols),
+            potcar_spec=True,
+        )
+        # as_dict should not raise when potcar_spec=True
+        dct = vis_potcar_spec.as_dict()
+
+        # round-trip should preserve potcar_spec structure
+        roundtripped = VaspInput.from_dict(dct)
+        assert {*roundtripped} == {"INCAR", "KPOINTS", "POSCAR", "POTCAR.spec"}
+        assert isinstance(roundtripped.potcar, str)
+        assert roundtripped["POTCAR.spec"] == vis_potcar_spec["POTCAR.spec"]
+        assert roundtripped["INCAR"] == vis_potcar_spec["INCAR"]
 
 
 def test_potcar_summary_stats() -> None:

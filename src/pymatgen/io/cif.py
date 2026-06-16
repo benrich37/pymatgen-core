@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 import textwrap
 import warnings
@@ -57,7 +56,8 @@ class CifBlock:
         loops: list[list[str]],
         header: str,
     ) -> None:
-        """
+        """Initialize a CifBlock.
+
         Args:
             data: dict of data to go into the CIF. Values should be convertible to string,
                 or lists of these if the key is in a loop
@@ -248,7 +248,8 @@ class CifFile:
         orig_string: str | None = None,
         comment: str | None = None,
     ) -> None:
-        """
+        """Initialize a CifFile.
+
         Args:
             data (dict): Of CifBlock objects.
             orig_string (str): The original CIF.
@@ -321,7 +322,8 @@ class CifParser:
         check_cif: bool = True,
         comp_tol: float = 0.01,
     ) -> None:
-        """
+        """Initialize a CifParser.
+
         Args:
             filename (PathLike): CIF file, gzipped or bzipped CIF files are fine too.
             occupancy_tolerance (float): If total occupancy of a site is between
@@ -650,14 +652,23 @@ class CifParser:
                     coord = op.operate(tmp_coord)
                     coord = np.array([i - math.floor(i) for i in coord])
                     if isinstance(op, MagSymmOp):
-                        # Up to this point, magmoms have been defined relative
-                        # to crystal axis. Now convert to Cartesian and into
-                        # a Magmom object.
                         if lattice is None:
                             raise ValueError("Lattice cannot be None.")
-                        magmom = Magmom.from_moment_relative_to_crystal_axes(
-                            op.operate_magmom(tmp_magmom), lattice=lattice
+                        # Up to this point, magmoms have been defined by components along
+                        # unit crystal axes, while op.rotation_matrix is expressed in
+                        # crystallographic axes. Convert both the moment and the rotation
+                        # matrix to Cartesian coordinates before operating; applying the
+                        # crystallographic-axes rotation matrix to unit-axis components
+                        # directly changes the moment magnitude whenever the op mixes axes
+                        # of unequal length.
+                        magmom_cart = Magmom.from_moment_relative_to_crystal_axes(
+                            cast("tuple[float, float, float]", tmp_magmom), lattice=lattice
                         )
+                        rot_cart = lattice.matrix.T @ op.rotation_matrix @ np.linalg.inv(lattice.matrix.T)
+                        op_cart = MagSymmOp.from_rotation_and_translation_and_time_reversal(
+                            rot_cart, op.translation_vector, op.time_reversal
+                        )
+                        magmom = op_cart.operate_magmom(magmom_cart)
                     else:
                         magmom = Magmom(tmp_magmom)
 
@@ -809,13 +820,7 @@ class CifParser:
                         pass
 
                     try:
-                        cod_data = loadfn(
-                            os.path.join(
-                                os.path.dirname(os.path.dirname(__file__)),
-                                "symmetry",
-                                "symm_ops.json",
-                            )
-                        )
+                        cod_data = loadfn(Path(__file__).parents[1] / "symmetry" / "symm_ops.json")
                         for _data in cod_data:
                             if sg == re.sub(r"\s+", "", _data["hermann_mauguin"]):
                                 xyz = _data["symops"]
@@ -1571,7 +1576,8 @@ class CifWriter:
         refine_struct: bool = True,
         write_site_properties: bool = False,
     ) -> None:
-        """
+        """Initialize a CifWriter.
+
         Args:
             struct (Structure): structure to write.
             symprec (float): If not none, finds the symmetry of the structure
@@ -1796,3 +1802,58 @@ class CifWriter:
         """Write the CIF file."""
         with zopen(filename, mode=mode, encoding="utf-8") as file:
             file.write(str(self))  # type:ignore[arg-type]
+
+
+# ----------------------------------------------------------------------------
+# pymatgen.io.registry plugin: Structure <-> CIF / mCIF
+# ----------------------------------------------------------------------------
+
+
+def _cif_read_str(cif_string: str, *, primitive: bool = False, **kwargs):
+    """Adapter for `Structure.from_str(s, fmt="cif")` / `"mcif"`."""
+    from pymatgen.io.registry import filter_kwargs
+
+    parser = CifParser.from_str(cif_string, **filter_kwargs(CifParser.from_str, kwargs))
+    return parser.parse_structures(primitive=primitive)[0]
+
+
+def _cif_write_str(structure, **kwargs) -> str:
+    return str(CifWriter(structure, **kwargs))
+
+
+def _cif_write_file(structure, filename, **kwargs) -> None:
+    CifWriter(structure, **kwargs).write_file(filename)
+
+
+def _mcif_write_str(structure, **kwargs) -> str:
+    return str(CifWriter(structure, write_magmoms=True, **kwargs))
+
+
+def _mcif_write_file(structure, filename, **kwargs) -> None:
+    CifWriter(structure, write_magmoms=True, **kwargs).write_file(filename)
+
+
+def _register_formats() -> None:
+    from pymatgen.io.registry import StructureFormat, register_structure_format
+
+    register_structure_format(
+        StructureFormat(
+            name="cif",
+            patterns=("*.cif*",),
+            read_str=_cif_read_str,
+            write_str=_cif_write_str,
+            write_file=_cif_write_file,
+        )
+    )
+    register_structure_format(
+        StructureFormat(
+            name="mcif",
+            patterns=("*.mcif*",),
+            read_str=_cif_read_str,
+            write_str=_mcif_write_str,
+            write_file=_mcif_write_file,
+        )
+    )
+
+
+_register_formats()

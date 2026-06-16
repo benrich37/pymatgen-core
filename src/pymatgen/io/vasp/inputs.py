@@ -6,7 +6,7 @@ All major VASP input files.
 from __future__ import annotations
 
 import codecs
-import hashlib
+import functools
 import itertools
 import math
 import os
@@ -16,7 +16,6 @@ import warnings
 from collections import Counter, UserDict
 from enum import Enum, unique
 from glob import glob
-from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj
 from typing import TYPE_CHECKING, NamedTuple, cast
@@ -24,7 +23,6 @@ from zipfile import ZipFile
 
 import numpy as np
 import orjson
-import scipy.constants as const
 from monty.dev import deprecated
 from monty.io import zopen
 from monty.json import MontyDecoder, MSONable
@@ -34,6 +32,7 @@ from monty.serialization import dumpfn, loadfn
 from tabulate import tabulate
 
 from pymatgen.core import SETTINGS, Element, Lattice, Structure, get_el_sp
+from pymatgen.core import constants as const
 from pymatgen.electronic_structure.core import Magmom
 from pymatgen.util.io_utils import clean_lines
 from pymatgen.util.string import str_delimited
@@ -113,7 +112,8 @@ class Poscar(MSONable):
         lattice_velocities: ArrayLike | None = None,
         sort_structure: bool = False,
     ) -> None:
-        """
+        """Initialize a Poscar.
+
         Args:
             structure (Structure): Structure object.
             comment (str | None, optional): Optional comment line for POSCAR. Defaults to unit
@@ -721,7 +721,8 @@ class Poscar(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct Poscar from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -881,7 +882,8 @@ class Incar(UserDict, MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict[str, Any]) -> Self:
-        """
+        """Reconstruct Incar from its MSONable dict representation.
+
         Args:
             dct (dict): Serialized Incar.
 
@@ -1040,11 +1042,14 @@ class Incar(UserDict, MSONable):
                     return int(str_)
 
                 output = []
-                tokens = re.findall(r"(-?\d+\.?\d*|[\.A-Z]+)\*?(-?\d+\.?\d*|[\.A-Z]+)?\*?(-?\d+\.?\d*|[\.A-Z]+)?", val)
+                # a single token is a number (incl. scientific notation, e.g. 1e-3) or an uppercase/dot
+                # string (e.g. .TRUE.); up to 3 tokens may be joined by "*" multipliers (e.g. 9*0.6)
+                num_or_str = r"-?\d+\.?\d*(?:[eE][-+]?\d+)?|[\.A-Z]+"
+                tokens = re.findall(rf"({num_or_str})\*?({num_or_str})?\*?({num_or_str})?", val)
                 for tok in tokens:
-                    if tok[2] and "3" in tok[0]:
+                    if tok[2]:  # nested multiplier "count1*count2*value" (e.g. 3*3*-1)
                         output.extend([smart_int_or_float_bool(tok[2])] * int(tok[0]) * int(tok[1]))
-                    elif tok[1]:
+                    elif tok[1]:  # multiplier "count*value" (e.g. 9*0.6)
                         output.extend([smart_int_or_float_bool(tok[1])] * int(tok[0]))
                     else:
                         output.append(smart_int_or_float_bool(tok[0]))
@@ -1174,7 +1179,8 @@ class KpointsSupportedModes(Enum):
 
     @classmethod
     def from_str(cls, mode: str) -> Self:
-        """
+        """Construct a KpointsSupportedModes from a string.
+
         Args:
             mode: String.
 
@@ -1312,7 +1318,8 @@ class Kpoints(MSONable):
 
     @kpts.setter
     def kpts(self, kpts: Sequence[float | int] | Sequence[Sequence[float | int]]) -> None:
-        """
+        """Set the kpoints.
+
         Args:
             kpts: Sequence[float | int] | Sequence[Sequence[float | int]].
         """
@@ -1845,7 +1852,8 @@ class Kpoints(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict[str, Any]) -> Self:
-        """
+        """Reconstruct Kpoints from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -1912,11 +1920,13 @@ class OrbitalDescription(NamedTuple):
     Rcut2: float | None
 
 
-# Hashes computed from the full POTCAR file contents by pymatgen (not 1st-party VASP hashes)
-PYMATGEN_POTCAR_HASHES: dict = loadfn(f"{MODULE_DIR}/vasp_potcar_pymatgen_hashes.json")
-# Written to some newer POTCARs by VASP
-VASP_POTCAR_HASHES: dict = loadfn(f"{MODULE_DIR}/vasp_potcar_file_hashes.json")
 POTCAR_STATS_PATH: str = os.path.join(MODULE_DIR, "potcar-summary-stats.json.bz2")
+
+
+@functools.cache
+def _load_potcar_summary_stats() -> dict:
+    """Lazily load and cache POTCAR summary stats to avoid import-time overhead."""
+    return loadfn(POTCAR_STATS_PATH)
 
 
 class PmgVaspPspDirError(ValueError):
@@ -1933,9 +1943,8 @@ class PotcarSingle:
         keywords (dict): Keywords parsed from the POTCAR as a dict. All keywords are also
             accessible as attributes in themselves. e.g. potcar.enmax, potcar.encut, etc.
 
-    MD5 hashes of the entire POTCAR file and the actual data are validated
-    against a database of known good hashes. Appropriate warnings or errors
-    are raised if validation fails.
+    POTCAR metadata is validated against a database of known good summary
+    statistics. An UnknownPotcarWarning is raised if validation fails.
     """
 
     functional_dir: ClassVar[dict[str, str]] = POTCAR_FUNCTIONAL_MAP
@@ -1990,11 +1999,9 @@ class PotcarSingle:
         "COPYR": str.strip,
     }
 
-    # Used for POTCAR validation
-    _potcar_summary_stats = loadfn(POTCAR_STATS_PATH)
-
     def __init__(self, data: str, symbol: str | None = None) -> None:
-        """
+        """Initialize a PotcarSingle.
+
         Args:
             data (str): Complete, single and raw POTCAR file as a string.
             symbol (str): POTCAR symbol corresponding to the filename suffix
@@ -2234,68 +2241,6 @@ class PotcarSingle:
         return self.functional_tags.get(self.LEXCH.lower(), {}).get("class")
 
     @property
-    def hash_sha256_from_file(self) -> str | None:
-        """SHA256 hash of the POTCAR file as read from the file. None if no SHA256 hash is found."""
-        if _sha256 := getattr(self, "SHA256", None):
-            return _sha256.split()[0]
-        return None
-
-    @property
-    def sha256_computed_file_hash(self) -> str:
-        """Compute a SHA256 hash of the PotcarSingle EXCLUDING lines starting with 'SHA256' and 'COPYR'."""
-        # We have to remove lines with the hash itself and the copyright
-        # notice to get the correct hash.
-        potcar_list = self.data.split("\n")
-        potcar_to_hash = [line for line in potcar_list if not line.strip().startswith(("SHA256", "COPYR"))]
-        potcar_to_hash_str = "\n".join(potcar_to_hash)
-        return sha256(potcar_to_hash_str.encode("utf-8")).hexdigest()
-
-    @property
-    def md5_computed_file_hash(self) -> str:
-        """MD5 hash of the entire PotcarSingle."""
-        # usedforsecurity=False needed in FIPS mode (Federal Information Processing Standards)
-        # https://github.com/materialsproject/pymatgen/issues/2804
-        md5 = hashlib.md5(usedforsecurity=False)
-        md5.update(self.data.encode("utf-8"))
-        return md5.hexdigest()
-
-    @property
-    def md5_header_hash(self) -> str:
-        """MD5 hash of the metadata defining the PotcarSingle."""
-        hash_str = ""
-        for k, v in self.keywords.items():
-            # For newer POTCARS we have to exclude 'SHA256' and 'COPYR lines
-            # since they were not used in the initial hashing
-            if k in {"nentries", "Orbitals", "SHA256", "COPYR"}:
-                continue
-            hash_str += f"{k}"
-            if isinstance(v, bool | int):
-                hash_str += f"{v}"
-            elif isinstance(v, float):
-                hash_str += f"{v:.3f}"
-            elif isinstance(v, tuple | list):
-                for item in v:
-                    if isinstance(item, float):
-                        hash_str += f"{item:.3f}"
-                    elif isinstance(item, Orbital | OrbitalDescription):
-                        for item_v in item:
-                            if isinstance(item_v, int | str):
-                                hash_str += f"{item_v}"
-                            elif isinstance(item_v, float):
-                                hash_str += f"{item_v:.3f}"
-                            else:
-                                hash_str += f"{item_v}" if item_v else ""
-            else:
-                hash_str += v.replace(" ", "")
-
-        self.hash_str = hash_str
-        # usedforsecurity=False needed in FIPS mode (Federal Information Processing Standards)
-        # https://github.com/materialsproject/pymatgen/issues/2804
-        md5 = hashlib.md5(usedforsecurity=False)
-        md5.update(hash_str.lower().encode("utf-8"))
-        return md5.hexdigest()
-
-    @property
     def is_valid(self) -> bool:
         """
         Check that POTCAR matches reference metadata.
@@ -2344,9 +2289,9 @@ class PotcarSingle:
         # Thus we have to look for matches in all POTCAR dirs, not just the ones with
         # consistent values of LEXCH
         for func in self.functional_dir:
-            for titel_no_spc in self._potcar_summary_stats[func]:
+            for titel_no_spc in _load_potcar_summary_stats()[func]:
                 if self.TITEL.replace(" ", "") == titel_no_spc:
-                    for potcar_subvariant in self._potcar_summary_stats[func][titel_no_spc]:
+                    for potcar_subvariant in _load_potcar_summary_stats()[func][titel_no_spc]:
                         if self.VRHFIN.replace(" ", "") == potcar_subvariant["VRHFIN"]:
                             possible_match = {
                                 "POTCAR_FUNCTIONAL": func,
@@ -2447,7 +2392,9 @@ class PotcarSingle:
             dict of POTCAR spec
         """
         extra_spec = extra_spec or []
-        spec = {"titel": self.TITEL, "hash": self.md5_header_hash, "summary_stats": self._summary_stats}
+        # "hash" is retained for backward compatibility with downstream consumers
+        # (atomate, FireWorks DB rows) but is no longer populated.
+        spec = {"titel": self.TITEL, "hash": None, "summary_stats": self._summary_stats}
         for attr in extra_spec:
             spec[attr] = getattr(self, attr, None)
         return spec
@@ -2537,31 +2484,6 @@ class PotcarSingle:
             f"in your {PMG_VASP_PSP_DIR=}.\nPaths tried:\n- " + "\n- ".join(paths_to_try)
         )
 
-    def verify_potcar(self) -> tuple[bool, bool]:
-        """
-        Attempt to verify the integrity of the POTCAR data.
-
-        This method checks the whole file (removing only the SHA256
-        metadata) against the SHA256 hash in the header if this is found.
-        If no SHA256 hash is found in the file, the file hash (md5 hash of the
-        whole file) is checked against all POTCAR file hashes known to pymatgen.
-
-        Returns:
-            tuple[bool, bool]: has_sha256 and passed_hash_check.
-        """
-        if self.hash_sha256_from_file:
-            has_sha256 = True
-            hash_is_valid = self.hash_sha256_from_file == self.sha256_computed_file_hash
-
-        else:
-            has_sha256 = False
-            # If no sha256 hash is found in the POTCAR file, compare the whole
-            # file with known potcar file hashes.
-            md5_file_hash = self.md5_computed_file_hash
-            hash_is_valid = md5_file_hash in VASP_POTCAR_HASHES
-
-        return has_sha256, hash_is_valid
-
     @staticmethod
     def compare_potcar_stats(
         potcar_stats_1: dict,
@@ -2636,7 +2558,7 @@ class PotcarSingle:
 
         identity: dict[str, list] = {"potcar_functionals": [], "potcar_symbols": []}
         for func in self.functional_dir:
-            for ref_psp in self._potcar_summary_stats[func].get(self.TITEL.replace(" ", ""), []):
+            for ref_psp in _load_potcar_summary_stats()[func].get(self.TITEL.replace(" ", ""), []):
                 if self.VRHFIN.replace(" ", "") != ref_psp["VRHFIN"]:
                     continue
 
@@ -2653,130 +2575,6 @@ class PotcarSingle:
             identity[key] = list(set(values))
 
         return identity["potcar_functionals"], identity["potcar_symbols"]
-
-    def identify_potcar_hash_based(
-        self,
-        mode: Literal["data", "file"] = "data",
-    ) -> tuple[list[str], list[str]]:
-        """
-        Identify the symbol and compatible functionals associated with this PotcarSingle.
-
-        This method checks the MD5 hash of either the POTCAR metadadata (PotcarSingle.md5_header_hash)
-        or the entire POTCAR file (PotcarSingle.md5_computed_file_hash) against a database
-        of hashes for POTCARs distributed with VASP 5.4.4.
-
-        Args:
-            mode ("data" | "file"): "data" mode checks the hash of the POTCAR metadata in self.keywords,
-                while "file" mode checks the hash of the entire POTCAR file.
-
-        Returns:
-            symbol (list): List of symbols associated with the PotcarSingle
-            potcar_functionals (list): List of potcar functionals associated with
-                the PotcarSingle
-        """
-        # Dict to translate the sets in the .json file to the keys used in VaspInputSet
-        mapping_dict: dict[str, dict[str, str]] = {
-            "potUSPP_GGA": {
-                "pymatgen_key": "PW91_US",
-                "vasp_description": "Ultrasoft pseudo potentials"
-                "for LDA and PW91 (dated 2002-08-20 and 2002-04-08,"
-                "respectively). These files are outdated, not"
-                "supported and only distributed as is.",
-            },
-            "potUSPP_LDA": {
-                "pymatgen_key": "LDA_US",
-                "vasp_description": "Ultrasoft pseudo potentials"
-                "for LDA and PW91 (dated 2002-08-20 and 2002-04-08,"
-                "respectively). These files are outdated, not"
-                "supported and only distributed as is.",
-            },
-            "potpaw_GGA": {
-                "pymatgen_key": "PW91",
-                "vasp_description": "The LDA, PW91 and PBE PAW datasets"
-                "(snapshot: 05-05-2010, 19-09-2006 and 06-05-2010,"
-                "respectively). These files are outdated, not"
-                "supported and only distributed as is.",
-            },
-            "potpaw_LDA": {
-                "pymatgen_key": "Perdew-Zunger81",
-                "vasp_description": "The LDA, PW91 and PBE PAW datasets"
-                "(snapshot: 05-05-2010, 19-09-2006 and 06-05-2010,"
-                "respectively). These files are outdated, not"
-                "supported and only distributed as is.",
-            },
-            "potpaw_LDA.52": {
-                "pymatgen_key": "LDA_52",
-                "vasp_description": "LDA PAW datasets version 52,"
-                "including the early GW variety (snapshot 19-04-2012)."
-                "When read by VASP these files yield identical results"
-                "as the files distributed in 2012 ('unvie' release).",
-            },
-            "potpaw_LDA.54": {
-                "pymatgen_key": "LDA_54",
-                "vasp_description": "LDA PAW datasets version 54,"
-                "including the GW variety (original release 2015-09-04)."
-                "When read by VASP these files yield identical results as"
-                "the files distributed before.",
-            },
-            "potpaw_PBE": {
-                "pymatgen_key": "PBE",
-                "vasp_description": "The LDA, PW91 and PBE PAW datasets"
-                "(snapshot: 05-05-2010, 19-09-2006 and 06-05-2010,"
-                "respectively). These files are outdated, not"
-                "supported and only distributed as is.",
-            },
-            "potpaw_PBE.52": {
-                "pymatgen_key": "PBE_52",
-                "vasp_description": "PBE PAW datasets version 52,"
-                "including early GW variety (snapshot 19-04-2012)."
-                "When read by VASP these files yield identical"
-                "results as the files distributed in 2012.",
-            },
-            "potpaw_PBE.54": {
-                "pymatgen_key": "PBE_54",
-                "vasp_description": "PBE PAW datasets version 54,"
-                "including the GW variety (original release 2015-09-04)."
-                "When read by VASP these files yield identical results as"
-                "the files distributed before.",
-            },
-            "unvie_potpaw.52": {
-                "pymatgen_key": "unvie_LDA_52",
-                "vasp_description": "files released previously"
-                "for vasp.5.2 (2012-04) and vasp.5.4 (2015-09-04) by univie.",
-            },
-            "unvie_potpaw.54": {
-                "pymatgen_key": "unvie_LDA_54",
-                "vasp_description": "files released previously"
-                "for vasp.5.2 (2012-04) and vasp.5.4 (2015-09-04) by univie.",
-            },
-            "unvie_potpaw_PBE.52": {
-                "pymatgen_key": "unvie_PBE_52",
-                "vasp_description": "files released previously"
-                "for vasp.5.2 (2012-04) and vasp.5.4 (2015-09-04) by univie.",
-            },
-            "unvie_potpaw_PBE.54": {
-                "pymatgen_key": "unvie_PBE_52",
-                "vasp_description": "files released previously"
-                "for vasp.5.2 (2012-04) and vasp.5.4 (2015-09-04) by univie.",
-            },
-        }
-
-        if mode == "data":
-            hash_db = PYMATGEN_POTCAR_HASHES
-            potcar_hash = self.md5_header_hash
-        elif mode == "file":
-            hash_db = VASP_POTCAR_HASHES
-            potcar_hash = self.md5_computed_file_hash
-        else:
-            raise ValueError(f"Bad {mode=}. Choose 'data' or 'file'.")
-
-        if identity := hash_db.get(potcar_hash):
-            # Convert the potcar_functionals from the .json dict into the functional
-            # keys that pymatgen uses
-            potcar_functionals = [*{mapping_dict[i]["pymatgen_key"] for i in identity["potcar_functionals"]}]
-
-            return potcar_functionals, identity["potcar_symbols"]
-        return [], []
 
 
 def _gen_potcar_summary_stats(
@@ -2856,7 +2654,8 @@ class Potcar(list, MSONable):
         functional: str | None = None,
         sym_potcar_map: dict[str, str] | None = None,
     ) -> None:
-        """
+        """Initialize a Potcar.
+
         Args:
             symbols (list[str]): Element symbols for POTCAR. This should correspond
                 to the symbols used by VASP. e.g. "Mg", "Fe_pv", etc.
@@ -2926,7 +2725,8 @@ class Potcar(list, MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Potcar:
-        """
+        """Reconstruct Potcar from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -2937,10 +2737,10 @@ class Potcar(list, MSONable):
 
     @classmethod
     def from_str(cls, data: str):
-        """
-        Read Potcar from a string.
+        """Read Potcar from a string.
 
-        :param data: Potcar as a string.
+        Args:
+            data (str): Potcar as a string.
 
         Returns:
             Potcar
@@ -2962,10 +2762,10 @@ class Potcar(list, MSONable):
 
     @classmethod
     def from_file(cls, filename: str):
-        """
-        Reads Potcar from file.
+        """Read Potcar from file.
 
-        :param filename: Filename
+        Args:
+            filename (str): Filename.
 
         Returns:
             Potcar
@@ -3026,7 +2826,7 @@ class Potcar(list, MSONable):
             Potcar, a POTCAR using a single functional that matches the input spec.
         """
 
-        functionals = functionals or list(PotcarSingle._potcar_summary_stats)
+        functionals = functionals or list(_load_potcar_summary_stats())
         for functional in functionals:
             potcar = Potcar()
             matched = [False for _ in range(len(potcar_spec))]
@@ -3035,7 +2835,7 @@ class Potcar(list, MSONable):
                 titel_no_spc = titel.replace(" ", "")
                 symbol = titel.split(" ")[1].strip()
 
-                for stats in PotcarSingle._potcar_summary_stats[functional].get(titel_no_spc, []):
+                for stats in _load_potcar_summary_stats()[functional].get(titel_no_spc, []):
                     if PotcarSingle.compare_potcar_stats(spec["summary_stats"], stats):
                         potcar.append(PotcarSingle.from_symbol_and_functional(symbol=symbol, functional=functional))
                         matched[ispec] = True
@@ -3101,24 +2901,28 @@ class VaspInput(dict, MSONable):
 
     def as_dict(self) -> dict:
         """MSONable dict."""
-        dct = {key: val.as_dict() for key, val in self.items()}
+        dct = {key: val.as_dict() if hasattr(val, "as_dict") else val for key, val in self.items()}
         dct["@module"] = type(self).__module__
         dct["@class"] = type(self).__name__
         return dct
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct VaspInput from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
         Returns:
             VaspInput
         """
-        sub_dct: dict[str, dict] = {"optional_files": {}}
+        sub_dct: dict[str, Any] = {"optional_files": {}}
         for key, val in dct.items():
             if key in ("INCAR", "POSCAR", "POTCAR", "KPOINTS"):
                 sub_dct[key.lower()] = MontyDecoder().process_decoded(val)
+            elif key == "POTCAR.spec":
+                sub_dct["potcar"] = val
+                sub_dct["potcar_spec"] = True
             elif key not in ["@module", "@class"]:
                 sub_dct["optional_files"][key] = MontyDecoder().process_decoded(val)
         return cls(**sub_dct)  # type: ignore[arg-type]

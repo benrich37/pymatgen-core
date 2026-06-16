@@ -75,15 +75,16 @@ class Lattice(MSONable):
         self.pbc = pbc
 
     def __repr__(self) -> str:
+        matrix = self._matrix.tolist()
         return "\n".join(
             [
                 "Lattice",
                 f"    abc : {' '.join(map(repr, self.lengths))}",
                 f" angles : {' '.join(map(repr, self.angles))}",
                 f" volume : {self.volume!r}",
-                f"      A : {' '.join(map(repr, self._matrix[0]))}",
-                f"      B : {' '.join(map(repr, self._matrix[1]))}",
-                f"      C : {' '.join(map(repr, self._matrix[2]))}",
+                f"      A : {' '.join(map(repr, matrix[0]))}",
+                f"      B : {' '.join(map(repr, matrix[1]))}",
+                f"      C : {' '.join(map(repr, matrix[2]))}",
                 f"    pbc : {' '.join(map(repr, self.pbc))}",
             ]
         )
@@ -1626,13 +1627,14 @@ class Lattice(MSONable):
         hex_angle_tol: float = 5,
         hex_length_tol: float = 0.01,
     ) -> bool:
-        """
+        """Check whether the lattice corresponds to a hexagonal lattice.
+
         Args:
-            hex_angle_tol: Angle tolerance
+            hex_angle_tol: Angle tolerance.
             hex_length_tol: Length tolerance.
 
         Returns:
-            Whether lattice corresponds to hexagonal lattice.
+            bool: True if the lattice is hexagonal within tolerances.
         """
         lengths = self.lengths
         angles = self.angles
@@ -1831,7 +1833,7 @@ def get_points_in_spheres(
         return_fcoords: (bool) whether to return fractional coords when pbc is set.
 
     Returns:
-        List[List[Tuple[coords, distance, index, image]]]
+        list[list[tuple[coords, distance, index, image]]]
     """
     if isinstance(pbc, bool):
         pbc = [pbc] * 3

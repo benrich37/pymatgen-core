@@ -1128,7 +1128,8 @@ class Davidson(Section):
         subsections: dict | None = None,
         **kwargs,
     ):
-        """
+        """Initialize a Davidson.
+
         Args:
             new_prec_each (int): How often to recalculate the preconditioner.
             preconditioner (str): Preconditioner to use.
@@ -1432,7 +1433,8 @@ class Coord(Section):
         subsections: dict | None = None,
         **kwargs,
     ):
-        """
+        """Initialize a Coord.
+
         Args:
             structure: Pymatgen structure object
             alias (bool): whether or not to identify the sites by Element + number so you can do
@@ -1863,7 +1865,8 @@ class PBE(Section):
         keywords: dict | None = None,
         subsections: dict | None = None,
     ):
-        """
+        """Initialize a PBE.
+
         Args:
             parameterization (str):
                 ORIG: original PBE
@@ -1911,7 +1914,8 @@ class Kpoints(Section):
         verbose: bool = False,
         wavefunctions: str = "COMPLEX",
     ):
-        """
+        """Initialize a Kpoints.
+
         Args:
             kpts (list, tuple): a 2D array for the kpoints of the form
                 [(1,1,1),]. If len(kpts) == 1. Then it is taken as subdivisions
@@ -2044,7 +2048,8 @@ class KpointSet(Section):
     """Specify a kpoint line to be calculated between special points."""
 
     def __init__(self, npoints: int, kpoints: Iterable, units: str = "B_VECTOR") -> None:
-        """
+        """Initialize a KpointSet.
+
         Args:
             npoints (int): Number of kpoints along the line.
             kpoints: A dictionary of {label: kpoint} kpoints defining the path
@@ -2097,7 +2102,8 @@ class BandStructure(Section):
         keywords: dict | None = None,
         subsections: dict | None = None,
     ):
-        """
+        """Initialize a BandStructure.
+
         Args:
             kpoint_sets: Sequence of KpointSet objects for the band structure calculation.
             filename: Filename for the band structure output
@@ -2351,7 +2357,7 @@ class GaussianTypeOrbitalBasisSet(AtomicMetadata):
         lmin: Minimum angular momentum quantum number for each set
         nshell: Number of shells for angular momentum l for each set
         exponents: Exponents for each set
-        coefficients: Contraction coefficients for each set. Dict[exp->l->shell]
+        coefficients: Contraction coefficients for each set. dict[exp->l->shell]
     """
 
     info: BasisInfo | None = None

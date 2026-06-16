@@ -240,6 +240,35 @@ class TestPeriodicSite(MatSciTest):
         site.coords = [1.5, 3.25, 5]
         assert_allclose(site.frac_coords, [0.015, 0.0325, 0.05])
 
+    def test_property_setattr_routes_to_properties(self):
+        """Setting an arbitrary attribute on a site should store it in site.properties,
+        not as a bare instance attribute, so it survives from_sites / get_sorted_structure."""
+
+        site = PeriodicSite("Fe", [0.25, 0.35, 0.45], self.lattice)
+
+        # Assignment via attribute syntax must land in .properties
+        site.magmom = 5
+        assert site.properties["magmom"] == 5, "magmom should be stored in site.properties, not as a bare attribute"
+
+        # Round-trip through from_sites must preserve it
+        reconstructed = PeriodicSite.from_dict(site.as_dict())
+        assert reconstructed.magmom == 5, "magmom lost after as_dict/from_dict round-trip"
+
+        # Survival through get_sorted_structure is the real footgun
+        from pymatgen.core import Structure
+
+        struct = Structure(
+            self.lattice,
+            ["Cr", "Fe"],
+            [[0, 0, 0], [0.5, 0.5, 0.5]],
+        )
+        struct.sites[0].magmom = -5
+        struct.sites[1].magmom = 5
+        sorted_struct = struct.get_sorted_structure()
+        assert all("magmom" in site.properties for site in sorted_struct.sites), (
+            "magmom lost on one or more sites after get_sorted_structure"
+        )
+
     def test_repr(self):
         assert repr(self.propertied_site) == "PeriodicSite: Fe2+ (2.5, 3.5, 4.5) [0.25, 0.35, 0.45]"
         assert repr(self.labeled_site) == "PeriodicSite: site label (Fe) (2.5, 3.5, 4.5) [0.25, 0.35, 0.45]"

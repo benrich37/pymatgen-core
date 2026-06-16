@@ -490,7 +490,8 @@ class PMGDir(collections.abc.Mapping):
     }
 
     def __init__(self, dirname: PathLike) -> None:
-        """
+        """Initialize a PMGDir.
+
         Args:
             dirname: The directory containing the VASP calculation as a string or Path.
         """

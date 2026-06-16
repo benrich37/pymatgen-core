@@ -71,7 +71,8 @@ class ValenceIonicRadiusEvaluator:
     """
 
     def __init__(self, structure: Structure) -> None:
-        """
+        """Initialize a ValenceIonicRadiusEvaluator.
+
         Args:
             structure: pymatgen Structure.
         """
@@ -705,7 +706,8 @@ class VoronoiNN(NearNeighbors):
         extra_nn_info=True,
         compute_adj_neighbors=True,
     ):
-        """
+        """Initialize a VoronoiNN.
+
         Args:
             tol (float): tolerance parameter for near-neighbor finding. Faces that are
                 smaller than `tol` fraction of the largest face are not included in the
@@ -1015,7 +1017,8 @@ class VoronoiNN(NearNeighbors):
         return self._extract_nn_info(structure, nns)
 
     def get_all_nn_info(self, structure: Structure):
-        """
+        """Get nearest-neighbor info for all sites in a structure.
+
         Args:
             structure (Structure): input structure.
 
@@ -1078,7 +1081,8 @@ class IsayevNN(VoronoiNN):
         extra_nn_info: bool = True,
         compute_adj_neighbors: bool = True,
     ):
-        """
+        """Initialize an IsayevNN.
+
         Args:
             tol: Tolerance in Å for bond distances that are considered coordinated.
             targets: Target element(s).
@@ -1121,7 +1125,8 @@ class IsayevNN(VoronoiNN):
         return self._filter_nns(structure, n, nns)
 
     def get_all_nn_info(self, structure: Structure) -> list[list[dict[str, Any]]]:
-        """
+        """Get nearest-neighbor info for all sites in a structure.
+
         Args:
             structure (Structure): input structure.
 
@@ -1220,7 +1225,8 @@ class JmolNN(NearNeighbors):
         min_bond_distance: float = 0.4,
         el_radius_updates: dict[SpeciesLike, float] | None = None,
     ):
-        """
+        """Initialize a JmolNN.
+
         Args:
             tol (float): tolerance parameter for bond determination
                 Defaults to 0.56.
@@ -1330,7 +1336,8 @@ class MinimumDistanceNN(NearNeighbors):
     """
 
     def __init__(self, tol: float = 0.1, cutoff=10, get_all_sites=False) -> None:
-        """
+        """Initialize a MinimumDistanceNN.
+
         Args:
             tol (float): tolerance parameter for neighbor identification
                 (default: 0.1).
@@ -1429,7 +1436,8 @@ class OpenBabelNN(NearNeighbors):
         "(version >=3.0.0).",
     )
     def __init__(self, order=True) -> None:
-        """
+        """Initialize an OpenBabelNN.
+
         Args:
             order (bool): True if bond order should be returned as a weight, False
             if bond length should be used as a weight.
@@ -1587,7 +1595,8 @@ class CovalentBondNN(NearNeighbors):
     """
 
     def __init__(self, tol: float = 0.2, order=True) -> None:
-        """
+        """Initialize a CovalentBondNN.
+
         Args:
             tol (float): Tolerance for covalent bond checking.
             order (bool): If True (default), this class will compute bond
@@ -1742,7 +1751,8 @@ class MinimumOKeeffeNN(NearNeighbors):
     """
 
     def __init__(self, tol: float = 0.1, cutoff=10) -> None:
-        """
+        """Initialize a MinimumOKeeffeNN.
+
         Args:
             tol (float): tolerance parameter for neighbor identification
                 (default: 0.1).
@@ -1836,7 +1846,8 @@ class MinimumVIRENN(NearNeighbors):
     """
 
     def __init__(self, tol: float = 0.1, cutoff=10) -> None:
-        """
+        """Initialize a MinimumVIRENN.
+
         Args:
             tol (float): tolerance parameter for neighbor identification
                 (default: 0.1).
@@ -2209,7 +2220,8 @@ class LocalStructOrderParams:
         parameters: list[dict[str, float] | None] | None = None,
         cutoff: float = -10.0,
     ) -> None:
-        """
+        """Initialize a LocalStructOrderParams.
+
         Args:
             types (list[str]): the types of order parameters to be calculated.
                 Note that multiple mentions of the same type may occur.
@@ -3441,7 +3453,8 @@ class BrunnerNNReciprocal(NearNeighbors):
     """
 
     def __init__(self, tol: float = 1e-4, cutoff=8.0) -> None:
-        """
+        """Initialize a BrunnerNNReciprocal.
+
         Args:
             tol (float): tolerance parameter for bond determination
                 (default: 1E-4).
@@ -3516,7 +3529,8 @@ class BrunnerNNRelative(NearNeighbors):
     """
 
     def __init__(self, tol: float = 1e-4, cutoff=8.0) -> None:
-        """
+        """Initialize a BrunnerNNRelative.
+
         Args:
             tol (float): tolerance parameter for bond determination
                 (default: 1E-4).
@@ -3592,7 +3606,8 @@ class BrunnerNNReal(NearNeighbors):
     """
 
     def __init__(self, tol: float = 1e-4, cutoff=8.0) -> None:
-        """
+        """Initialize a BrunnerNNReal.
+
         Args:
             tol (float): tolerance parameter for bond determination
                 (default: 1E-4).
@@ -3678,7 +3693,8 @@ class EconNN(NearNeighbors):
         cation_anion: bool = False,
         use_fictive_radius: bool = False,
     ):
-        """
+        """Initialize an EconNN.
+
         Args:
             tol: Tolerance parameter for bond determination.
             cutoff: Cutoff radius in Angstrom to look for near-neighbor atoms.
@@ -4257,7 +4273,8 @@ class CutOffDictNN(NearNeighbors):
     """
 
     def __init__(self, cut_off_dict: dict | None = None) -> None:
-        """
+        """Initialize a CutOffDictNN.
+
         Args:
             cut_off_dict (dict[str, float]): a dictionary
             of cut-off distances, e.g. {('Fe','O'): 2.0} for
@@ -4398,7 +4415,8 @@ class Critic2NN(NearNeighbors):
         return True
 
     def get_bonded_structure(self, structure: Structure, decorate: bool = False) -> StructureGraph:
-        """
+        """Get a StructureGraph of the bonded structure as determined by Critic2.
+
         Args:
             structure (Structure): Input structure
             decorate (bool, optional): Whether to decorate the structure. Defaults to False.

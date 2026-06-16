@@ -37,7 +37,8 @@ class TemplateInputGen(InputGenerator):
         variables: dict | None = None,
         filename: PathLike = "input.txt",
     ) -> InputSet:
-        """
+        """Build an InputSet from a template file with variable substitutions.
+
         Args:
             template: the input file template containing variable strings to be
                 replaced.

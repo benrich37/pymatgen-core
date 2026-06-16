@@ -205,7 +205,8 @@ $theory_spec
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct NwTask from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -342,7 +343,8 @@ class NwInput(MSONable):
         symmetry_options=None,
         memory_options=None,
     ):
-        """
+        """Initialize a NwInput.
+
         Args:
             mol: Input molecule. If molecule is a single string, it is used as a
                 direct input to the geometry section of the Gaussian input
@@ -387,7 +389,8 @@ class NwInput(MSONable):
         return "\n".join(out)
 
     def write_file(self, filename):
-        """
+        """Write the input to a file.
+
         Args:
             filename (str): Filename.
         """
@@ -407,7 +410,8 @@ class NwInput(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct NwInput from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 
@@ -562,7 +566,8 @@ class NwOutput:
     """
 
     def __init__(self, filename):
-        """
+        """Initialize a NwOutput.
+
         Args:
             filename: Filename to read.
         """

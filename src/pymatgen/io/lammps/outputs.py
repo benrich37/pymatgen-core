@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from typing import Any, Self
 
 __author__ = "Kiran Mathew, Zhi Deng"
-__copyright__ = "Copyright 2018, The Materials Virtual Lab"
+__copyright__ = "Copyright 2018, The Materialyze Lab"
 __version__ = "1.0"
 __maintainer__ = "Zhi Deng"
 __email__ = "z4deng@eng.ucsd.edu"
@@ -72,7 +72,8 @@ class LammpsDump(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct LammpsDump from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 

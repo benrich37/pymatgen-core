@@ -86,6 +86,30 @@ class Site(collections.abc.Hashable, MSONable):
             return props[attr]
         raise AttributeError(f"{attr=} not found on {type(self).__name__}")
 
+    def __setattr__(self, attr: str, value: Any) -> None:
+        # Override setattr doesn't play nicely with pickle,
+        # so we can't use self._properties
+        if attr in {"properties", "_properties", "coords"} or attr.startswith("_"):
+            # Avoid infinite recursion when setting properties or _properties
+            super().__setattr__(attr, value)
+        elif isinstance(getattr(type(self), attr, None), property):
+            # If the attribute is a property, set it using the property setter
+            getattr(type(self), attr).fset(self, value)  # type: ignore[union-attr]
+        elif attr in self.__dict__:
+            # If the attribute already exists on the instance, set it directly on the instance
+            super().__setattr__(attr, value)
+        else:
+            warnings.warn(
+                f"Setting attribute {attr} on {type(self).__name__} is deprecated and will be disallowed in a "
+                f"future version. Please set this attribute on the 'properties' dict instead, e.g. "
+                f"site.properties['{attr}'] = {value!r} or use the "
+                f"structure.add_site_property('{attr}', {value!r}) method to add this property to all sites.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            props = self.__dict__.setdefault("properties", {})
+            props[attr] = value
+
     def __getitem__(self, el: Element) -> float:
         """Get the occupancy for element."""
         return self.species[el]

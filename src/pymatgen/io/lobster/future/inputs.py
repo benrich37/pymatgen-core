@@ -454,7 +454,8 @@ class LobsterIn(UserDict, MSONable):
         address_basis_file_min: PathLike | None = None,
         address_basis_file_max: PathLike | None = None,
     ) -> list[dict]:
-        """
+        """Get all possible basis function dicts for a structure.
+
         Args:
             structure: Structure object
             potcar_symbols: list of the potcar symbols

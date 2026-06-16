@@ -170,7 +170,8 @@ class MoleculeStructureComparator(MSONable):
         ignore_ionic_bond=True,
         bond_13_cap=0.05,
     ):
-        """
+        """Initialize a MoleculeStructureComparator.
+
         Args:
             bond_length_cap: The ratio of the elongation of the bond to be
                 acknowledged. If the distance between two atoms is less than (
@@ -287,7 +288,8 @@ class MoleculeStructureComparator(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct MoleculeStructureComparator from its MSONable dict representation.
+
         Args:
             dct (dict): Dict representation.
 

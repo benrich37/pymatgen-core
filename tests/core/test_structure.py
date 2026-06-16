@@ -4,6 +4,8 @@ import itertools
 import json
 import math
 import os
+import re
+import warnings
 from fractions import Fraction
 from pathlib import Path
 from shutil import which
@@ -571,6 +573,12 @@ class TestIStructure(MatSciTest):
         struct = IStructure(Lattice.cubic(4.09), ["Ag"] * 4, coords)
         assert len(struct.get_primitive_structure()) == 4
 
+        # pbc must survive primitive-cell reduction
+        coords = [[0, 0, 0], [0.75, 0.5, 0.75]]
+        struct_pbc = IStructure(self.lattice_pbc, ["Si"] * 2, coords)
+        struct_pbc_prim = struct_pbc.get_primitive_structure()
+        assert struct_pbc_prim.pbc == (True, True, False)
+
     def test_primitive_cell_site_merging(self):
         lattice = Lattice.cubic(10)
         coords = [[0, 0, 0], [0, 0, 0.5], [0, 0, 0.26], [0, 0, 0.74]]
@@ -735,7 +743,8 @@ Direct
                     sites2 = [i[0] for i in nn_old]
                     assert set(sites1) == set(sites2)
                 break
-            except Exception:
+            except Exception:  # noqa: S110
+                # Retry across the candidate structures; only fail if none work.
                 pass
         else:
             raise ValueError("No valid structure tested.")
@@ -1018,7 +1027,7 @@ Direct
         # Test import error
         with (
             mock.patch.dict("sys.modules", {"moyopy": None}),
-            pytest.raises(ImportError, match="moyopy is not installed. Run pip install moyopy."),
+            pytest.raises(ImportError, match=re.escape("moyopy is not installed. Run pip install moyopy.")),
         ):
             self.struct.get_symmetry_dataset(backend="moyopy")
 
@@ -1042,6 +1051,10 @@ class TestStructure(MatSciTest):
         self.cu_structure = Structure(lattice, ["Cu", "Cu"], coords)
         self.disordered = Structure.from_spacegroup("Im-3m", Lattice.cubic(3), [Composition("Fe0.5Mn0.5")], [[0, 0, 0]])
         self.labeled_structure = Structure(lattice, ["Si", "Si"], coords, labels=["Si1", "Si2"])
+
+        # 2-D slab: periodic in x,y only - used by pbc-preservation tests
+        slab_lattice = Lattice([[3, 0, 0], [0, 3, 0], [0, 0, 20]], pbc=(True, True, False))
+        self.slab = Structure(slab_lattice, ["Si"], [[0, 0, 0]])
 
     def test_calc_property(self):
         pytest.importorskip("matcalc")
@@ -1223,7 +1236,7 @@ class TestStructure(MatSciTest):
         assert struct.symbol_set == ("H", "N", "O", "Si")
         with pytest.raises(
             ValueError,
-            match="Can't find functional group 'OH' in list. Provide explicit coordinates instead",
+            match=re.escape("Can't find functional group 'OH' in list. Provide explicit coordinates instead"),
         ):
             substituted = struct.substitute(2, "OH")
         # Distance between O and H
@@ -1349,7 +1362,7 @@ class TestStructure(MatSciTest):
         oxidation_states = {"Fe": 2}
         with pytest.raises(
             ValueError,
-            match="Oxidation states not specified for all elements, missing={'Si'}",
+            match=re.escape("Oxidation states not specified for all elements, missing={'Si'}"),
         ):
             self.struct.add_oxidation_state_by_element(oxidation_states)
 
@@ -1460,6 +1473,16 @@ class TestStructure(MatSciTest):
         struct.apply_operation(op, fractional=False)
         assert struct.get_space_group_info() == spg_info
 
+        # pbc must survive symmetry operations
+        op = SymmOp.from_axis_angle_and_translation([0, 0, 1], 90)
+        slab = self.slab.copy()
+        slab.apply_operation(op)  # Cartesian branch
+        assert slab.pbc == (True, True, False)
+
+        slab = self.slab.copy()
+        slab.apply_operation(op, fractional=True)  # fractional branch
+        assert slab.pbc == (True, True, False)
+
     def test_apply_strain(self):
         struct = self.struct
         initial_coord = struct[1].coords
@@ -1555,6 +1578,10 @@ class TestStructure(MatSciTest):
         assert struct.formula == "Si8"
         assert_allclose(struct.lattice.abc, [7.6803959, 17.5979979, 7.6803959])
 
+        # pbc must be preserved for every scaling form
+        for scaling in [(2, 2, 1), 2, [[2, 0, 0], [0, 2, 0], [0, 0, 1]]]:
+            assert (self.slab * scaling).pbc == (True, True, False)
+
     def test_make_supercell(self):
         supercell = self.struct.make_supercell([2, 1, 1])
         assert supercell.formula == "Si4"
@@ -1573,6 +1600,11 @@ class TestStructure(MatSciTest):
         supercell = self.struct.make_supercell([2.5, 1, 1], in_place=False)
         assert len(self.struct) == orig_len
         assert len(supercell) == 2 * orig_len
+
+        # pbc must be preserved for in-place make_supercell
+        slab = self.slab.copy()
+        slab.make_supercell((2, 2, 1))
+        assert slab.pbc == (True, True, False)
 
     def test_make_supercell_labeled(self):
         struct = self.labeled_structure.copy()
@@ -1678,6 +1710,63 @@ class TestStructure(MatSciTest):
         with pytest.raises(ValueError, match="Unrecognized extension in filename="):
             self.struct.from_file(filename=filename)
 
+    def test_filter_kwargs_passthrough_when_var_keyword(self):
+        # func that accepts **kwargs: all kwargs returned unchanged, no warning
+        def accepts_var(**kwargs):
+            pass
+
+        result = Structure._filter_kwargs(accepts_var, {"foo": 1, "bar": 2})
+        assert result == {"foo": 1, "bar": 2}
+
+    def test_filter_kwargs_filters_unsupported_and_warns(self):
+        def strict(a, b=0):
+            pass
+
+        with pytest.warns(UserWarning, match="unsupported_key"):
+            result = Structure._filter_kwargs(strict, {"a": 1, "unsupported_key": 99})
+        assert result == {"a": 1}
+        assert "unsupported_key" not in result
+
+    def test_filter_kwargs_all_supported_no_warning(self):
+        def strict(a, b=0):
+            pass
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = Structure._filter_kwargs(strict, {"a": 1, "b": 2})
+        assert result == {"a": 1, "b": 2}
+
+    def test_filter_kwargs_empty_no_warning(self):
+        def strict(a):
+            pass
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = Structure._filter_kwargs(strict, {})
+        assert result == {}
+
+    @pytest.mark.parametrize("fmt", ["cif", "poscar", "cssr", "xsf", "res", "pwmat"])
+    def test_from_str_unsupported_kwarg_warns(self, fmt):
+        struct_str = self.struct.to(fmt=fmt)
+        with pytest.warns(UserWarning, match="unsupported_kwarg"):
+            result = Structure.from_str(struct_str, fmt=fmt, unsupported_kwarg="bad")
+        assert result.formula == self.struct.formula
+
+    @pytest.mark.parametrize("fmt", ["cif", "poscar", "cssr", "xsf", "res", "pwmat"])
+    def test_from_str_no_warning_without_extra_kwargs(self, fmt):
+        struct_str = self.struct.to(fmt=fmt)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            Structure.from_str(struct_str, fmt=fmt)
+
+    def test_from_str_cif_supported_kwarg_no_warning(self):
+        # frac_tolerance is a real CifParser.from_str kwarg — should not warn
+        cif_str = self.struct.to(fmt="cif")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            result = Structure.from_str(cif_str, fmt="cif", frac_tolerance=0.01)
+        assert result.formula == self.struct.formula
+
     def test_from_spacegroup(self):
         s1 = Structure.from_spacegroup("Fm-3m", Lattice.cubic(3), ["Li", "O"], [[0.25, 0.25, 0.25], [0, 0, 0]])
         assert s1.formula == "Li8 O4"
@@ -1700,7 +1789,7 @@ class TestStructure(MatSciTest):
 
         with pytest.raises(
             ValueError,
-            match="Supplied lattice with parameters \\(.+\\) is incompatible with supplied spacegroup Pm-3m",
+            match=r"Supplied lattice with parameters \(.+\) is incompatible with supplied spacegroup Pm-3m",
         ):
             Structure.from_spacegroup(
                 "Pm-3m",
@@ -1781,8 +1870,12 @@ class TestStructure(MatSciTest):
         assert_allclose(struct[1].frac_coords, [0.5, 0.5, 0.5005])
 
         # Test illegal mode
-        with pytest.raises(ValueError, match="Illegal mode='illegal', should start with a/d/s"):
+        with pytest.raises(ValueError, match="Illegal mode='illegal', must be one of 'sum', 'delete', 'average'"):
             struct.merge_sites(mode="illegal")
+
+        # Test that single-letter modes are no longer accepted
+        with pytest.raises(ValueError, match="Illegal mode='s'"):
+            struct.merge_sites(mode="s")
 
         # Test for TaS2 with spacegroup 166 in 160 setting
         lattice = Lattice.hexagonal(3.374351, 20.308941)
@@ -2201,7 +2294,7 @@ class TestIMolecule(MatSciTest):
             [-0.513360, 0.889165, -0.363000],
             [-0.513360, 0.889165, -0.36301],
         ]
-        with pytest.raises(StructureError, match="sites that are less than 0.01 Angstrom"):
+        with pytest.raises(StructureError, match=re.escape("sites that are less than 0.01 Angstrom")):
             Molecule(["C", "H", "H", "H", "H", "H"], coords, validate_proximity=True)
 
     def test_get_angle_dihedral(self):

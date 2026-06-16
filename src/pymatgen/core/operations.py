@@ -12,9 +12,14 @@ from typing import TYPE_CHECKING, Literal, cast
 import numpy as np
 from monty.json import MSONable
 
-from pymatgen.electronic_structure.core import Magmom
+# pymatgen.electronic_structure.core.Magmom is imported lazily inside
+# SymmOp.operate_magmom. It's the only call site and the eager import
+# would pull electronic_structure.core into every `import pymatgen.core`.
 from pymatgen.util.due import Doi, due
 from pymatgen.util.string import transformation_to_string
+
+if TYPE_CHECKING:
+    from pymatgen.electronic_structure.core import Magmom
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -470,7 +475,8 @@ class SymmOp(MSONable):
 
     @classmethod
     def from_xyz_str(cls, xyz_str: str) -> Self:
-        """
+        """Construct a SymmOp from an "x, y, z" style string.
+
         Args:
             xyz_str (str): "x, y, z", "-x, -y, z", "-2y+1/2, 3x+1/2, z-y+1/2", etc.
 
@@ -502,7 +508,8 @@ class SymmOp(MSONable):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct SymmOp from its MSONable dict representation.
+
         Args:
             dct: dict.
 
@@ -587,6 +594,8 @@ class MagSymmOp(SymmOp):
         Returns:
             Magnetic moment after operator applied as Magmom class
         """
+        from pymatgen.electronic_structure.core import Magmom
+
         # Type casting to handle lists as input
         magmom = Magmom(magmom)
 
@@ -636,7 +645,8 @@ class MagSymmOp(SymmOp):
 
     @classmethod
     def from_xyzt_str(cls, xyzt_str: str) -> Self:
-        """
+        """Construct a MagSymmOp from an "x, y, z, t" style string.
+
         Args:
             xyzt_str (str): of the form 'x, y, z, +1', '-x, -y, z, -1',
                 '-2y+1/2, 3x+1/2, z-y+1/2, +1', etc.
@@ -674,7 +684,8 @@ class MagSymmOp(SymmOp):
 
     @classmethod
     def from_dict(cls, dct: dict) -> Self:
-        """
+        """Reconstruct MagSymmOp from its MSONable dict representation.
+
         Args:
             dct: dict.
 

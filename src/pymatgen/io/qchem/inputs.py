@@ -55,7 +55,8 @@ class QCInput(InputFile):
         svp: dict | None = None,
         pcm_nonels: dict | None = None,
     ):
-        """
+        """Initialize a QCInput.
+
         Args:
             molecule (pymatgen Molecule object, list of Molecule objects, or "read"):
                 Input molecule(s). molecule can be set as a pymatgen Molecule object, a list of such
@@ -288,7 +289,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def multi_job_string(job_list: list[QCInput]) -> str:
-        """
+        """Build the string for a multi-job Q-Chem input file.
+
         Args:
             job_list (list[QCInput]): List of QChem jobs.
 
@@ -410,7 +412,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def molecule_template(molecule: Molecule | list[Molecule] | Literal["read"]) -> str:
-        """
+        """Build the $molecule section string.
+
         Args:
             molecule (Molecule, list of Molecules, or "read").
 
@@ -454,7 +457,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def rem_template(rem: dict[str, Any]) -> str:
-        """
+        """Build the $rem section string.
+
         Args:
             rem (dict[str, Any]): REM section.
 
@@ -529,7 +533,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def smx_template(smx: dict) -> str:
-        """
+        """Build the $smx section string.
+
         Args:
             smx (dict): Solvation model with short-range corrections.
 
@@ -570,7 +575,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def van_der_waals_template(radii: dict[str, float], mode: str = "atomic") -> str:
-        """
+        """Build the $van_der_waals section string.
+
         Args:
             radii (dict): Dictionary with custom van der Waals radii, in
                 Angstroms, keyed by either atomic number or sequential
@@ -601,7 +607,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def plots_template(plots: dict) -> str:
-        """
+        """Build the $plots section string.
+
         Args:
             plots (dict): Plots section.
 
@@ -616,7 +623,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def nbo_template(nbo: dict) -> str:
-        """
+        """Build the $nbo section string.
+
         Args:
             nbo (dict): NBO section.
 
@@ -652,7 +660,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def geom_opt_template(geom_opt: dict) -> str:
-        """
+        """Build the $geom_opt section string.
+
         Args:
             geom_opt (dict): Geometry optimization section.
 
@@ -668,7 +677,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def cdft_template(cdft: list[list[dict]]) -> str:
-        """
+        """Build the $cdft section string.
+
         Args:
             cdft: list of lists of dicts.
 
@@ -714,7 +724,8 @@ class QCInput(InputFile):
 
     @staticmethod
     def almo_template(almo_coupling: list[list[tuple[int, int]]]) -> str:
-        """
+        """Build the $almo_coupling section string.
+
         Args:
             almo: list of lists of int 2-tuples.
 

@@ -717,7 +717,8 @@ class BasicAbinitInput(AbstractInput, MSONable):
         abi_args=None,
         abi_kwargs=None,
     ):
-        """
+        """Initialize a BasicAbinitInput.
+
         Args:
             structure: Parameters defining the crystalline structure. Accepts |Structure| object
             file with structure (CIF, netcdf file, ...) or dictionary with ABINIT geo variables.
@@ -1042,7 +1043,8 @@ class BasicMultiDataset:
         pseudo_dir="",
         ndtset=1,
     ):
-        """
+        """Initialize a BasicMultiDataset.
+
         Args:
             structure: file with the structure, |Structure| object or dictionary with ABINIT geo variable
                 Accepts also list of objects that can be converted to Structure object.

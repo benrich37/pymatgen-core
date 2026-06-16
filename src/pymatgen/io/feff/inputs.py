@@ -170,7 +170,8 @@ class Header(MSONable):
         comment: str = "",
         spacegroup_analyzer_settings=None,
     ):
-        """
+        """Initialize a Header.
+
         Args:
             struct: Structure or Molecule object. If a Structure, SpaceGroupAnalyzer is used to
                 determine symmetrically-equivalent sites. If a Molecule, there is no symmetry
@@ -374,7 +375,8 @@ class Atoms(MSONable):
     """Atomic cluster centered around the absorbing atom."""
 
     def __init__(self, struct, absorbing_atom, radius):
-        """
+        """Initialize an Atoms.
+
         Args:
             struct (Structure): input structure
             absorbing_atom (str | int): Symbol for absorbing atom or site index
@@ -533,7 +535,8 @@ class Tags(dict):
     """FEFF control parameters."""
 
     def __init__(self, params=None):
-        """
+        """Initialize a Tags.
+
         Args:
             params: A set of input parameters as a dictionary.
         """
@@ -797,7 +800,8 @@ class Potential(MSONable):
     """FEFF atomic potential."""
 
     def __init__(self, struct, absorbing_atom, radius=None):
-        """
+        """Initialize a Potential.
+
         Args:
             struct (Structure): Structure object.
             absorbing_atom (str | int): Absorbing atom symbol or site index.
@@ -967,7 +971,8 @@ class Paths(MSONable):
     """Set FEFF scattering paths('paths.dat' file used by the 'genfmt' module)."""
 
     def __init__(self, atoms, paths, degeneracies=None):
-        """
+        """Initialize a Paths.
+
         Args:
             atoms (Atoms): Atoms object
             paths (list(list)): list of paths. Each path is a list of atom indices in the atomic

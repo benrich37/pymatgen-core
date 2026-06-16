@@ -117,7 +117,8 @@ class DftSet(Cp2kInput):
         cell: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
-        """
+        """Initialize a DftSet.
+
         Args:
             structure: Pymatgen structure or molecule object
             basis_and_potential (dict): Basis set and pseudo-potential to use for each element.
@@ -439,7 +440,7 @@ class DftSet(Cp2kInput):
             # Necessary if matching data to CP2K data files
             if have_element_file:
                 with open(elem_file_path, encoding="utf-8") as file:
-                    yaml = YAML(typ="unsafe", pure=True)
+                    yaml = YAML()
                     DATA = yaml.load(file)
                     if not DATA.get("basis_sets"):
                         raise ValueError(f"No standard basis sets available in data directory for {el}")
