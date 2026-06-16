@@ -74,7 +74,7 @@ def test_find_jdftx_out_file(tmp_path):
     It tests the behavior to make sure the correct errors are raised on directories without and out file
     and directories with multiple out files. And out file must match "*.out" or "out" exactly.
     """
-    with pytest.raises(FileNotFoundError, match=re.escape("No JDFTx out file found in directory.")):
+    with pytest.raises(FileNotFoundError, match=re.escape(f"No JDFTx out file found in directory {tmp_path}.")):
         _find_jdftx_out_file(tmp_path)
     write_mt_file(tmp_path, "test.out")
     assert _find_jdftx_out_file(tmp_path) == tmp_path / "test.out"
@@ -85,7 +85,7 @@ def test_find_jdftx_out_file(tmp_path):
     write_mt_file(tmp_path, "out")
     assert _find_jdftx_out_file(tmp_path) == tmp_path / "out"
     write_mt_file(tmp_path, "tinyout.out")
-    with pytest.raises(FileNotFoundError, match=re.escape("Multiple JDFTx out files found in directory.")):
+    with pytest.raises(FileNotFoundError, match=re.escape(f"Multiple JDFTx out files found in directory {tmp_path}.")):
         _find_jdftx_out_file(tmp_path)
 
 
