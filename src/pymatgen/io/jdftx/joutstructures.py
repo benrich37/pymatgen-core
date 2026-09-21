@@ -457,6 +457,7 @@ def _get_joutstructure_list(
                 skim_levels,
                 raise_on_error=False,
                 skip_props=skip_props,
+                req_new_geom=True,
             )
             if joutstructure is not None:
                 joutstructure_list.append(joutstructure)
@@ -495,6 +496,12 @@ def parse_joutstructure_bounds(
     skim_levels: list[str] | None,
     raise_on_error: bool,
     skip_props: list[str] | None = None,
+    # If we're skimming geometry level frequency, we need to set req_new_geom to True as otherwise
+    # the JOutStructure will fall back to its
+    # initial structure if no posn lines are found in the slice, which is bad as initial structure
+    # is the input structure in this case,
+    # not the structure from the previous geometry optimization step.
+    req_new_geom: bool = False,
 ) -> JOutStructure | None:
     joutstructure = None
     try:
@@ -507,6 +514,7 @@ def parse_joutstructure_bounds(
             expected_etype=expected_etype,
             skim_levels=skim_levels,
             skip_props=skip_props,
+            req_new_geom=req_new_geom,
         )
     except (ValueError, IndexError, TypeError, KeyError, AttributeError):
         if raise_on_error:

@@ -325,6 +325,23 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 FloatTag(),
             ]
         ),
+        "add-U": TagContainer(
+            can_repeat=True,
+            optional=True,
+            subtags={
+                "species": StrTag(write_tagname=False, optional=False),
+                "orbDesc": StrTag(write_tagname=False, optional=False),
+                "UminusJ": FloatTag(write_tagname=False, optional=False),
+                "Vext": TagContainer(
+                    write_tagname=True,
+                    optional=True,
+                    subtags={
+                        "atom": IntTag(write_tagname=False, optional=False),
+                        "V": FloatTag(write_tagname=False, optional=False),
+                    },
+                ),
+            },
+        ),
     },
     "symmetries": {
         "symmetries": StrTag(options=["automatic", "manual", "none"]),

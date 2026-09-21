@@ -323,6 +323,7 @@ class JOutStructure(Structure):
         expected_etype: str | None = None,
         skim_levels: list[str] | None = None,
         skip_props: list[str] | None = None,
+        req_new_geom: bool = False,
     ) -> JOutStructure:
         """
         Return JOutStructure object.
@@ -347,7 +348,6 @@ class JOutStructure(Structure):
         """
         if skip_props is None:
             skip_props = []
-        # cur_species: Sequence[Element | Species] | None = None
         if init_structure is None:
             cur_species: Sequence[Element | Species] = []
             instance = cls(lattice=np.eye(3), species=cur_species, coords=[], site_properties={})
@@ -382,7 +382,8 @@ class JOutStructure(Structure):
             _line_types.remove("lowdin")
         line_collections = instance._init_line_collections(_line_types)
         line_collections = instance._gather_line_collections(line_collections, text_slice)
-
+        if len(line_collections["posns"]["lines"]) == 0 and req_new_geom:
+            raise ValueError("No posns lines found in slice, but req_new_geom is True")
         # ecomponents needs to be parsed before emin and opt to set etype
         instance._parse_ecomp_lines(line_collections["ecomp"]["lines"])
         if instance.is_md:
@@ -748,6 +749,7 @@ class JOutStructure(Structure):
             for prop, vals in zip(
                 ["selective_dynamics", "velocities", "constraint_types", "constraint_vectors", "group_names"],
                 [selective_dynamics, velocities, constraint_types, constraint_vectors, group_names_list],
+                strict=True,
             ):
                 if not all(v is None for v in vals):
                     setattr(self, prop, vals)
@@ -1096,8 +1098,9 @@ def _parse_posn_line(
         offset = 4
         velocity = np.array([float(x) for x in psplit[6:9]])
     # Convert the movescale tag to a redundant selective_dynamics tag to match the expected shape
-    # (int(bool(v)) used since technically something like "0.1" can be passed to JDFTx to indicate non-freezing)
-    sd = [int(bool(posn_line.split()[offset + 5])) for _ in range(3)]
+    # (int(bool(float(v))) used since technically something like "0.1" can be passed to JDFTx to indicate non-freezing)
+    sd_tag_str = posn_line.split()[offset + 5]
+    sd = [int(bool(float(sd_tag_str))) for _ in range(3)]
     # Only trigger the try/except block if we have enough elements in the line
     if len(psplit) > offset + 6:
         # Check for constraints (protected by try/except since its genuinely more likely that an accidental edit
