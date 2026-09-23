@@ -708,6 +708,7 @@ class InitMagMomTag(AbstractTag):
         Returns:
             str: The parsed string value.
         """
+        # If
         self._general_read_validate(tag, value)
         return str(value)
 

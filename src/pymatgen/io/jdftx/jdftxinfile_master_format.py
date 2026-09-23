@@ -523,6 +523,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         ),
         "spintype": StrTag(options=["no-spin", "spin-orbit", "vector-spin", "z-spin"]),
         "initial-magnetic-moments": InitMagMomTag(),
+        "initial-oxidation-state": InitMagMomTag(),
         "elec-initial-magnetization": TagContainer(
             subtags={
                 "M": FloatTag(write_tagname=False, optional=False),
