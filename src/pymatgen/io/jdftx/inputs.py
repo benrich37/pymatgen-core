@@ -1006,40 +1006,16 @@ def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
         JDFTXInfile: Copy of infile without nan values.
     """
     infile_cleaned = infile.copy()
-    popmaps = get_popmaps(infile_cleaned)
-    apply_popmaps(infile_cleaned, popmaps)
+    apply_popmaps(infile_cleaned, get_nanmaps(infile_cleaned))
     return infile_cleaned
-
-
-def hasnan(val: Any) -> bool:
-    """Check if a value is or contains a nan.
-
-    Checks numbers directly and searches nested lists/dicts recursively. Any other type is treated as nan-free.
-
-    Args:
-        val (Any): Value to check.
-
-    Returns:
-        bool: Whether val is a nan or contains a nan.
-    """
-    if type(val) in [float, int]:
-        return np.isnan(val)
-    if isinstance(val, list):
-        for v in val:
-            if hasnan(v):
-                return True
-    elif isinstance(val, dict):
-        for v in val.values():
-            if hasnan(v):
-                return True
-    return False
 
 
 def get_nanmaps(val: Any) -> list[list[str | int]]:
     """Get the path to each nan inside a value.
 
     Each path is the sequence of dict keys / list indices leading to a nan, e.g. {"a": [1.0, nan]} gives [["a", 1]]
-    and a bare nan gives [[]].
+    and a bare nan gives [[]]. For a JDFTXInfile, each path starts at its tag name (e.g. ["fluid-solvent", 0,
+    "epsBulk"]).
 
     Args:
         val (Any): Value to search (number, or nested lists/dicts).
@@ -1047,46 +1023,11 @@ def get_nanmaps(val: Any) -> list[list[str | int]]:
     Returns:
         list[list[str | int]]: Path to each nan in val.
     """
-    nanmaps: list[list[str | int]] = []
-    generator = None
     if type(val) in [float, int]:
-        if hasnan(val):
-            nanmaps.append([])
-    elif isinstance(val, dict):
-        generator = [(k, v) for k, v in val.items()]
-    elif isinstance(val, list):
-        generator = [(i, v) for i, v in enumerate(val)]
+        return [[]] if np.isnan(val) else []
     # Any other value (str, bool, None, ...) holds no nans to map
-    if generator is not None:
-        for k, v in generator:
-            submaps = get_nanmaps(v)
-            for submap in submaps:
-                add_map = [k]
-                add_map.extend(submap)
-                nanmaps.append(add_map)
-    return nanmaps
-
-
-def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
-    """Get the path to each nan in a JDFTXInfile.
-
-    Same as get_nanmaps, but over every tag, with each path starting at its tag name
-    (e.g. ["fluid-solvent", 0, "epsBulk"]).
-
-    Args:
-        infile (JDFTXInfile): JDFTXInfile to search.
-
-    Returns:
-        list[list[str | int]]: Path to each nan in infile.
-    """
-    popmaps = []
-    for tag in infile:
-        nanmaps = get_nanmaps(infile[tag])
-        for nanmap in nanmaps:
-            add_map = [tag]
-            add_map.extend(nanmap)
-            popmaps.append(add_map)
-    return popmaps
+    items = val.items() if isinstance(val, dict) else enumerate(val) if isinstance(val, list) else []
+    return [[key, *nanmap] for key, v in items for nanmap in get_nanmaps(v)]
 
 
 def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> None:
@@ -1099,7 +1040,7 @@ def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> N
 
     Args:
         edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
-        popmaps (list[list[str | int]]): Paths to remove, each starting at a tag name (see get_popmaps).
+        popmaps (list[list[str | int]]): Paths to remove, each starting at a tag name (see get_nanmaps).
 
     Raises:
         TypeError: If a path does not start with a tag name string.
@@ -1120,7 +1061,7 @@ def _get_removal_path(edit_infile: JDFTXInfile, popmap: list[str | int]) -> list
 
     Args:
         edit_infile (JDFTXInfile): JDFTXInfile the path points into.
-        popmap (list[str | int]): Path to a nan, starting at a tag name (see get_popmaps).
+        popmap (list[str | int]): Path to a nan, starting at a tag name (see get_nanmaps).
 
     Returns:
         list[str | int]: Path to the entry to remove, starting at the tag name.
