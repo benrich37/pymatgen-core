@@ -993,22 +993,6 @@ def selective_dynamics_site_prop_to_jdftx_interpretable(
     return np.array([int(np.all(sd)) for sd in selective_dynamics])
 
 
-def movescale_array_to_selective_dynamics_site_prop(movescale: ArrayLike[int | float]) -> Sequence[Any]:
-    """Convert JDFTX movescale array to selective dynamics site property format.
-
-    Args:
-        movescale (ArrayLike): JDFTX movescale array.
-
-    Returns:
-        list[list[bool]]: Selective dynamics site property format of movescale.
-    """
-    selective_dynamics = []
-    for scale in movescale:
-        bool_v = bool(scale)
-        selective_dynamics.append([bool_v, bool_v, bool_v])
-    return selective_dynamics
-
-
 def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
     """Return a copy of a JDFTXInfile with all nan values removed.
 
@@ -1392,9 +1376,8 @@ class JDFTXStructure(MSONable):
                 if (val is not None) and (not all(x is None for x in val)):
                     struct.add_site_property(prop, val)
             if (selective_dynamics is not None) and (not all(x is None for x in selective_dynamics)):
-                struct.add_site_property(
-                    "selective_dynamics", movescale_array_to_selective_dynamics_site_prop(selective_dynamics)
-                )
+                # A site's moveScale applies to all three directions
+                struct.add_site_property("selective_dynamics", [[bool(s)] * 3 for s in selective_dynamics])
         return cls(
             structure=struct,
             selective_dynamics=selective_dynamics,

@@ -314,6 +314,8 @@ def test_jdftxstructure_infile_site_properties_conversion():
     jif["ion"][3]["v"] = {"vx0": 1.0, "vx1": 2.0, "vx2": 3.0}
     jstruct = jif.to_jdftxstructure(jif)
     struct = jif.structure
+    # moveScale is stored as a per-direction selective dynamics site property
+    assert struct.site_properties["selective_dynamics"][:2] == [[False] * 3, [True] * 3]
     jif_from_jstruc = JDFTXInfile.from_jdftxstructure(jstruct)
     # Since velocities and moveScale are compatible to be stored as site properties, exporting to
     # `Structure` will save them in `Structure.site_properties`. Initializing a new JDFTXInfile
