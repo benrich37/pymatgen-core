@@ -889,3 +889,15 @@ def test_latt_scale_keeps_fractional_values():
     jif = JDFTXInfile.from_str("latt-scale 1.8897 1.8897 1.8897\n", dont_require_structure=True)
     assert jif["latt-scale"] == {"s0": 1.8897, "s1": 1.8897, "s2": 1.8897}
     assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["latt-scale"] == jif["latt-scale"]
+
+
+def test_line_continuation():
+    # Whitespace around a "\" collapses to a single space, and comments are stripped before lines are joined
+    joined = JDFTXInfile.from_str(
+        "lattice \\\n 10 0 0  \\  # comment\n0 10 0\\\n0 0 10\nelec-cutoff 20\n\\\nelec-ex-corr gga\n",
+        dont_require_structure=True,
+    )
+    single = JDFTXInfile.from_str(
+        "lattice 10 0 0 0 10 0 0 0 10\nelec-cutoff 20\nelec-ex-corr gga\n", dont_require_structure=True
+    )
+    assert joined == single
