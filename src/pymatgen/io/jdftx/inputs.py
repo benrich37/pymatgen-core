@@ -876,12 +876,10 @@ class JDFTXInfile(dict, MSONable):
             dict: Updated dictionary with the stored value.
         """
         if tag_object.can_repeat:  # store tags that can repeat in a list
-            if tag not in params:
-                params[tag] = []
-            params[tag].append(value)
+            params.setdefault(tag, []).append(value)
+        elif tag in params:
+            raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")
         else:
-            if tag in params:
-                raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")
             params[tag] = value
         return params
 
