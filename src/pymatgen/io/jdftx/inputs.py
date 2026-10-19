@@ -989,13 +989,8 @@ def selective_dynamics_site_prop_to_jdftx_interpretable(
     Returns:
         ArrayLike: JDFTX interpretable format of selective dynamics.
     """
-    _selective_dynamics = []
-    for i in range(len(selective_dynamics)):
-        if isinstance(selective_dynamics[i], (list | tuple | np.ndarray)):
-            _selective_dynamics.append(int(not any(not x for x in selective_dynamics[i])))
-        else:
-            _selective_dynamics.append(int(bool(selective_dynamics[i])))
-    return np.array(_selective_dynamics)
+    # A site can move (1) only if it can move along every direction
+    return np.array([int(np.all(sd)) for sd in selective_dynamics])
 
 
 def movescale_array_to_selective_dynamics_site_prop(movescale: ArrayLike[int | float]) -> Sequence[Any]:

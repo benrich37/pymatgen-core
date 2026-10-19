@@ -901,3 +901,17 @@ def test_line_continuation():
         "lattice 10 0 0 0 10 0 0 0 10\nelec-cutoff 20\nelec-ex-corr gga\n", dont_require_structure=True
     )
     assert joined == single
+
+
+@pytest.mark.parametrize(
+    ("selective_dynamics", "expected"),
+    [
+        ([[True, True, True], [True, False, True]], [1, 0]),
+        (np.array([[1, 1, 1], [0, 0, 0]]), [1, 0]),
+        ([(1, 1, 1), np.array([0.0, 1.0, 1.0]), [], True, 0.0, None], [1, 0, 1, 1, 0, 0]),
+    ],
+)
+def test_selective_dynamics_site_prop_to_jdftx_interpretable(selective_dynamics: Any, expected: list[int]):
+    converted = selective_dynamics_site_prop_to_jdftx_interpretable(selective_dynamics)
+    np.testing.assert_array_equal(converted, expected)
+    assert converted.dtype.kind == "i"
