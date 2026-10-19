@@ -1611,7 +1611,8 @@ def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
 def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
     """Convert JDFTX named-lattice tag to pymatgen Lattice object.
 
-    Handles the named-lattice format (e.g. "lattice Cubic 10.0"), converting lengths from bohr to angstrom.
+    Handles the named-lattice format (e.g. "lattice Cubic 10.0"), converting lengths from bohr to angstrom and
+    applying the latt-scale tag if present.
 
     Args:
         jdftxinfile (JDFTXInfile): JDFTXInfile containing a named-lattice lattice tag.
@@ -1629,9 +1630,6 @@ def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
             jl[key] *= bohr_to_ang
     if "modification" in jl:
         raise NotImplementedError("Special case lattices with modification not implemented yet")
-    # Second boolean to check if latt-scale was passed but does nothing
-    if ("latt-scale" in jl) and (not all(np.isclose(float(x), 1) in jl for x in ["s0", "s1", "s2"])):
-        raise NotImplementedError("latt-scale for special case lattices not implemented yet")
     if "Monoclinic" in jl:
         lattice = Lattice.monoclinic(jl["a"], jl["b"], jl["c"], jl["beta"])
     elif "Orthorhombic" in jl:
@@ -1648,6 +1646,10 @@ def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
         lattice = Lattice.from_parameters(jl["a"], jl["b"], jl["c"], jl["alpha"], jl["beta"], jl["gamma"])
     else:
         raise ValueError(f"Unable to convert JDFTX lattice tag {jl} to pymatgen Lattice object")
+    if "latt-scale" in jdftxinfile:
+        # JDFTx scales lattice vector k by s_k (the rows of a pymatgen Lattice matrix are the lattice vectors)
+        latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]], dtype=float)
+        lattice = Lattice(lattice.matrix * latt_scale[:, np.newaxis])
     return lattice
 
 

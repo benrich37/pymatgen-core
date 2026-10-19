@@ -72,9 +72,9 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "latt-scale": TagContainer(
             allow_list_representation=True,
             subtags={
-                "s0": IntTag(write_tagname=False, optional=False),
-                "s1": IntTag(write_tagname=False, optional=False),
-                "s2": IntTag(write_tagname=False, optional=False),
+                "s0": FloatTag(write_tagname=False, optional=False),
+                "s1": FloatTag(write_tagname=False, optional=False),
+                "s2": FloatTag(write_tagname=False, optional=False),
             },
         ),
         "latt-move-scale": TagContainer(

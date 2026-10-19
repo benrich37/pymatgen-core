@@ -12,6 +12,7 @@ from pymatgen.core.units import bohr_to_ang
 from pymatgen.io.jdftx.inputs import (
     JDFTXInfile,
     JDFTXStructure,
+    _infile_to_pmg_lattice,
     _remove_at_path,
     clean_infile_of_nans,
     selective_dynamics_site_prop_to_jdftx_interpretable,
@@ -847,3 +848,44 @@ def test_remove_at_path():
     _remove_at_path(params, ["b", "missing", 0])  # paths that no longer exist are ignored
     _remove_at_path(params, ["a", 5])
     assert params == {"a": [1.0, 3.0], "b": {"d": 5.0}}
+
+
+@pytest.mark.parametrize(
+    "lattice_value",
+    [
+        "Cubic 10.0",
+        "Tetragonal 4.0 6.0",
+        "Hexagonal 4.0 6.0",
+        "Orthorhombic 4.0 5.0 6.0",
+        "Rhombohedral 5.0 70.0",
+        "Monoclinic 4.0 5.0 6.0 100.0",
+        "Triclinic 4.0 5.0 6.0 80.0 85.0 95.0",
+    ],
+)
+def test_named_lattice_latt_scale(lattice_value: str):
+    scale = np.array([2.0, 0.5, 1.8897])
+    unscaled = _infile_to_pmg_lattice(JDFTXInfile.from_str(f"lattice {lattice_value}\n", dont_require_structure=True))
+    scaled = _infile_to_pmg_lattice(
+        JDFTXInfile.from_str(
+            f"lattice {lattice_value}\nlatt-scale {scale[0]} {scale[1]} {scale[2]}\n", dont_require_structure=True
+        )
+    )
+    # Lattice vector k is scaled by s_k, so its length scales and the angles between vectors are unchanged
+    np.testing.assert_allclose(scaled.abc, np.array(unscaled.abc) * scale)
+    np.testing.assert_allclose(scaled.angles, unscaled.angles)
+
+
+def test_latt_scale_named_and_matrix_lattices_agree():
+    named = JDFTXInfile.from_str("lattice Cubic 10.0\nlatt-scale 2 1 1.5\n", dont_require_structure=True)
+    matrix = JDFTXInfile.from_str(
+        "lattice \\\n 10 0 0 \\\n 0 10 0 \\\n 0 0 10\nlatt-scale 2 1 1.5\n", dont_require_structure=True
+    )
+    np.testing.assert_allclose(_infile_to_pmg_lattice(named).abc, _infile_to_pmg_lattice(matrix).abc)
+    np.testing.assert_allclose(_infile_to_pmg_lattice(named).abc, np.array([20.0, 10.0, 15.0]) * bohr_to_ang)
+
+
+def test_latt_scale_keeps_fractional_values():
+    # e.g. an angstrom-to-bohr conversion factor must not be truncated to 1
+    jif = JDFTXInfile.from_str("latt-scale 1.8897 1.8897 1.8897\n", dont_require_structure=True)
+    assert jif["latt-scale"] == {"s0": 1.8897, "s1": 1.8897, "s2": 1.8897}
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["latt-scale"] == jif["latt-scale"]
