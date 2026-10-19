@@ -197,6 +197,8 @@ class AbstractTag(ClassPrintFormatter, ABC):
         Returns:
             tuple[Any, int]: The parsed value and the number of tokens consumed.
         """
+        if len(tokens) == 0:
+            raise ValueError(f"No value given for '{tag}'!")
         return self.read(tag, tokens[0]), 1
 
     def _general_read_validate(self, tag: str, value_str: Any) -> None:
@@ -882,8 +884,11 @@ class TagContainer(AbstractTag):
     def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[dict, int]:
         """Read this TagContainer as a positional subtag from the front of a list of value tokens.
 
-        Only positional subtags (write_tagname=False) are supported here. Reading stops once every subtag has been
-        read, so the remaining tokens are left for whatever follows this TagContainer.
+        Subtags are read in the order they are defined. A keyword subtag (write_tagname=True) is read only where its
+        name is the next token, at its place in that order, and repeatedly if it can repeat (e.g. the
+        "Vext <atom> <V>" entries following each U channel of the add-U tag). Positional subtags never read a token
+        that is one of this TagContainer's keywords. Reading stops once every subtag has been read, so the remaining
+        tokens are left for whatever follows this TagContainer.
 
         Args:
             tag (str): The tag to read the value for.
@@ -892,22 +897,55 @@ class TagContainer(AbstractTag):
         Returns:
             tuple[dict, int]: The parsed value and the number of tokens consumed.
         """
-        if any(subtag_type.write_tagname for subtag_type in self.subtags.values()):
-            raise NotImplementedError(
-                f"TagContainer '{tag}' has keyword subtags, so it cannot be read as a positional subtag!"
-            )
+        keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
         subdict = {}
         n_total = 0
         for subtag, subtag_type in self.subtags.items():
             if n_total == len(tokens):
                 break
-            subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, tokens[n_total:])
+            remaining = tokens[n_total:]
+            if subtag_type.write_tagname:
+                subtag_value, n_read = self._read_keyword_subtag(subtag, subtag_type, remaining)
+            else:
+                # Only offer the tokens up to the next keyword
+                n_positional = next((i for i, token in enumerate(remaining) if token in keywords), len(remaining))
+                if n_positional == 0:
+                    continue
+                subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, remaining[:n_positional])
             if n_read == 0:
                 continue
             subdict[subtag] = subtag_value
             n_total += n_read
         self._check_nonoptional_subtags(tag, subdict, self.subtags)
         return subdict, n_total
+
+    @staticmethod
+    def _read_keyword_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
+        """Read a keyword subtag that starts at the front of a list of value tokens.
+
+        The subtag is read only if its name is the next token. A subtag with can_repeat=True is read again for as
+        long as its name keeps coming up next, and returned as a list.
+
+        Args:
+            subtag (str): The subtag (and keyword) to read the value for.
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens (list[str]): The remaining value tokens.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed, including the keyword itself
+                (0 if the subtag is not next).
+        """
+        values = []
+        n_total = 0
+        while n_total < len(tokens) and tokens[n_total] == subtag:
+            value, n_read = subtag_type.read_from_tokens(subtag, tokens[n_total + 1 :])
+            values.append(value)
+            n_total += 1 + n_read
+            if not subtag_type.can_repeat:
+                break
+        if len(values) == 0:
+            return None, 0
+        return (values if subtag_type.can_repeat else values[0]), n_total
 
     @staticmethod
     def _read_positional_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
@@ -1116,8 +1154,11 @@ class TagContainer(AbstractTag):
                 f"Value '{value}' must be a list when passed to 'get_dict_representation' since "
                 f"tag '{tag}' is repeatable."
             )
+        # Entries in list representation are matched to subtags by position, so they must all be the same length.
+        # Entries in dict representation are matched by subtag name, so they may differ in which optional subtags
+        # they include (e.g. only some add-U channels having Vext entries).
         if (
-            self.can_repeat and len({len(x) for x in value}) > 1
+            self.can_repeat and not all(isinstance(entry, dict) for entry in value) and len({len(x) for x in value}) > 1
         ):  # Creates a list of every unique length of the subdicts
             # TODO: Populate subdicts with fewer entries with JDFTx defaults to make compatible
             raise ValueError(f"The values '{value}' for tag '{tag}' provided in a list of lists have different lengths")

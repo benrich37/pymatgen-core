@@ -732,3 +732,76 @@ def test_validate_initial_magnetic_moments_invalid(text: str, error_match: str):
     jif = JDFTXInfile.from_str(text, dont_require_structure=True)
     with pytest.raises(ValueError, match=error_match):
         jif.validate_initial_magnetic_moments()
+
+
+def _u_channel(species: str, orb_desc: str, u_minus_j: float, vexts: list[tuple[int, float]] | None = None) -> dict:
+    channel: dict[str, Any] = {"species": species, "orbDesc": orb_desc, "UminusJ": u_minus_j}
+    if vexts is not None:
+        channel["Vext"] = [{"atom": atom, "V": v} for atom, v in vexts]
+    return channel
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_channels"),
+    [
+        ("add-U Mn d 0.06\n", [_u_channel("Mn", "d", 0.06)]),
+        ("add-U Mn d 0.06 O p 0.1\n", [_u_channel("Mn", "d", 0.06), _u_channel("O", "p", 0.1)]),
+        # How JDFTx echoes add-U in out files: one channel per continuation line
+        ("add-U \tMn d 0.06 \\\n\tO p 0.1\n", [_u_channel("Mn", "d", 0.06), _u_channel("O", "p", 0.1)]),
+        ("add-U Mn d 0.06 Vext 1 0.1 Vext 2 -0.1\n", [_u_channel("Mn", "d", 0.06, [(1, 0.1), (2, -0.1)])]),
+        (
+            "add-U Mn d 0.06 Vext 1 0.1 O 2p 0.1 Vext 3 0.2\n",
+            [_u_channel("Mn", "d", 0.06, [(1, 0.1)]), _u_channel("O", "2p", 0.1, [(3, 0.2)])],
+        ),
+        (
+            "add-U Mn d 0.06 O 2p 0.1 Vext 1 0.1\n",
+            [_u_channel("Mn", "d", 0.06), _u_channel("O", "2p", 0.1, [(1, 0.1)])],
+        ),
+    ],
+)
+def test_add_u_read_write_roundtrip(text: str, expected_channels: list[dict]):
+    jif = JDFTXInfile.from_str(text, dont_require_structure=True)
+    assert jif["add-U"] == {"U-channels": expected_channels}
+    written = str(jif)
+    # JDFTx only accepts add-U once, so every channel must be written on a single add-U line
+    assert written.count("add-U") == 1
+    jif2 = JDFTXInfile.from_str(written, dont_require_structure=True)
+    assert jif2["add-U"] == jif["add-U"]
+    assert jif.is_comparable_to(jif2)
+
+
+@pytest.mark.parametrize(
+    ("text", "error_match"),
+    [
+        ("add-U Mn d 0.06\nadd-U O p 0.1\n", "The 'add-U' tag appears multiple times"),
+        ("add-U Mn d\n", "The subtag 'U-channels' for tag 'add-U' is not optional"),
+        ("add-U Mn d 0.06 Vext 1\n", "The subtag 'U-channels' for tag 'add-U' is not optional"),
+        ("add-U Vext 1 0.1\n", "The subtag 'U-channels' for tag 'add-U' is not optional"),
+        ("add-U Mn d 0.06 O p\n", re.escape("were not processed: ['O', 'p']")),
+    ],
+)
+def test_add_u_read_errors(text: str, error_match: str):
+    with pytest.raises(ValueError, match=error_match):
+        JDFTXInfile.from_str(text, dont_require_structure=True)
+
+
+def test_add_u_comparison():
+    def from_str(value: str) -> JDFTXInfile:
+        return JDFTXInfile.from_str(f"add-U {value}\n", dont_require_structure=True)
+
+    jif = from_str("Mn d 0.06 Vext 1 0.1 Vext 2 -0.1 O p 0.1")
+    # Neither channel order nor Vext order changes the input
+    assert jif.is_comparable_to(from_str("O p 0.1 Mn d 0.06 Vext 2 -0.1 Vext 1 0.1"))
+    assert not jif.is_comparable_to(from_str("Mn d 0.06 Vext 1 0.1 Vext 2 -0.1 O p 0.2"))
+    # A Vext belongs to the channel it follows
+    assert not jif.is_comparable_to(from_str("Mn d 0.06 Vext 1 0.1 O p 0.1 Vext 2 -0.1"))
+
+
+def test_add_u_setitem():
+    # Setting a value runs type validation, which must accept channels that differ in having Vext entries
+    jif = JDFTXInfile.from_str("spintype z-spin\n", dont_require_structure=True)
+    expected = {"U-channels": [_u_channel("Mn", "d", 0.06), _u_channel("O", "p", 0.1, [(1, 0.1)])]}
+    jif["add-U"] = "Mn d 0.06 O p 0.1 Vext 1 0.1"
+    assert jif["add-U"] == expected
+    jif["add-U"] = {"U-channels": [_u_channel("Mn", "d", 0.06), _u_channel("O", "p", 0.1, [(1, 0.1)])]}
+    assert jif["add-U"] == expected

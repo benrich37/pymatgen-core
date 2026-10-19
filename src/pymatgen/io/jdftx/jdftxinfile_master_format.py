@@ -349,23 +349,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 FloatTag(),
             ]
         ),
-        "add-U": TagContainer(
-            can_repeat=True,
-            optional=True,
-            subtags={
-                "species": StrTag(write_tagname=False, optional=False),
-                "orbDesc": StrTag(write_tagname=False, optional=False),
-                "UminusJ": FloatTag(write_tagname=False, optional=False),
-                "Vext": TagContainer(
-                    write_tagname=True,
-                    optional=True,
-                    subtags={
-                        "atom": IntTag(write_tagname=False, optional=False),
-                        "V": FloatTag(write_tagname=False, optional=False),
-                    },
-                ),
-            },
-        ),
     },
     "symmetries": {
         "symmetries": StrTag(options=["automatic", "manual", "none"]),
@@ -548,6 +531,32 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "spintype": StrTag(options=["no-spin", "spin-orbit", "vector-spin", "z-spin"]),
         "initial-magnetic-moments": get_species_values_tag_container(),
         "initial-oxidation-state": get_species_values_tag_container(),
+        # add-U <species> <orbDesc> <UminusJ> [Vext <atom> <V>] ... [<species2> ...]
+        # JDFTx allows add-U only once, with all U channels on one line (and any number of Vext's per channel)
+        "add-U": TagContainer(
+            optional=True,
+            subtags={
+                "U-channels": TagContainer(
+                    write_tagname=False,
+                    can_repeat=True,
+                    optional=False,
+                    subtags={
+                        "species": StrTag(write_tagname=False, optional=False),
+                        "orbDesc": StrTag(write_tagname=False, optional=False),
+                        "UminusJ": FloatTag(write_tagname=False, optional=False),
+                        "Vext": TagContainer(
+                            write_tagname=True,
+                            can_repeat=True,
+                            optional=True,
+                            subtags={
+                                "atom": IntTag(write_tagname=False, optional=False),
+                                "V": FloatTag(write_tagname=False, optional=False),
+                            },
+                        ),
+                    },
+                ),
+            },
+        ),
         "elec-initial-magnetization": TagContainer(
             subtags={
                 "M": FloatTag(write_tagname=False, optional=False),

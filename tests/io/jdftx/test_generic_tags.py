@@ -223,14 +223,62 @@ def test_species_values_tag_read_errors(value: str, error_match: str):
         get_tag_object(tag).read(tag, value)
 
 
-def test_positional_tagcontainer_with_keyword_subtags_not_supported():
-    tagcontainer = TagContainer(
+def test_read_from_tokens_requires_a_token():
+    with pytest.raises(ValueError, match="No value given for 'tag'"):
+        StrTag().read_from_tokens("tag", [])
+
+
+def _keyword_group_tagcontainer() -> TagContainer:
+    """Positional repeating group with a repeatable and a non-repeatable keyword subtag."""
+    return TagContainer(
         subtags={
-            "group": TagContainer(write_tagname=False, can_repeat=True, subtags={"ken": FloatTag(write_tagname=True)}),
+            "group": TagContainer(
+                write_tagname=False,
+                can_repeat=True,
+                optional=False,
+                subtags={
+                    "name": StrTag(write_tagname=False, optional=False),
+                    "ken": FloatTag(write_tagname=True, can_repeat=True),
+                    "allan": IntTag(write_tagname=True),
+                },
+            ),
         }
     )
-    with pytest.raises(NotImplementedError, match="has keyword subtags"):
-        tagcontainer.read("barbie", "ken 1")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("a", [{"name": "a"}]),
+        ("a ken 1 ken 2 allan 3 b allan 4", [{"name": "a", "ken": [1.0, 2.0], "allan": 3}, {"name": "b", "allan": 4}]),
+        ("a b ken 1", [{"name": "a"}, {"name": "b", "ken": [1.0]}]),
+    ],
+)
+def test_positional_tagcontainer_reads_keyword_subtags_in_place(value: str, expected: list[dict]):
+    tag = "barbie"
+    tagcontainer = _keyword_group_tagcontainer()
+    read_value = tagcontainer.read(tag, value)
+    assert read_value == {"group": expected}
+    written_value = tagcontainer.write(tag, read_value).split(maxsplit=1)[1]
+    assert tagcontainer.read(tag, written_value) == read_value
+
+
+@pytest.mark.parametrize(
+    ("value", "error_match"),
+    [
+        # A keyword can't start a group, since positional subtags never read keyword tokens
+        ("ken 1", "The subtag 'group' for tag 'barbie' is not optional"),
+        # A non-repeatable keyword is only read once per group
+        ("a allan 3 allan 4", re.escape("were not processed: ['allan', '4']")),
+        # A keyword must come at its place in the subtag order (allan after ken), so "ken 1" is left unread
+        ("a allan 3 ken 1", re.escape("were not processed: ['ken', '1']")),
+        # A keyword missing its value invalidates the whole group
+        ("a ken", "The subtag 'group' for tag 'barbie' is not optional"),
+    ],
+)
+def test_positional_tagcontainer_keyword_subtag_errors(value: str, error_match: str):
+    with pytest.raises(ValueError, match=error_match):
+        _keyword_group_tagcontainer().read("barbie", value)
 
 
 def test_ordered_flag():
@@ -268,10 +316,13 @@ def test_tagcontainer_validation():
     # _validate_single_entry for TagContainer should raise an error if the value is not a dict
     with pytest.raises(TypeError):
         tagcontainer._validate_single_entry("not a dict")  # Not a dict
-    # inhomogeneous values for repeated TagContainers should raise an error
-    # until filling with default values is implemented
     tagcontainer.can_repeat = True
-    value = [{"ken": 1}, {"ken": 2, "allan": 3}]
+    # repeated entries in dict representation may differ in which optional subtags they include
+    _, is_valid, _ = tagcontainer.validate_value_type(tag, [{"ken": ["1"]}, {"ken": ["2"], "allan": 3}])
+    assert is_valid
+    # inhomogeneous values for repeated TagContainers in list representation should raise an error
+    # until filling with default values is implemented
+    value = [["ken", "1"], ["ken", "2", "allan", "3"]]
     with pytest.raises(
         ValueError,
         match=re.escape(f"The values '{value}' for tag '{tag}' provided in a list of lists have different lengths"),
