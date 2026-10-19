@@ -735,6 +735,70 @@ class InitMagMomTag(AbstractTag):
     def _is_equal_to(self, val1, obj2, val2):
         return True  # TODO: We still need to actually implement initmagmom as a multi-format tag
 
+    @staticmethod
+    def parse_value(value: str) -> dict[str, list[float]]:
+        """Parse the stored value string into a dict of species label -> list of values.
+
+        The stored value is kept as the raw string so that writing the tag reproduces it exactly; this is a
+        separate, explicit conversion for code that wants structured access.
+
+        Args:
+            value (str): The value string, e.g. "Mn 3 -3 3 O 0".
+
+        Returns:
+            dict[str, list[float]]: The parsed values, e.g. {"Mn": [3.0, -3.0, 3.0], "O": [0.0]}.
+        """
+        parsed: dict[str, list[float]] = {}
+        species: str | None = None
+        for token in str(value).split():
+            try:
+                number = float(token)
+            except ValueError:
+                species = token
+                parsed.setdefault(species, [])
+                continue
+            if species is None:
+                raise ValueError(f"Value '{value}' must start with a species label, not a number!")
+            parsed[species].append(number)
+        return parsed
+
+    def validate_against_params(self, tag: str, params: dict[str, Any]) -> None:
+        """Check an initial-magnetic-moments value for consistency with the other tags in params.
+
+        This is not run automatically when reading an input file, since a partial input (e.g. one read with
+        dont_require_structure=True and merged with defaults later) may legitimately lack spintype or ion tags.
+
+        Args:
+            tag (str): The tag name (used in error messages).
+            params (dict[str, Any]): The full set of input file tags, e.g. a JDFTXInfile.
+
+        Raises:
+            ValueError: If spintype is missing, a species has a number of values that does not fit the spintype,
+                or (when ion tags are present) a species is absent or has a mismatched ion count.
+        """
+        cur_value = self.parse_value(params[tag])
+        if "spintype" not in params:
+            raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
+        # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
+        mult = 3 if params["spintype"] in ["spin-orbit", "vector-spin"] else 1
+        for sp, sp_values in cur_value.items():
+            if len(sp_values) % mult != 0:
+                error_msg = f"Species {sp} in {tag} tag must have a multiple of {mult} values, got {len(sp_values)}!"
+                if mult == 3:
+                    error_msg += " Hint: for non-collinear spin, each ion needs 3 values: M, theta, and phi."
+                raise ValueError(error_msg)
+        if "ion" in params:
+            ion_species = [ion["species-id"] for ion in params["ion"]]
+            for sp, sp_values in cur_value.items():
+                n_ions = ion_species.count(sp)
+                if n_ions == 0:
+                    raise ValueError(f"Species {sp} in {tag} tag is not present in the ion tags!")
+                if len(sp_values) != n_ions * mult:
+                    raise ValueError(
+                        f"Species {sp} in {tag} tag has enough values for {len(sp_values) // mult} ions, "
+                        f"but there are {n_ions} ions of this species in the ion tags!"
+                    )
+
 
 @dataclass
 class TagContainer(AbstractTag):

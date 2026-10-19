@@ -637,3 +637,26 @@ def test_nan_stripping():
     jif = clean_infile_of_nans(jif)
     assert "epsBulk" not in jif["fluid-solvent"][0]
     print(jif)
+
+
+@pytest.mark.parametrize(
+    ("magmom_value", "oxstate_value"),
+    [
+        ("Mn 3 -3 3", "Mn +4 O -2"),
+        ("Mn 3.0 0 0 3 180 90 O 0 0 0", "Mn 4"),
+        ("Mn 1e-1 -2.5E+0 O 0", "Mn +4.0 O -2.0"),
+    ],
+)
+def test_initmagmomtag_infile_roundtrip(magmom_value: str, oxstate_value: str):
+    text = f"spintype z-spin\ninitial-magnetic-moments {magmom_value}\ninitial-oxidation-state {oxstate_value}\n"
+    first = JDFTXInfile.from_str(text, dont_require_structure=True)
+    written = str(first)
+    # The values are written back exactly as they were given in the input text
+    assert f"initial-magnetic-moments {magmom_value} \n" in written
+    assert f"initial-oxidation-state {oxstate_value} \n" in written
+    second = JDFTXInfile.from_str(written, dont_require_structure=True)
+    for tag in ("initial-magnetic-moments", "initial-oxidation-state"):
+        tag_object = get_tag_object(tag)
+        assert tag_object.parse_value(second[tag]) == tag_object.parse_value(first[tag])
+        assert second[tag] == first[tag]
+    assert str(second) == written

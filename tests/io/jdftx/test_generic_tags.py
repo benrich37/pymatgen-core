@@ -180,6 +180,53 @@ def test_initmagmomtag():
         initmagmomtag.validate_value_type("tag", Unstringable(), try_auto_type_fix=True)
 
 
+def test_initmagmomtag_parse_and_validate_against_params():
+    tag = "initial-magnetic-moments"
+    initmagmomtag = InitMagMomTag()
+    assert initmagmomtag.parse_value("Mn 3 -3 3 O +0.5") == {"Mn": [3.0, -3.0, 3.0], "O": [0.5]}
+    with pytest.raises(ValueError, match="must start with a species label"):
+        initmagmomtag.parse_value("3 Mn")
+
+    ions = [{"species-id": "Mn"}, {"species-id": "Mn"}, {"species-id": "O"}]
+    initmagmomtag.validate_against_params(tag, {tag: "Mn 3 -3 O 0", "spintype": "z-spin", "ion": ions})
+    initmagmomtag.validate_against_params(tag, {tag: "Mn 3 0 0 3 180 0", "spintype": "vector-spin"})
+    with pytest.raises(ValueError, match="spintype tag must be specified"):
+        initmagmomtag.validate_against_params(tag, {tag: "Mn 3"})
+    with pytest.raises(ValueError, match="must have a multiple of 3 values"):
+        initmagmomtag.validate_against_params(tag, {tag: "Mn 3 -3", "spintype": "spin-orbit"})
+    with pytest.raises(ValueError, match="not present in the ion tags"):
+        initmagmomtag.validate_against_params(tag, {tag: "Fe 3", "spintype": "z-spin", "ion": ions})
+    with pytest.raises(ValueError, match="but there are 2 ions"):
+        initmagmomtag.validate_against_params(tag, {tag: "Mn 3", "spintype": "z-spin", "ion": ions})
+
+
+INITMAGMOM_ROUNDTRIP_VALUES = [
+    "Mn 3",
+    "Mn 3 -3 3",
+    "Mn 3 -3 O 0 Fe 1.5",
+    "Mn 3.0 0 0 3 180 90",
+    "Mn +4 O -2",
+    "Mn 1e-1 -2.5E+0",
+    "Fe_1 2 Fe_2 -2",
+    "Mn   3  -3\t3",
+]
+
+
+@pytest.mark.parametrize("value", INITMAGMOM_ROUNDTRIP_VALUES)
+@pytest.mark.parametrize("tag", ["initial-magnetic-moments", "initial-oxidation-state"])
+def test_initmagmomtag_write_read_roundtrip(tag: str, value: str):
+    initmagmomtag = get_tag_object(tag)
+    first_read = initmagmomtag.read(tag, value)
+    line = initmagmomtag.write(tag, first_read)
+    written_tag, written_value = line.split(maxsplit=1)
+    assert written_tag == tag
+    second_read = initmagmomtag.read(written_tag, written_value.strip())
+    assert initmagmomtag.parse_value(second_read) == initmagmomtag.parse_value(first_read)
+    assert second_read.split() == first_read.split()
+    # Writing again must be stable once the value has been through one round trip
+    assert initmagmomtag.write(tag, second_read).split() == line.split()
+
+
 def test_tagcontainer_validation():
     tag = "barbie"
     repeatable_str_subtag = "ken"
