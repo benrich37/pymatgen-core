@@ -19,7 +19,6 @@ from pymatgen.io.jdftx.generic_tags import (
     BoolTagContainer,
     DumpTagContainer,
     FloatTag,
-    InitMagMomTag,
     IntTag,
     MultiformatTag,
     StrTag,
@@ -39,6 +38,31 @@ from pymatgen.io.jdftx.jdftxinfile_ref_options import (
 )
 
 __author__ = "Jacob Clary, Ben Rich"
+
+
+def get_species_values_tag_container() -> TagContainer:
+    """Get a TagContainer for tags of the form '<species> <v1> <v2> ... [<species2> <v1> ...]'.
+
+    Used for e.g. initial-magnetic-moments. Each species group reads values until the next species label, and the
+    order of the values within a group is significant (one or more values per ion of that species).
+
+    Returns:
+        TagContainer: The TagContainer, read into {"species-values": [{"species-id": ..., "values": [...]}, ...]}.
+    """
+    return TagContainer(
+        subtags={
+            "species-values": TagContainer(
+                write_tagname=False,
+                can_repeat=True,
+                optional=False,
+                subtags={
+                    "species-id": StrTag(write_tagname=False, optional=False),
+                    "values": FloatTag(write_tagname=False, can_repeat=True, ordered=True, optional=False),
+                },
+            ),
+        }
+    )
+
 
 MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
     "extrafiles": {
@@ -522,8 +546,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             }
         ),
         "spintype": StrTag(options=["no-spin", "spin-orbit", "vector-spin", "z-spin"]),
-        "initial-magnetic-moments": InitMagMomTag(),
-        "initial-oxidation-state": InitMagMomTag(),
+        "initial-magnetic-moments": get_species_values_tag_container(),
+        "initial-oxidation-state": get_species_values_tag_container(),
         "elec-initial-magnetization": TagContainer(
             subtags={
                 "M": FloatTag(write_tagname=False, optional=False),

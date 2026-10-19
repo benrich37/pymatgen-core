@@ -53,6 +53,7 @@ class AbstractTag(ClassPrintFormatter, ABC):
     defer_until_struc: bool = False
     is_tag_container: bool = False
     allow_list_representation: bool = False  # if True, allow this tag to exist as a list or list of lists
+    ordered: bool = False  # set to True if the order of the values of a can_repeat tag matters for comparison
 
     @abstractmethod
     def validate_value_type(
@@ -88,6 +89,8 @@ class AbstractTag(ClassPrintFormatter, ABC):
             val2 = val2 if isinstance(val2, list) else [val2]
             if len(val1) != len(val2):
                 return False
+            if self.ordered:
+                return all(self._is_equal_to(v1, obj2, v2) for v1, v2 in zip(val1, val2, strict=True))
             return all(True in [self._is_equal_to(v1, obj2, v2) for v2 in val2] for v1 in val1)
         return self._is_equal_to(val1, obj2, val2)
 
@@ -181,6 +184,20 @@ class AbstractTag(ClassPrintFormatter, ABC):
         Returns:
             Any: The parsed value.
         """
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[Any, int]:
+        """Read the value for this tag from the front of a list of value tokens.
+
+        Used by TagContainer to read positional subtags. Tags that read a single value consume one token.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed.
+        """
+        return self.read(tag, tokens[0]), 1
 
     def _general_read_validate(self, tag: str, value_str: Any) -> None:
         """General validation for values to be passed to a read method."""
@@ -664,143 +681,6 @@ class FloatTag(AbstractNumericTag):
 
 
 @dataclass
-class InitMagMomTag(AbstractTag):
-    """Tag for initial-magnetic-moments tag in JDFTx input files.
-
-    Tag for initial-magnetic-moments tag in JDFTx input files.
-    """
-
-    # temporary fix to allow use of initial-magnetic-moments tag
-    # requires the user to set magnetic moments as a string with no extra
-    # validation. Processes input files as simply a string variable with
-    # no extra type conversion
-
-    # the formatting of this tag's value depends on the species labels in the
-    # ion tags. These species labels are not necessarily element symbols.
-    # There are also multiple types of formatting options of the spins
-    # most robustly, this should be a MultiFormatTag, with each option
-    #     being a StructureDeferredTag, because this tag needs to know the
-    #     results of reading in the structure before being able to robustly
-    #     parse the value of this tag
-    def validate_value_type(
-        self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
-    ) -> tuple[str, bool, Any]:
-        """Validate the type of the value for this tag.
-
-        Args:
-            tag (str): The tag to validate the type of the value for.
-            value (Any): The value to validate the type of.
-            try_auto_type_fix (bool, optional): Whether to try to automatically fix the type of the value, by default
-                False.
-
-        Returns:
-            tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
-        """
-        return self._validate_value_type(str, tag, value, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user)
-
-    def read(self, tag: str, value: str) -> str:
-        """Read the value string for this tag.
-
-        Args:
-            tag (str): The tag to read the value string for.
-            value (str): The value string to read.
-
-        Returns:
-            str: The parsed string value.
-        """
-        # If
-        self._general_read_validate(tag, value)
-        return str(value)
-
-    def write(self, tag: str, value: Any) -> str:
-        """Write the tag and its value as a string.
-
-        Args:
-            tag (str): The tag to write.
-            value (Any): The value to write.
-
-        Returns:
-            str: The tag and its value as a string.
-        """
-        return self._write(tag, value)
-
-    def get_token_len(self) -> int:
-        """Get the token length of the tag.
-
-        Returns:
-            int: The token length of the tag.
-        """
-        return self._get_token_len()
-
-    def _is_equal_to(self, val1, obj2, val2):
-        return True  # TODO: We still need to actually implement initmagmom as a multi-format tag
-
-    @staticmethod
-    def parse_value(value: str) -> dict[str, list[float]]:
-        """Parse the stored value string into a dict of species label -> list of values.
-
-        The stored value is kept as the raw string so that writing the tag reproduces it exactly; this is a
-        separate, explicit conversion for code that wants structured access.
-
-        Args:
-            value (str): The value string, e.g. "Mn 3 -3 3 O 0".
-
-        Returns:
-            dict[str, list[float]]: The parsed values, e.g. {"Mn": [3.0, -3.0, 3.0], "O": [0.0]}.
-        """
-        parsed: dict[str, list[float]] = {}
-        species: str | None = None
-        for token in str(value).split():
-            try:
-                number = float(token)
-            except ValueError:
-                species = token
-                parsed.setdefault(species, [])
-                continue
-            if species is None:
-                raise ValueError(f"Value '{value}' must start with a species label, not a number!")
-            parsed[species].append(number)
-        return parsed
-
-    def validate_against_params(self, tag: str, params: dict[str, Any]) -> None:
-        """Check an initial-magnetic-moments value for consistency with the other tags in params.
-
-        This is not run automatically when reading an input file, since a partial input (e.g. one read with
-        dont_require_structure=True and merged with defaults later) may legitimately lack spintype or ion tags.
-
-        Args:
-            tag (str): The tag name (used in error messages).
-            params (dict[str, Any]): The full set of input file tags, e.g. a JDFTXInfile.
-
-        Raises:
-            ValueError: If spintype is missing, a species has a number of values that does not fit the spintype,
-                or (when ion tags are present) a species is absent or has a mismatched ion count.
-        """
-        cur_value = self.parse_value(params[tag])
-        if "spintype" not in params:
-            raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
-        # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
-        mult = 3 if params["spintype"] in ["spin-orbit", "vector-spin"] else 1
-        for sp, sp_values in cur_value.items():
-            if len(sp_values) % mult != 0:
-                error_msg = f"Species {sp} in {tag} tag must have a multiple of {mult} values, got {len(sp_values)}!"
-                if mult == 3:
-                    error_msg += " Hint: for non-collinear spin, each ion needs 3 values: M, theta, and phi."
-                raise ValueError(error_msg)
-        if "ion" in params:
-            ion_species = [ion["species-id"] for ion in params["ion"]]
-            for sp, sp_values in cur_value.items():
-                n_ions = ion_species.count(sp)
-                if n_ions == 0:
-                    raise ValueError(f"Species {sp} in {tag} tag is not present in the ion tags!")
-                if len(sp_values) != n_ions * mult:
-                    raise ValueError(
-                        f"Species {sp} in {tag} tag has enough values for {len(sp_values) // mult} ions, "
-                        f"but there are {n_ions} ions of this species in the ion tags!"
-                    )
-
-
-@dataclass
 class TagContainer(AbstractTag):
     """TagContainer class for handling tags that contain other tags.
 
@@ -986,8 +866,11 @@ class TagContainer(AbstractTag):
             if subtag in tempdict or subtag_type.write_tagname:  # this tag has already been read or requires a tagname
                 # keyword to be present
                 continue
-            tempdict[subtag] = subtag_type.read(subtag, value_list[0])
-            del value_list[0]
+            subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, value_list)
+            if n_read == 0:  # a repeatable subtag found nothing it could read
+                continue
+            tempdict[subtag] = subtag_value
+            del value_list[:n_read]
 
         # reorder all tags to match order of __MASTER_TAG_LIST__ and do coarse-grained validation of read.
 
@@ -995,6 +878,67 @@ class TagContainer(AbstractTag):
         self._check_nonoptional_subtags(tag, subdict, self.subtags)
         self._check_unread_values(tag, value_list)
         return subdict
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[dict, int]:
+        """Read this TagContainer as a positional subtag from the front of a list of value tokens.
+
+        Only positional subtags (write_tagname=False) are supported here. Reading stops once every subtag has been
+        read, so the remaining tokens are left for whatever follows this TagContainer.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[dict, int]: The parsed value and the number of tokens consumed.
+        """
+        if any(subtag_type.write_tagname for subtag_type in self.subtags.values()):
+            raise NotImplementedError(
+                f"TagContainer '{tag}' has keyword subtags, so it cannot be read as a positional subtag!"
+            )
+        subdict = {}
+        n_total = 0
+        for subtag, subtag_type in self.subtags.items():
+            if n_total == len(tokens):
+                break
+            subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, tokens[n_total:])
+            if n_read == 0:
+                continue
+            subdict[subtag] = subtag_value
+            n_total += n_read
+        self._check_nonoptional_subtags(tag, subdict, self.subtags)
+        return subdict, n_total
+
+    @staticmethod
+    def _read_positional_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
+        """Read a positional subtag from the front of a list of value tokens.
+
+        A positional subtag with can_repeat=True reads values for as long as it can, stopping at the first token it
+        cannot read (e.g. a FloatTag stops at the next species label), and returns them as a list.
+
+        Args:
+            subtag (str): The subtag to read the value for.
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens (list[str]): The remaining value tokens, starting with this subtag's value.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed (0 if a repeatable subtag read
+                nothing).
+        """
+        if not subtag_type.can_repeat:
+            return subtag_type.read_from_tokens(subtag, tokens)
+        values = []
+        n_total = 0
+        while n_total < len(tokens):
+            try:
+                value, n_read = subtag_type.read_from_tokens(subtag, tokens[n_total:])
+            except (ValueError, TypeError):
+                break
+            if n_read == 0:
+                break
+            values.append(value)
+            n_total += n_read
+        return values, n_total
 
     def write(self, tag: str, value: Any) -> str:
         """Write the tag and its value as a string.
@@ -1221,7 +1165,7 @@ class TagContainer(AbstractTag):
 
 
 # TODO: Write StructureDefferedTagContainer back in (commented out code block removed
-# on 11/4/24) and make usable for tags like initial-magnetic-moments
+# on 11/4/24)
 
 
 @dataclass

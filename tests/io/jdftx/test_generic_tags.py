@@ -9,7 +9,6 @@ from pymatgen.io.jdftx.generic_tags import (
     BoolTag,
     BoolTagContainer,
     FloatTag,
-    InitMagMomTag,
     IntTag,
     MultiformatTag,
     StrTag,
@@ -153,78 +152,100 @@ def test_float_tag():
         float_tag.read("barbie", "1.2.3")
 
 
-def test_initmagmomtag():
-    initmagmomtag = InitMagMomTag(write_tagname=True)
-    tag = "tag"
-    value = Unstringable()
-    print_value = "(unstringable)"
-    with pytest.raises(TypeError, match=re.escape(f"Value '{print_value}' for '{tag}' should be a string!")):
-        initmagmomtag.read(tag, value)
-    assert initmagmomtag.read("tag", "42") == "42"
-    assert initmagmomtag.write("magtag", 42) == "magtag 42 "
-    initmagmomtag = InitMagMomTag(write_tagname=False)
-    assert initmagmomtag.write("magtag", 42) == "42 "
-    initmagmomtag = InitMagMomTag(write_tagname=True, write_value=False)
-    assert initmagmomtag.write("magtag", 42) == "magtag "
-    initmagmomtag = InitMagMomTag(write_tagname=False, write_value=False)
-    assert initmagmomtag.write("magtag", 42) == ""
-    assert initmagmomtag.get_token_len() == 0
-    initmagmomtag = InitMagMomTag(write_tagname=True, write_value=True)
-    assert initmagmomtag.get_token_len() == 2
-    with pytest.warns(
-        Warning,
-        match=re.escape(
-            f"Could not fix the typing for tag '{tag}' expecting type {str} of value (unstringable value)!"
-        ),
-    ):
-        initmagmomtag.validate_value_type("tag", Unstringable(), try_auto_type_fix=True)
+def test_read_from_tokens_consumes_one_token_for_single_value_tags():
+    assert StrTag().read_from_tokens("tag", ["a", "b"]) == ("a", 1)
+    assert FloatTag().read_from_tokens("tag", ["1.5", "b"]) == (1.5, 1)
+    assert IntTag().read_from_tokens("tag", ["3", "4"]) == (3, 1)
 
 
-def test_initmagmomtag_parse_and_validate_against_params():
-    tag = "initial-magnetic-moments"
-    initmagmomtag = InitMagMomTag()
-    assert initmagmomtag.parse_value("Mn 3 -3 3 O +0.5") == {"Mn": [3.0, -3.0, 3.0], "O": [0.5]}
-    with pytest.raises(ValueError, match="must start with a species label"):
-        initmagmomtag.parse_value("3 Mn")
-
-    ions = [{"species-id": "Mn"}, {"species-id": "Mn"}, {"species-id": "O"}]
-    initmagmomtag.validate_against_params(tag, {tag: "Mn 3 -3 O 0", "spintype": "z-spin", "ion": ions})
-    initmagmomtag.validate_against_params(tag, {tag: "Mn 3 0 0 3 180 0", "spintype": "vector-spin"})
-    with pytest.raises(ValueError, match="spintype tag must be specified"):
-        initmagmomtag.validate_against_params(tag, {tag: "Mn 3"})
-    with pytest.raises(ValueError, match="must have a multiple of 3 values"):
-        initmagmomtag.validate_against_params(tag, {tag: "Mn 3 -3", "spintype": "spin-orbit"})
-    with pytest.raises(ValueError, match="not present in the ion tags"):
-        initmagmomtag.validate_against_params(tag, {tag: "Fe 3", "spintype": "z-spin", "ion": ions})
-    with pytest.raises(ValueError, match="but there are 2 ions"):
-        initmagmomtag.validate_against_params(tag, {tag: "Mn 3", "spintype": "z-spin", "ion": ions})
-
-
-INITMAGMOM_ROUNDTRIP_VALUES = [
-    "Mn 3",
-    "Mn 3 -3 3",
-    "Mn 3 -3 O 0 Fe 1.5",
-    "Mn 3.0 0 0 3 180 90",
-    "Mn +4 O -2",
-    "Mn 1e-1 -2.5E+0",
-    "Fe_1 2 Fe_2 -2",
-    "Mn   3  -3\t3",
-]
+def test_positional_repeatable_subtag_reads_greedily():
+    tag = "barbie"
+    tagcontainer = TagContainer(
+        subtags={
+            "name": StrTag(write_tagname=False, optional=False),
+            "values": FloatTag(write_tagname=False, can_repeat=True, optional=False),
+        }
+    )
+    assert tagcontainer.read(tag, "ken 1 -2 3e-1") == {"name": "ken", "values": [1.0, -2.0, 0.3]}
+    assert tagcontainer.write(tag, {"name": "ken", "values": [1.0, -2.0]}) == "barbie ken 1.0 -2.0 "
+    with pytest.raises(ValueError, match="The subtag 'values' for tag 'barbie' is not optional"):
+        tagcontainer.read(tag, "ken")
+    with pytest.raises(ValueError, match=re.escape("were not processed: ['allan']")):
+        tagcontainer.read(tag, "ken 1 allan")
+    optional_tagcontainer = TagContainer(
+        subtags={
+            "name": StrTag(write_tagname=False, optional=False),
+            "values": FloatTag(write_tagname=False, can_repeat=True, optional=True),
+        }
+    )
+    assert optional_tagcontainer.read(tag, "ken") == {"name": "ken"}
 
 
-@pytest.mark.parametrize("value", INITMAGMOM_ROUNDTRIP_VALUES)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Mn 3", [("Mn", [3.0])]),
+        ("Mn 3 -3 3", [("Mn", [3.0, -3.0, 3.0])]),
+        ("Mn 3 -3 O 0 Fe 1.5", [("Mn", [3.0, -3.0]), ("O", [0.0]), ("Fe", [1.5])]),
+        ("Mn 3.0 0 0 3 180 90", [("Mn", [3.0, 0.0, 0.0, 3.0, 180.0, 90.0])]),
+        ("Mn +4 O -2", [("Mn", [4.0]), ("O", [-2.0])]),
+        ("Mn 1e-1 -2.5E+0", [("Mn", [0.1, -2.5])]),
+        ("Fe_1 2 Fe_2 -2", [("Fe_1", [2.0]), ("Fe_2", [-2.0])]),
+        ("Mn   3  -3\t3", [("Mn", [3.0, -3.0, 3.0])]),
+    ],
+)
 @pytest.mark.parametrize("tag", ["initial-magnetic-moments", "initial-oxidation-state"])
-def test_initmagmomtag_write_read_roundtrip(tag: str, value: str):
-    initmagmomtag = get_tag_object(tag)
-    first_read = initmagmomtag.read(tag, value)
-    line = initmagmomtag.write(tag, first_read)
+def test_species_values_tags_read_write_roundtrip(tag: str, value: str, expected: list[tuple[str, list[float]]]):
+    tag_object = get_tag_object(tag)
+    first_read = tag_object.read(tag, value)
+    assert first_read == {"species-values": [{"species-id": sp, "values": vals} for sp, vals in expected]}
+    line = tag_object.write(tag, first_read)
     written_tag, written_value = line.split(maxsplit=1)
     assert written_tag == tag
-    second_read = initmagmomtag.read(written_tag, written_value.strip())
-    assert initmagmomtag.parse_value(second_read) == initmagmomtag.parse_value(first_read)
-    assert second_read.split() == first_read.split()
+    second_read = tag_object.read(written_tag, written_value.strip())
+    assert second_read == first_read
+    assert tag_object.is_equal_to(first_read, tag_object, second_read)
     # Writing again must be stable once the value has been through one round trip
-    assert initmagmomtag.write(tag, second_read).split() == line.split()
+    assert tag_object.write(tag, second_read) == line
+
+
+@pytest.mark.parametrize(
+    ("value", "error_match"),
+    [
+        ("Mn", "The subtag 'species-values' for tag 'initial-magnetic-moments' is not optional"),
+        ("3 Mn", "The subtag 'species-values' for tag 'initial-magnetic-moments' is not optional"),
+        ("Mn 3 O", re.escape("were not processed: ['O']")),
+    ],
+)
+def test_species_values_tag_read_errors(value: str, error_match: str):
+    tag = "initial-magnetic-moments"
+    with pytest.raises(ValueError, match=error_match):
+        get_tag_object(tag).read(tag, value)
+
+
+def test_positional_tagcontainer_with_keyword_subtags_not_supported():
+    tagcontainer = TagContainer(
+        subtags={
+            "group": TagContainer(write_tagname=False, can_repeat=True, subtags={"ken": FloatTag(write_tagname=True)}),
+        }
+    )
+    with pytest.raises(NotImplementedError, match="has keyword subtags"):
+        tagcontainer.read("barbie", "ken 1")
+
+
+def test_ordered_flag():
+    unordered = FloatTag(can_repeat=True)
+    ordered = FloatTag(can_repeat=True, ordered=True)
+    assert unordered.is_equal_to([1.0, 2.0], unordered, [2.0, 1.0])
+    assert not ordered.is_equal_to([1.0, 2.0], ordered, [2.0, 1.0])
+    assert ordered.is_equal_to([1.0, 2.0], ordered, [1.0, 2.0 + 1e-10])
+    assert not ordered.is_equal_to([1.0, 2.0], ordered, [1.0])
+    # Species groups may come in any order, but the values within a group are per-ion and must keep their order
+    tag = "initial-magnetic-moments"
+    tag_object = get_tag_object(tag)
+    value = tag_object.read(tag, "Mn 3 -3 O 0")
+    assert tag_object.is_equal_to(value, tag_object, tag_object.read(tag, "O 0 Mn 3 -3"))
+    assert not tag_object.is_equal_to(value, tag_object, tag_object.read(tag, "Mn -3 3 O 0"))
 
 
 def test_tagcontainer_validation():

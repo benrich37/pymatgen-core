@@ -639,24 +639,96 @@ def test_nan_stripping():
     print(jif)
 
 
+def _species_values(*groups: tuple[str, list[float]]) -> dict:
+    return {"species-values": [{"species-id": sp, "values": vals} for sp, vals in groups]}
+
+
 @pytest.mark.parametrize(
-    ("magmom_value", "oxstate_value"),
+    ("magmom_value", "oxstate_value", "magmom_expected", "oxstate_expected"),
     [
-        ("Mn 3 -3 3", "Mn +4 O -2"),
-        ("Mn 3.0 0 0 3 180 90 O 0 0 0", "Mn 4"),
-        ("Mn 1e-1 -2.5E+0 O 0", "Mn +4.0 O -2.0"),
+        (
+            "Mn 3 -3 3",
+            "Mn +4 O -2",
+            _species_values(("Mn", [3.0, -3.0, 3.0])),
+            _species_values(("Mn", [4.0]), ("O", [-2.0])),
+        ),
+        (
+            "Mn 3.0 0 0 3 180 90 O 0 0 0",
+            "Mn 4",
+            _species_values(("Mn", [3.0, 0.0, 0.0, 3.0, 180.0, 90.0]), ("O", [0.0, 0.0, 0.0])),
+            _species_values(("Mn", [4.0])),
+        ),
+        (
+            "Mn 1e-1 -2.5E+0 O 0",
+            "Mn +4.0 O -2.0",
+            _species_values(("Mn", [0.1, -2.5]), ("O", [0.0])),
+            _species_values(("Mn", [4.0]), ("O", [-2.0])),
+        ),
     ],
 )
-def test_initmagmomtag_infile_roundtrip(magmom_value: str, oxstate_value: str):
+def test_species_values_tags_infile_roundtrip(
+    magmom_value: str, oxstate_value: str, magmom_expected: dict, oxstate_expected: dict
+):
     text = f"spintype z-spin\ninitial-magnetic-moments {magmom_value}\ninitial-oxidation-state {oxstate_value}\n"
     first = JDFTXInfile.from_str(text, dont_require_structure=True)
-    written = str(first)
-    # The values are written back exactly as they were given in the input text
-    assert f"initial-magnetic-moments {magmom_value} \n" in written
-    assert f"initial-oxidation-state {oxstate_value} \n" in written
-    second = JDFTXInfile.from_str(written, dont_require_structure=True)
-    for tag in ("initial-magnetic-moments", "initial-oxidation-state"):
-        tag_object = get_tag_object(tag)
-        assert tag_object.parse_value(second[tag]) == tag_object.parse_value(first[tag])
-        assert second[tag] == first[tag]
-    assert str(second) == written
+    assert first["initial-magnetic-moments"] == magmom_expected
+    assert first["initial-oxidation-state"] == oxstate_expected
+    # Writing and re-reading gives back the same data (the text itself may differ, e.g. "3" is written as "3.0")
+    second = JDFTXInfile.from_str(str(first), dont_require_structure=True)
+    assert second["initial-magnetic-moments"] == magmom_expected
+    assert second["initial-oxidation-state"] == oxstate_expected
+    assert first.is_comparable_to(second)
+
+
+def test_initial_magnetic_moments_comparison():
+    base = "spintype z-spin\ninitial-magnetic-moments "
+    jif = JDFTXInfile.from_str(base + "Mn 3 -3 O 0", dont_require_structure=True)
+    # Species groups can come in any order
+    assert jif.is_comparable_to(JDFTXInfile.from_str(base + "O 0 Mn 3 -3", dont_require_structure=True))
+    # Values within a group are per-ion, so their order matters
+    assert not jif.is_comparable_to(JDFTXInfile.from_str(base + "Mn -3 3 O 0", dont_require_structure=True))
+    assert not jif.is_comparable_to(JDFTXInfile.from_str(base + "Mn 3 -3 O 1", dont_require_structure=True))
+
+
+def test_initial_magnetic_moments_setitem():
+    jif = JDFTXInfile.from_str("spintype z-spin\n", dont_require_structure=True)
+    jif["initial-magnetic-moments"] = "Fe 2 -2 O 0"
+    assert jif["initial-magnetic-moments"] == _species_values(("Fe", [2.0, -2.0]), ("O", [0.0]))
+    # Integer values given in dict form are converted to floats
+    jif["initial-magnetic-moments"] = _species_values(("Fe", [2, -2]))
+    assert jif["initial-magnetic-moments"] == _species_values(("Fe", [2.0, -2.0]))
+    assert all(isinstance(v, float) for v in jif["initial-magnetic-moments"]["species-values"][0]["values"])
+    assert "initial-magnetic-moments Fe 2.0 -2.0 " in str(jif)
+
+
+ION_LINES = "ion Mn 0.0 0.0 0.0 1\nion Mn 0.5 0.5 0.5 1\nion O 0.25 0.25 0.25 1\n"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "spintype z-spin\n",
+        "spintype z-spin\ninitial-magnetic-moments Mn 3 -3 O 0\n" + ION_LINES,
+        "spintype z-spin\ninitial-magnetic-moments Mn 3 -3\n",
+        "spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0 3 180 0\n",
+        "spintype spin-orbit\ninitial-magnetic-moments Mn 3 0 0 3 180 0 O 0 0 0\n" + ION_LINES,
+    ],
+)
+def test_validate_initial_magnetic_moments_valid(text: str):
+    JDFTXInfile.from_str(text, dont_require_structure=True).validate_initial_magnetic_moments()
+
+
+@pytest.mark.parametrize(
+    ("text", "error_match"),
+    [
+        ("initial-magnetic-moments Mn 3\n", "spintype tag must be specified"),
+        ("spintype spin-orbit\ninitial-magnetic-moments Mn 3 -3\n", "must have a multiple of 3 values, got 2"),
+        ("spintype z-spin\ninitial-magnetic-moments Fe 3\n" + ION_LINES, "Fe in initial-magnetic-moments tag is not"),
+        ("spintype z-spin\ninitial-magnetic-moments Mn 3 O 0\n" + ION_LINES, "but there are 2 ions"),
+        ("spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0\n" + ION_LINES, "values for 1 ions, but there are 2"),
+    ],
+)
+def test_validate_initial_magnetic_moments_invalid(text: str, error_match: str):
+    jif = JDFTXInfile.from_str(text, dont_require_structure=True)
+    with pytest.raises(ValueError, match=error_match):
+        jif.validate_initial_magnetic_moments()

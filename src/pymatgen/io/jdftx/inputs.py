@@ -37,10 +37,9 @@ from pymatgen.util.typing import SpeciesLike
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any
+    from typing import Any, Self
 
     from numpy.typing import ArrayLike
-    from typing_extensions import Self
 
     from pymatgen.util.typing import PathLike
 
@@ -635,6 +634,42 @@ class JDFTXInfile(dict, MSONable):
                 "to False, as JDFTx will dump values at non-inclusive boundaries (ie 0.0 for values strictly > 0.0)."
             )
 
+    def validate_initial_magnetic_moments(self) -> None:
+        """Check the initial-magnetic-moments tag for consistency with the spintype and ion tags.
+
+        This is not run automatically when reading an input file, since a partial input (e.g. one read with
+        dont_require_structure=True and merged with defaults later) may legitimately lack the spintype or ion tags.
+
+        Raises:
+            ValueError: If spintype is missing, a species has a number of values that does not fit the spintype,
+                or (when ion tags are present) a species is absent or has a mismatched ion count.
+        """
+        tag = "initial-magnetic-moments"
+        if tag not in self:
+            return
+        if "spintype" not in self:
+            raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
+        # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
+        mult = 3 if self["spintype"] in ["spin-orbit", "vector-spin"] else 1
+        ion_species = [ion["species-id"] for ion in self["ion"]] if "ion" in self else None
+        for group in self[tag]["species-values"]:
+            sp, n_values = group["species-id"], len(group["values"])
+            if n_values % mult != 0:
+                error_msg = f"Species {sp} in {tag} tag must have a multiple of {mult} values, got {n_values}!"
+                if mult == 3:
+                    error_msg += " Hint: for non-collinear spin, each ion needs 3 values: M, theta, and phi."
+                raise ValueError(error_msg)
+            if ion_species is None:
+                continue
+            n_ions = ion_species.count(sp)
+            if n_ions == 0:
+                raise ValueError(f"Species {sp} in {tag} tag is not present in the ion tags!")
+            if n_values != n_ions * mult:
+                raise ValueError(
+                    f"Species {sp} in {tag} tag has enough values for {n_values // mult} ions, "
+                    f"but there are {n_ions} ions of this species in the ion tags!"
+                )
+
     # TODO: Add examples in the docustring on how to use this function
     def is_comparable_to(
         self,
@@ -910,7 +945,7 @@ class JDFTXInfile(dict, MSONable):
             bool: Whether the value is numeric.
         """
         # data-types that might accidentally be identified as numeric
-        if type(value) in [bool]:
+        if type(value) is bool:
             return False
         try:
             float(value)
@@ -976,6 +1011,17 @@ def movescale_array_to_selective_dynamics_site_prop(movescale: ArrayLike[int | f
 
 
 def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
+    """Return a copy of a JDFTXInfile with all nan values removed.
+
+    JDFTx out files dump unset values as nan (e.g. "epsBulk nan"). A nan in a non-optional subtag removes the entry
+    that contains it instead, since the subtag can't be dropped on its own.
+
+    Args:
+        infile (JDFTXInfile): JDFTXInfile to clean.
+
+    Returns:
+        JDFTXInfile: Copy of infile without nan values.
+    """
     infile_cleaned = infile.copy()
     popmaps = get_popmaps(infile_cleaned)
     apply_popmaps(infile_cleaned, popmaps)
@@ -983,6 +1029,16 @@ def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
 
 
 def hasnan(val: Any) -> bool:
+    """Check if a value is or contains a nan.
+
+    Checks numbers directly and searches nested lists/dicts recursively. Any other type is treated as nan-free.
+
+    Args:
+        val (Any): Value to check.
+
+    Returns:
+        bool: Whether val is a nan or contains a nan.
+    """
     if type(val) in [float, int]:
         return np.isnan(val)
     if isinstance(val, list):
@@ -997,6 +1053,17 @@ def hasnan(val: Any) -> bool:
 
 
 def get_nanmaps(val: Any) -> list[list[str | int]]:
+    """Get the path to each nan inside a value.
+
+    Each path is the sequence of dict keys / list indices leading to a nan, e.g. {"a": [1.0, nan]} gives [["a", 1]]
+    and a bare nan gives [[]].
+
+    Args:
+        val (Any): Value to search (number, or nested lists/dicts).
+
+    Returns:
+        list[list[str | int]]: Path to each nan in val.
+    """
     nanmaps: list[list[str | int]] = []
     generator = None
     if type(val) in [float, int]:
@@ -1006,10 +1073,7 @@ def get_nanmaps(val: Any) -> list[list[str | int]]:
         generator = [(k, v) for k, v in val.items()]
     elif isinstance(val, list):
         generator = [(i, v) for i, v in enumerate(val)]
-    elif type(val in [str]):
-        pass
-    else:
-        raise ValueError(f"Unexpected type {type(val)} of value {val}")
+    # Any other value (str, bool, None, ...) holds no nans to map
     if generator is not None:
         for k, v in generator:
             submaps = get_nanmaps(v)
@@ -1021,6 +1085,17 @@ def get_nanmaps(val: Any) -> list[list[str | int]]:
 
 
 def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
+    """Get the path to each nan in a JDFTXInfile.
+
+    Same as get_nanmaps, but over every tag, with each path starting at its tag name
+    (e.g. ["fluid-solvent", 0, "epsBulk"]).
+
+    Args:
+        infile (JDFTXInfile): JDFTXInfile to search.
+
+    Returns:
+        list[list[str | int]]: Path to each nan in infile.
+    """
     popmaps = []
     for tag in infile:
         nanmaps = get_nanmaps(infile[tag])
@@ -1032,6 +1107,18 @@ def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
 
 
 def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> None:
+    """Remove the value at the end of each path from a JDFTXInfile, in place.
+
+    If a path runs through a non-optional subtag of a TagContainer, the entry containing that subtag is removed
+    instead (or the whole tag, if the first subtag on the path is non-optional).
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
+        popmaps (list[list[str | int]]): Paths to remove, each starting at a tag name (see get_popmaps).
+
+    Raises:
+        TypeError: If a path does not start with a tag name string.
+    """
     for popmap in popmaps:
         popmap_use = popmap
         popmap_destination = edit_infile
@@ -1258,10 +1345,11 @@ class JDFTXStructure(MSONable):
             for prop, val in zip(
                 ["velocities", "constraint_types", "constraint_vectors", "group_names"],
                 [velocities, constraint_types, constraint_vectors, hyperplane_groups],
+                strict=True,
             ):
-                if (not val is None) and (not all(x is None for x in val)):
+                if (val is not None) and (not all(x is None for x in val)):
                     struct.add_site_property(prop, val)
-            if (not selective_dynamics is None) and (not all(x is None for x in selective_dynamics)):
+            if (selective_dynamics is not None) and (not all(x is None for x in selective_dynamics)):
                 struct.add_site_property(
                     "selective_dynamics", movescale_array_to_selective_dynamics_site_prop(selective_dynamics)
                 )
@@ -1461,6 +1549,16 @@ def _multi_getattr(varbase: Any, varname: str):
 
 
 def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
+    """Convert JDFTX lattice tag to pymatgen Lattice object.
+
+    Handles both the matrix format (R00 ... R22) and the named-lattice format (e.g. "lattice Cubic 10.0").
+
+    Args:
+        jdftxinfile (JDFTXInfile): JDFTXInfile containing a lattice tag.
+
+    Returns:
+        Lattice: Pymatgen Lattice object.
+    """
     jl = jdftxinfile["lattice"]
     if "R00" not in jl:
         return _infile_special_format_to_pmg_lattice(jdftxinfile)
@@ -1468,6 +1566,20 @@ def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
 
 
 def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
+    """Convert JDFTX named-lattice tag to pymatgen Lattice object.
+
+    Handles the named-lattice format (e.g. "lattice Cubic 10.0"), converting lengths from bohr to angstrom.
+
+    Args:
+        jdftxinfile (JDFTXInfile): JDFTXInfile containing a named-lattice lattice tag.
+
+    Returns:
+        Lattice: Pymatgen Lattice object.
+
+    Raises:
+        NotImplementedError: If the lattice uses a modification.
+        ValueError: If the lattice type is not recognized.
+    """
     jl = jdftxinfile["lattice"].copy()
     for key in ["a", "b", "c"]:
         if key in jl and isinstance(jl[key], float):
