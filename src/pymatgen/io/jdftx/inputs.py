@@ -1365,12 +1365,11 @@ class JDFTXStructure(MSONable):
             label = site.label
             coords = site.coords * (1 / bohr_to_ang) if in_cart_coords else site.frac_coords
             sd = int(bool(cast("np.ndarray", self.selective_dynamics)[i])) if self.selective_dynamics is not None else 1
-            # TODO: This is needlessly complicated, simplify this
             if label not in valid_labels:
-                for varname in ["species_string", "specie.name"]:
-                    if _multi_hasattr(site, varname) and _multi_getattr(site, varname) in valid_labels:
-                        label = _multi_getattr(site, varname)
-                        break
+                # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
+                # (e.g. "Fe" for species "Fe2+")
+                fallbacks = (site.species_string, getattr(site.specie, "name", None))
+                label = next((x for x in fallbacks if x in valid_labels), label)
                 if label not in valid_labels:
                     raise ValueError(f"Could not correct site label {label} for site (index {i})")
             ion_dict_rep = {
@@ -1459,59 +1458,6 @@ class JDFTXStructure(MSONable):
             constraint_vectors=params.get("constraint_vectors"),
             hyperplane_group_names=params.get("hyperplane_group_names"),
         )
-
-
-def _multi_hasattr(varbase: Any, varname: str):
-    """Check if object has an attribute (capable of nesting with . splits).
-
-    Check if object has an attribute (capable of nesting with . splits).
-
-    Parameters
-    ----------
-    varbase
-        Object to check.
-    varname
-        Attribute to check for.
-
-    Returns
-    -------
-    bool
-        Whether the object has the attribute.
-    """
-    varlist = varname.split(".")
-    for i, var in enumerate(varlist):
-        if i == len(varlist) - 1:
-            return hasattr(varbase, var)
-        if hasattr(varbase, var):
-            varbase = getattr(varbase, var)
-        else:
-            return False
-    return None
-
-
-def _multi_getattr(varbase: Any, varname: str):
-    """Check if object has an attribute (capable of nesting with . splits).
-
-    Check if object has an attribute (capable of nesting with . splits).
-
-    Parameters
-    ----------
-    varbase
-        Object to check.
-    varname
-        Attribute to check for.
-
-    Returns
-    -------
-    Any
-        Attribute of the object.
-    """
-    if not _multi_hasattr(varbase, varname):
-        raise AttributeError(f"{varbase} does not have attribute {varname}")
-    varlist = varname.split(".")
-    for var in varlist:
-        varbase = getattr(varbase, var)
-    return varbase
 
 
 def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:

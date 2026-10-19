@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
+from pymatgen.core import DummySpecies, Lattice, Species
 from pymatgen.core.structure import Site, Structure
 from pymatgen.core.units import bohr_to_ang
 from pymatgen.io.jdftx.inputs import (
@@ -928,3 +929,12 @@ def test_get_nanmaps():
     # For a JDFTXInfile, each path starts at its tag name
     jif = JDFTXInfile.from_str("fluid-solvent H2O 55.338 ScalarEOS epsBulk nan\n", dont_require_structure=True)
     assert get_nanmaps(jif) == [["fluid-solvent", 0, "epsBulk"]]
+
+
+def test_jdftxstructure_label_fallbacks():
+    lattice = Lattice.cubic(5.0)
+    # Labels that aren't element symbols fall back to the species string, then to the element of an oxidized species
+    struct = Structure(lattice, ["Si", Species("Fe", 2)], [[0, 0, 0], [0.5, 0.5, 0.5]], labels=["Si0", "Fe_a"])
+    assert [ion["species-id"] for ion in JDFTXInfile.from_structure(struct)["ion"]] == ["Si", "Fe"]
+    with pytest.raises(ValueError, match="Could not correct site label"):
+        JDFTXStructure(structure=Structure(lattice, [DummySpecies("X")], [[0, 0, 0]])).get_str()
