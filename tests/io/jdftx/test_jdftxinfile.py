@@ -938,3 +938,16 @@ def test_jdftxstructure_label_fallbacks():
     assert [ion["species-id"] for ion in JDFTXInfile.from_structure(struct)["ion"]] == ["Si", "Fe"]
     with pytest.raises(ValueError, match="Could not correct site label"):
         JDFTXStructure(structure=Structure(lattice, [DummySpecies("X")], [[0, 0, 0]])).get_str()
+
+
+def test_matrix_lattice_conversion():
+    # Each column of the lattice tag is a lattice vector in bohr, scaled by its latt-scale entry
+    jif = JDFTXInfile.from_str("lattice 1 2 3 4 5 6 7 8 10\nlatt-scale 1 2 3\n", dont_require_structure=True)
+    expected = np.array([[1, 4, 7], [4, 10, 16], [9, 18, 30]]) * bohr_to_ang
+    np.testing.assert_allclose(_infile_to_pmg_lattice(jif).matrix, expected)
+    # Writing a structure puts its lattice vectors back into columns, converted to bohr
+    written = JDFTXInfile.from_str(
+        JDFTXStructure(structure=Structure(Lattice(expected), ["Si"], [[0, 0, 0]])).get_str()
+    )
+    written_matrix = [[written["lattice"][f"R{i}{j}"] for j in range(3)] for i in range(3)]
+    np.testing.assert_allclose(written_matrix, expected.T / bohr_to_ang)

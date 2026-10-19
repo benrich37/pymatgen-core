@@ -20,7 +20,6 @@ import numpy as np
 from monty.json import MSONable
 
 from pymatgen.core import Lattice, Structure
-from pymatgen.core import constants as const
 from pymatgen.core.periodic_table import Element
 from pymatgen.core.units import bohr_to_ang
 from pymatgen.io.jdftx.generic_tags import AbstractTag, BoolTagContainer, DumpTagContainer, MultiformatTag, TagContainer
@@ -1345,16 +1344,12 @@ class JDFTXStructure(MSONable):
         if in_cart_coords is None:
             in_cart_coords = self.write_cart_coords
 
-        lattice = np.copy(self.structure.lattice.matrix)
-        lattice = lattice.T  # transpose to get into column-vector format
-        lattice /= const.value("Bohr radius") * 10**10  # Bohr radius in Ang; convert to Bohr
+        lattice = self.structure.lattice.matrix.T / bohr_to_ang  # column-vector format, in bohr
 
         jdftx_tag_dict["lattice"] = {f"R{i}{j}": lattice[i][j] for i in range(3) for j in range(3)}
         jdftx_tag_dict["ion"] = []
         jdftx_tag_dict["coords-type"] = "Cartesian" if in_cart_coords else "Lattice"
-        valid_labels = [
-            value.symbol for key, value in Element.__dict__.items() if not key.startswith("_") and not callable(value)
-        ]
+        valid_labels = {el.symbol for el in Element}
         if (self.constraint_types is not None) and (self.constraint_vectors is None):
             raise ValueError("Constraint types are present but constraint vectors are not!")
         if (self.constraint_vectors is not None) and (self.constraint_types is None):
@@ -1531,14 +1526,9 @@ def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
     Returns:
         Lattice: Pymatgen Lattice object.
     """
-    _lattice = np.zeros([3, 3])
     jl = jdftxinfile["lattice"]
-    for i in range(3):
-        for j in range(3):
-            _lattice[i][j] += float(jl[f"R{i}{j}"])
+    _lattice = np.array([[jl[f"R{i}{j}"] for j in range(3)] for i in range(3)], dtype=float)
     if "latt-scale" in jdftxinfile:
         latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]])
         _lattice *= latt_scale
-    _lattice = _lattice.T  # convert to row vector format
-    _lattice *= const.value("Bohr radius") * 10**10  # Bohr radius in Ang; convert to Ang
-    return Lattice(_lattice)
+    return Lattice(_lattice.T * bohr_to_ang)  # convert to row vector format, in Ang
