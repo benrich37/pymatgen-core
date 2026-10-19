@@ -1110,7 +1110,9 @@ def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> N
     """Remove the value at the end of each path from a JDFTXInfile, in place.
 
     If a path runs through a non-optional subtag of a TagContainer, the entry containing that subtag is removed
-    instead (or the whole tag, if the first subtag on the path is non-optional).
+    instead (or the whole tag, if the first subtag on the path is non-optional). Each entry is removed once even if
+    several paths lead to it, later list entries are removed first so list indices in the other paths stay valid,
+    and a list left empty by a removal is removed as well.
 
     Args:
         edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
@@ -1119,30 +1121,71 @@ def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> N
     Raises:
         TypeError: If a path does not start with a tag name string.
     """
-    for popmap in popmaps:
-        popmap_use = popmap
-        popmap_destination = edit_infile
-        tag = popmap[0]
-        if not isinstance(tag, str):
-            raise TypeError("First element of popmap must be a tag string here")
-        to = get_tag_object_on_val(tag, edit_infile[tag])
-        if isinstance(to, TagContainer):
-            subtag: AbstractTag = to
-            popmap_destination = popmap_destination[tag]
-            popmap_route = popmap[1:]
-            popmap_use = [tag]
-            step = None
-            for i, step in enumerate(popmap_route):
-                if isinstance(step, str):
-                    subtag = subtag.subtags[step]
-                    if not subtag.optional:
-                        step = popmap_route[i - 1]
-                        break
-                popmap_use.append(step)
-            popmap_destination = edit_infile
-            for step in popmap_use[:-1]:
-                popmap_destination = popmap_destination[step]
-            popmap_destination.pop(popmap_use[-1], None)
+    removal_paths = {tuple(_get_removal_path(edit_infile, popmap)) for popmap in popmaps}
+    # Sort so later list indices (and deeper paths) come first; the bool keeps ints and strs from being compared
+    for removal_path in sorted(
+        removal_paths, key=lambda path: [(isinstance(step, int), step) for step in path], reverse=True
+    ):
+        _remove_at_path(edit_infile, list(removal_path))
+
+
+def _get_removal_path(edit_infile: JDFTXInfile, popmap: list[str | int]) -> list[str | int]:
+    """Get the path to the entry to remove for a path to a nan.
+
+    The path is cut short at the first non-optional subtag of a TagContainer, so that the entry containing that
+    subtag is removed instead (or the whole tag, if the first subtag on the path is non-optional).
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile the path points into.
+        popmap (list[str | int]): Path to a nan, starting at a tag name (see get_popmaps).
+
+    Returns:
+        list[str | int]: Path to the entry to remove, starting at the tag name.
+
+    Raises:
+        TypeError: If the path does not start with a tag name string.
+    """
+    tag = popmap[0]
+    if not isinstance(tag, str):
+        raise TypeError("First element of popmap must be a tag string here")
+    tag_object = get_tag_object_on_val(tag, edit_infile[tag])
+    if not isinstance(tag_object, TagContainer):
+        return list(popmap)
+    subtag: AbstractTag = tag_object
+    removal_path: list[str | int] = [tag]
+    for step in popmap[1:]:
+        if isinstance(step, str):
+            subtag = subtag.subtags[step]
+            if not subtag.optional:
+                break
+        removal_path.append(step)
+    return removal_path
+
+
+def _remove_at_path(edit_infile: JDFTXInfile, removal_path: list[str | int]) -> None:
+    """Remove the entry at a path from a JDFTXInfile, in place.
+
+    Dict entries (and tags) are removed by key and list entries by index. If removing a list entry leaves the list
+    empty, the list itself is removed too. Paths that no longer exist are ignored.
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
+        removal_path (list[str | int]): Path to the entry to remove, starting at the tag name.
+    """
+    container: Any = edit_infile
+    try:
+        for step in removal_path[:-1]:
+            container = container[step]
+    except (KeyError, IndexError):
+        return
+    last_step = removal_path[-1]
+    if isinstance(container, list):
+        if isinstance(last_step, int) and last_step < len(container):
+            del container[last_step]
+        if len(container) == 0:
+            _remove_at_path(edit_infile, removal_path[:-1])
+    else:
+        container.pop(last_step, None)
 
 
 @dataclass

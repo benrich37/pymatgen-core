@@ -12,6 +12,7 @@ from pymatgen.core.units import bohr_to_ang
 from pymatgen.io.jdftx.inputs import (
     JDFTXInfile,
     JDFTXStructure,
+    _remove_at_path,
     clean_infile_of_nans,
     selective_dynamics_site_prop_to_jdftx_interpretable,
 )
@@ -805,3 +806,44 @@ def test_add_u_setitem():
     assert jif["add-U"] == expected
     jif["add-U"] = {"U-channels": [_u_channel("Mn", "d", 0.06), _u_channel("O", "p", 0.1, [(1, 0.1)])]}
     assert jif["add-U"] == expected
+
+
+def _ion_lines(*ions: tuple[str, str]) -> str:
+    return "".join(f"ion {species} {x0} 0.0 0.0 1\n" for species, x0 in ions)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_species"),
+    [
+        # A nan in a non-optional ion subtag removes that ion
+        (_ion_lines(("Mn", "0.0"), ("Fe", "nan"), ("O", "0.5")), ["Mn", "O"]),
+        # Several nan ions are all removed, without later indices shifting onto the wrong ion
+        (_ion_lines(("Mn", "0.0"), ("Fe", "nan"), ("Co", "nan"), ("O", "0.5")), ["Mn", "O"]),
+        (_ion_lines(("Fe", "nan"), ("Mn", "0.0"), ("Co", "nan")), ["Mn"]),
+        # Two nans in the same ion remove only that ion
+        ("ion Mn nan nan 0.0 1\nion O 0.5 0.5 0.5 1\n", ["O"]),
+        # If every ion is removed, the ion tag is removed instead of being left empty
+        (_ion_lines(("Mn", "nan"), ("O", "nan")), None),
+    ],
+)
+def test_nan_stripping_repeated_tag_entries(text: str, expected_species: list[str] | None):
+    jif = JDFTXInfile.from_str("spintype z-spin\n" + text, dont_require_structure=True)
+    cleaned = clean_infile_of_nans(jif)
+    if expected_species is None:
+        assert "ion" not in cleaned
+    else:
+        assert [ion["species-id"] for ion in cleaned["ion"]] == expected_species
+    assert cleaned["spintype"] == "z-spin"
+    # The original infile is left untouched
+    assert len(jif["ion"]) == text.count("ion ")
+
+
+def test_remove_at_path():
+    params: dict[str, Any] = {"a": [1.0, 2.0, 3.0], "b": {"c": [4.0], "d": 5.0}}
+    _remove_at_path(params, ["a", 1])
+    assert params["a"] == [1.0, 3.0]
+    _remove_at_path(params, ["b", "c", 0])  # emptied list is removed from its parent
+    assert params["b"] == {"d": 5.0}
+    _remove_at_path(params, ["b", "missing", 0])  # paths that no longer exist are ignored
+    _remove_at_path(params, ["a", 5])
+    assert params == {"a": [1.0, 3.0], "b": {"d": 5.0}}
