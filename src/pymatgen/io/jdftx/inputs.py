@@ -33,7 +33,6 @@ from pymatgen.io.jdftx.jdftxinfile_master_format import (
     get_tag_object_on_val,
 )
 from pymatgen.util.io_utils import clean_lines
-from pymatgen.util.typing import SpeciesLike
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1155,21 +1154,6 @@ class JDFTXStructure(MSONable):
         if self.selective_dynamics is not None:
             # Convert provided selective dynamics into JDFTX interpretable format
             self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(self.selective_dynamics)
-        for i in range(len(self.structure.species)):
-            name = ""
-            if isinstance(self.structure.species[i], str):
-                _name_str = self.structure.species[i]
-            elif isinstance(self.structure.species[i], SpeciesLike):
-                _name_str = self.structure.species[i].symbol
-                if not isinstance(_name_str, str):
-                    _name_str = _name_str.symbol
-            else:
-                raise TypeError("Species must be a string or SpeciesLike object")
-            name_str = str(_name_str)
-            for j in range(len(name_str)):
-                if not name_str[j].isdigit():
-                    name += name_str[j]
-            self.structure.species[i] = name
         # For the optional properties, if they are all None, set to None to avoid writing them out, but check for
         # data in structure.site_properties to populate them if available.
         properties_to_sync = []

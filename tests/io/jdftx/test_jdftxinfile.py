@@ -951,3 +951,10 @@ def test_matrix_lattice_conversion():
     )
     written_matrix = [[written["lattice"][f"R{i}{j}"] for j in range(3)] for i in range(3)]
     np.testing.assert_allclose(written_matrix, expected.T / bohr_to_ang)
+
+
+def test_jdftxstructure_keeps_structure_species():
+    # Species (including oxidation states) on the wrapped structure are left as they are
+    struct = Structure(Lattice.cubic(5.0), ["Si", Species("Fe", 2), DummySpecies("X")], np.eye(3) / 2)
+    species_before = struct.species
+    assert JDFTXStructure(structure=struct).structure.species == species_before
