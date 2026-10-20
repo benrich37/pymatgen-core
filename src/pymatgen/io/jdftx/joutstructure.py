@@ -788,10 +788,21 @@ class JOutStructure(Structure):
                 force = np.array([float(x.strip()) for x in line.split()[2:5]])
                 _forces.append(force)
             forces = np.array(_forces)
-            if coords_type.lower() != "cartesian":
-                forces = np.dot(forces, np.linalg.inv(self.lattice.matrix))
-            else:
+            # Convert to Cartesian Ha/Ang. With R the lattice vectors as columns (self.lattice.matrix is R^T), JDFTx
+            # prints lattice forces as R^T F (covariant, in Ha) and contravariant forces as R^-1 F (in Ha/bohr^2)
+            coords_type = coords_type.lower()
+            if coords_type == "cartesian":
                 forces *= 1 / bohr_to_ang  # Convert from Ha/Bohr to Ha/Ang
+            elif coords_type == "lattice":
+                forces = np.linalg.solve(self.lattice.matrix, forces.T).T
+            elif coords_type == "contravariant":
+                forces = forces @ self.lattice.matrix / bohr_to_ang**2
+            else:
+                # Skip rather than store forces that can't be converted to Cartesian coordinates
+                warnings.warn(
+                    f"Unrecognized coordinate system '{coords_type}' for {forces_name}, skipping", stacklevel=2
+                )
+                return
             forces *= Ha_to_eV
             setattr(self, forces_name, forces)
             # self.forces = forces

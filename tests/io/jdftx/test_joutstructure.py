@@ -9,7 +9,7 @@ import pytest
 from pytest import approx
 
 from pymatgen.core import Lattice, Structure
-from pymatgen.core.units import bohr_to_ang
+from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx.inputs import JDFTXInfile, JDFTXStructure
 from pymatgen.io.jdftx.joutstructure import JOutStructure, _parse_posn_line
 from pymatgen.util.testing import TEST_FILES_DIR
@@ -148,3 +148,26 @@ def test_posns_velocities_are_cartesian(coords_type: str):
     # Velocities end up in Cartesian coordinates (angstrom per time unit) either way
     expected = (r @ [0.01, 0.02, 0.03] if coords_type == "lattice" else np.array([0.01, 0.02, 0.03])) * bohr_to_ang
     np.testing.assert_allclose(jst.velocities[0], expected)
+
+
+@pytest.mark.parametrize("coords_type", ["Lattice", "Cartesian", "Contravariant"])
+def test_forces_are_cartesian(coords_type: str):
+    r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])  # Lattice vectors are the columns, in bohr
+    f_cart = np.array([[0.1, -0.2, 0.3], [-0.1, 0.2, -0.3]])  # Ha/bohr
+    # JDFTx prints lattice forces as R^T F (covariant) and contravariant forces as R^-1 F (as row vectors here)
+    printed = {"Lattice": f_cart @ r, "Cartesian": f_cart, "Contravariant": f_cart @ np.linalg.inv(r).T}[coords_type]
+    jst = JOutStructure(lattice=Lattice(r.T * bohr_to_ang), species=["H", "O"], coords=[[0, 0, 0], [0.5, 0.5, 0.5]])
+    jst._parse_forces_lines(
+        [f"# Forces in {coords_type} coordinates:"]
+        + [f"force {sp} {f[0]} {f[1]} {f[2]} 1" for sp, f in zip("HO", printed, strict=True)]
+    )
+    np.testing.assert_allclose(jst.forces, f_cart * Ha_to_eV / bohr_to_ang)  # eV/angstrom
+
+
+def test_forces_unknown_coords():
+    # Forces in a coordinate system the parser doesn't know are skipped with a warning instead of raising
+    jst = JOutStructure(lattice=Lattice.cubic(5.0), species=["H"], coords=[[0, 0, 0]])
+    with pytest.warns(UserWarning, match="Unrecognized coordinate system 'positions' for forces"):
+        jst._parse_forces_lines(["# Forces in Positions coordinates:", "force H 0.1 0.2 0.3 1"])
+    assert jst.forces is None
+    assert "forces" not in jst.site_properties
