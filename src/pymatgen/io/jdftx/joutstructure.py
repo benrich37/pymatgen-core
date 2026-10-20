@@ -31,14 +31,6 @@ _jos_atrs_from_elecmindata = ("mu", "nelectrons", "abs_magneticmoment", "tot_mag
 _jos_atrs_elec_from_elecmindata = ("nstep", "e", "grad_k", "alpha", "linmin")
 
 
-def _is_homogenous(val: list):
-    try:
-        np.array(val)
-        return True
-    except ValueError:
-        return False
-
-
 # TODO: Phase out redundant class attributes to data stored in `properties` and `site_properties` dicts.
 class JOutStructure(Structure):
     """Class object for storing a single JDFTx optimization step.
@@ -224,7 +216,7 @@ class JOutStructure(Structure):
             velocities (list[np.ndarray | None] | None): The velocities of the atoms in the system.
         """
         self._velocities = velocities
-        if (velocities is not None) and _is_homogenous(velocities):
+        if velocities is not None:
             self.add_site_property("velocities", list(velocities))
         elif "velocities" in self.site_properties:
             self.remove_site_property("velocities")
@@ -248,7 +240,7 @@ class JOutStructure(Structure):
             constraint_types (list[str | None] | None): The constraint_types of the atoms in the system.
         """
         self._constraint_types = constraint_types
-        if (constraint_types is not None) and _is_homogenous(constraint_types):
+        if constraint_types is not None:
             self.add_site_property("constraint_types", list(constraint_types))
         elif "constraint_types" in self.site_properties:
             self.remove_site_property("constraint_types")
@@ -273,7 +265,7 @@ class JOutStructure(Structure):
             atoms in the system.
         """
         self._constraint_vectors = constraint_vectors
-        if (constraint_vectors is not None) and _is_homogenous(constraint_vectors):
+        if constraint_vectors is not None:
             self.add_site_property("constraint_vectors", list(constraint_vectors))
         elif "constraint_vectors" in self.site_properties:
             self.remove_site_property("constraint_vectors")
@@ -297,7 +289,7 @@ class JOutStructure(Structure):
             group_names (list[list[str | None] | None] | None): The group_names of the atoms in the system.
         """
         self._group_names = group_names
-        if (group_names is not None) and _is_homogenous(group_names):
+        if group_names is not None:
             self.add_site_property("group_names", list(group_names))
         elif "group_names" in self.site_properties:
             self.remove_site_property("group_names")
@@ -716,7 +708,7 @@ class JOutStructure(Structure):
             the name of the element, and sd is a flag indicating whether the ion is
             excluded from optimization (1) or not (0).
         """
-        new_species: None | list[Element | Species] = None
+        new_species: list[Element | Species] | None = None
         if len(posns_lines):
             coords_type = posns_lines[0].split("positions in")[1]
             coords_type = coords_type.strip().split()[0].strip()

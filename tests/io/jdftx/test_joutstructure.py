@@ -139,6 +139,33 @@ def test_posns_constraints_to_infile():
     np.testing.assert_allclose(jstruct.constraint_vectors, jst.constraint_vectors)
 
 
+def test_partial_posns_constraints_to_infile():
+    # Constraints on only some sites (and HyperPlane sites with different numbers of planes) are kept as site
+    # properties too, so they survive a Structure copy and carry over to a new input file
+    r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])
+    jst = JOutStructure(lattice=Lattice(r.T * bohr_to_ang), species=[], coords=[])
+    posns_lines = [
+        "# Ionic positions in lattice coordinates:",
+        "ion H 0.1 0.2 0.3 1 Linear 1 0 0",
+        "ion O 0.4 0.5 0.6 1 HyperPlane 0 1 1 g1 HyperPlane 1 0 0 g2",
+        "ion H 0.7 0.8 0.9 1 HyperPlane 0 0 1 g1",
+        "ion H 0.2 0.4 0.6 1",
+    ]
+    jst._parse_posns_lines(posns_lines, [])
+    for prop in ("constraint_types", "constraint_vectors", "group_names"):
+        assert prop in jst.site_properties
+    copied = Structure.from_dict(jst.structure.copy().as_dict())
+    jif = JDFTXInfile.from_structure(copied)
+    jstruct = JDFTXStructure.from_jdftxinfile(jif)
+    assert jstruct.constraint_types == ["Linear", "HyperPlane", "HyperPlane", None]
+    assert jstruct.hyperplane_group_names == [None, ["g1", "g2"], ["g1"], None]
+    for vectors, known in zip(jstruct.constraint_vectors, jst.constraint_vectors, strict=True):
+        if known is None:
+            assert vectors is None
+        else:
+            np.testing.assert_allclose(vectors, known)
+
+
 @pytest.mark.parametrize("coords_type", ["lattice", "cartesian"])
 def test_posns_velocities_are_cartesian(coords_type: str):
     r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])  # Lattice vectors are the columns, in bohr
