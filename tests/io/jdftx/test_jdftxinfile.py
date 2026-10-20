@@ -1052,3 +1052,14 @@ def test_mixed_format_ion_tags():
     # A nan in one entry only removes that entry
     nan_jif = JDFTXInfile.from_str(text.replace("0.8 0.9 1 HyperPlane", "nan 0.9 1 HyperPlane"))
     assert clean_infile_of_nans(nan_jif)["ion"] == jif["ion"][:1]
+
+
+def test_copy_is_independent():
+    text = "fluid-solvent H2O 55.338\nfluid-solvent CH3CN 0.5 ScalarEOS epsBulk nan\n"
+    jif = JDFTXInfile.from_str(text, dont_require_structure=True)
+    copied = jif.copy()
+    copied["fluid-solvent"][1]["concentration"] = 1.0
+    assert jif["fluid-solvent"][1]["concentration"] == 0.5
+    # Cleaning nans works on a copy, so the original's nested entries are left untouched
+    assert "epsBulk" not in clean_infile_of_nans(jif)["fluid-solvent"][1]
+    assert "epsBulk" in jif["fluid-solvent"][1]

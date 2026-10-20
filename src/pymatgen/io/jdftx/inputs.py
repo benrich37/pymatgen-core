@@ -446,9 +446,8 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             JDFTXInfile: Copy of the JDFTXInfile object.
         """
-        # Wasn't working before
-        # return type(self)(self)
-        return self.from_dict(self.as_dict(skip_module_keys=True), validate_value_boundaries=False)
+        # Deep copy so the copy's nested tag values (e.g. repeated tag entries) aren't shared with this object
+        return self.from_dict(deepcopy(self.as_dict(skip_module_keys=True)), validate_value_boundaries=False)
 
     def get_text_list(self) -> list[str]:
         """Get a list of strings representation of the JDFTXInfile.
