@@ -1270,7 +1270,7 @@ class JDFTXStructure(MSONable):
             [x["d0"], x["d1"], x["d2"]] if "constraint-type" in x else None for x in jdftxinfile["ion"]
         ]
         hyperplane_vectors = [
-            [[[y["d0"], y["d1"], y["d2"]] for y in x["HyperPlane"]]] if "HyperPlane" in x else None
+            [[y["d0"], y["d1"], y["d2"]] for y in x["HyperPlane"]] if "HyperPlane" in x else None
             for x in jdftxinfile["ion"]
         ]
         hyperplane_groups: list = [None for _ in range(len(hyperplane_vectors))]
@@ -1280,7 +1280,7 @@ class JDFTXStructure(MSONable):
                     constraint_types[i] = "HyperPlane"
                     constraint_vectors[i] = hyperplane_vectors[i]
             hyperplane_groups = [
-                [[y["group"] for y in x["HyperPlane"]] if "HyperPlane" in x else None] for x in jdftxinfile["ion"]
+                [y["group"] for y in x["HyperPlane"]] if "HyperPlane" in x else None for x in jdftxinfile["ion"]
             ]
 
         struct: Structure = Structure(
@@ -1380,7 +1380,7 @@ class JDFTXStructure(MSONable):
                             _hyperplane = {}
                             for k in range(3):
                                 _hyperplane["d" + str(k)] = hyperplane[k]
-                            _hyperplane["group"] = self.hyperplane_groups[i][j]
+                            _hyperplane["group"] = self.hyperplane_group_names[i][j]
                             ion_dict_rep["HyperPlane"].append(_hyperplane)
                 else:
                     ion_dict_rep["constraint-type"] = ctype

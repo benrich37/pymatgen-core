@@ -958,3 +958,14 @@ def test_jdftxstructure_keeps_structure_species():
     struct = Structure(Lattice.cubic(5.0), ["Si", Species("Fe", 2), DummySpecies("X")], np.eye(3) / 2)
     species_before = struct.species
     assert JDFTXStructure(structure=struct).structure.species == species_before
+
+
+def test_jdftxstructure_hyperplane_roundtrip():
+    text = "lattice Cubic 10.0\nion H 0.1 0.1 0.1 1 HyperPlane 1 0 0 g1 HyperPlane 0 1 0 g2\nion O 0.5 0.5 0.5 1\n"
+    jif = JDFTXInfile.from_str(text)
+    jstruct = JDFTXStructure.from_jdftxinfile(jif)
+    # A HyperPlane site holds a list of vectors and a list of group names; other sites hold None
+    assert jstruct.constraint_types == ["HyperPlane", None]
+    assert jstruct.constraint_vectors == [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], None]
+    assert jstruct.hyperplane_group_names == [["g1", "g2"], None]
+    assert JDFTXInfile.from_str(jstruct.get_str())["ion"] == jif["ion"]
