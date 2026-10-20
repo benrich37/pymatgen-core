@@ -336,8 +336,10 @@ example_aimd_outfile_known_site_properties = {
             [-0.000023534465678, -0.000069824127281, 0.000014289611531],
         ]
     )
-    # Velocities are printed in lattice coordinates, and stored in Cartesian coordinates (angstrom per time unit)
+    # Velocities are printed in lattice coordinates per Hartree atomic unit of time (2.4188843265864e-2 fs), and
+    # stored in Cartesian angstrom/fs
     @ (np.array([[23.3298, -11.6649, 2.13539e-06], [0, 20.2043, -4.27078e-06], [0, 0, 30.2317]]).T * bohr_to_ang)
+    / 2.4188843265864e-2
 }
 
 example_igp_aimd_outfile_path = ex_out_files_dir / Path("ex_igp.out")

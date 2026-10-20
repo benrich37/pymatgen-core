@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
-from pymatgen.io.jdftx.inputs import _constraint_vector_to_cartesian
+from pymatgen.io.jdftx.inputs import JDFTX_TIME_UNIT_TO_FS, _constraint_vector_to_cartesian
 from pymatgen.io.jdftx.jelstep import JElSteps
 
 __author__ = "Ben Rich"
@@ -206,7 +206,7 @@ class JOutStructure(Structure):
         """Return the velocities.
 
         Returns:
-            list[np.ndarray | None] | None: The velocities of the atoms in the system.
+            list[np.ndarray | None] | None: The velocities of the atoms in the system, in Cartesian angstrom/fs.
         """
         if "velocities" not in self.site_properties:
             return self._velocities
@@ -753,6 +753,7 @@ class JOutStructure(Structure):
             else:
                 posns *= bohr_to_ang
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
+            velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]  # angstrom/fs
             for i in range(natoms):
                 self.append(species=names[i], coords=posns[i], coords_are_cartesian=True)
             for prop, vals in zip(

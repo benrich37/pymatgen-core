@@ -2,6 +2,17 @@
 
 Classes for reading/manipulating/writing JDFTx input files.
 
+Notes on units - within a JDFTXInfile object, all values are stored in JDFTx-consistent units, and positions,
+velocities and constraint vectors are expressed in the coordinate system set by the coords-type tag (lattice
+coordinates by default), exactly as they would appear in a JDFTx input file.
+Initializing a JDFTXInfile object from a file or a string will assume JDFTx-consistent units (perform no conversion).
+Modifying tags directly will also assume JDFTx-consistent units (perform no conversion).
+Initializing a JDFTXInfile object from a pymatgen Structure object (from_structure) or a JDFTXStructure object
+(from_jdftxstructure) will convert pymatgen-consistent units (Cartesian angstrom, and angstrom/fs for velocities) to
+JDFTx-consistent units. This includes the lattice and ion coordinates/velocities/constraint vectors.
+Converting a JDFTXInfile object to a pymatgen Structure or JDFTXStructure (structure, to_pmg_structure,
+to_jdftxstructure) performs the reverse conversion.
+
 Note: JDFTXInfile will be moved back to its own module once a more broad inputs
 class is written.
 """
@@ -20,8 +31,9 @@ import numpy as np
 from monty.json import MSONable
 
 from pymatgen.core import Lattice, Structure
+from pymatgen.core import constants as const
 from pymatgen.core.periodic_table import Element
-from pymatgen.core.units import bohr_to_ang
+from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx.generic_tags import AbstractTag, BoolTagContainer, DumpTagContainer, MultiformatTag, TagContainer
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
 from pymatgen.io.jdftx.jdftxinfile_master_format import (
@@ -45,6 +57,9 @@ if TYPE_CHECKING:
 __author__ = "Jacob Clary, Ben Rich"
 
 logger = logging.getLogger(__name__)
+
+# JDFTx's unit of time (the Hartree atomic unit of time, hbar / E_h) in fs, used to convert velocities to angstrom/fs
+JDFTX_TIME_UNIT_TO_FS = const.hbar / (Ha_to_eV * const.e) * 1e15
 
 
 # TODO: Add check for whether all ions have or lack velocities.
@@ -1150,8 +1165,7 @@ class JDFTXStructure(MSONable):
             Defaults to False.
         write_cart_coords (bool): Whether to write cartesian coordinates. Defaults to False.
         velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available, in Cartesian
-            coordinates (angstrom per JDFTx time unit). Kept separate from structure.site_properties["velocities"] to
-            allow inhomogeneous shaping.
+            angstrom/fs. Kept separate from structure.site_properties["velocities"] to allow inhomogeneous shaping.
         constraint_types (list[str | None]): Constraint type ("Linear", "Planar", "HyperPlane", or None) for each site
             if available. Read from structure.site_properties["constraint_types"] if not given.
         constraint_vectors (list[np.ndarray | list[np.ndarray] | None]): Constraint vectors for each site if
@@ -1290,12 +1304,13 @@ class JDFTXStructure(MSONable):
         coords_are_cartesian = False  # is default for JDFTx
         if "coords-type" in jdftxinfile:
             coords_are_cartesian = jdftxinfile["coords-type"].lower() == "cartesian"
-        # Velocities are stored in Cartesian coordinates (angstrom per time unit), converted like the positions are
+        # Velocities are stored in Cartesian angstrom/fs, converted to Cartesian coordinates like the positions are
         if coords_are_cartesian:
             coords *= bohr_to_ang
             velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
         else:
             velocities = [lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
+        velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]
         constraint_types: list[str | None] = []
         constraint_vectors: list = []
         hyperplane_groups: list[list[str | None] | None] = []
@@ -1397,7 +1412,8 @@ class JDFTXStructure(MSONable):
             }
             # Gather velocities if present
             if (self.velocities is not None) and (self.velocities[i] is not None):
-                velocity = np.asarray(self.velocities[i], dtype=float)
+                # angstrom/fs to JDFTx units
+                velocity = np.asarray(self.velocities[i], dtype=float) * JDFTX_TIME_UNIT_TO_FS
                 if in_cart_coords:
                     velocity = velocity / bohr_to_ang
                 else:

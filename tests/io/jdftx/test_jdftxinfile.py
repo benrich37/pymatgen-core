@@ -1066,13 +1066,14 @@ def test_copy_is_independent():
 
 
 def test_jdftxstructure_velocities_are_cartesian():
-    # Velocities in lattice coordinates are converted to Cartesian (angstrom per time unit) like positions are
+    # Velocities (bohr or lattice coordinates per Hartree atomic time unit) are stored in Cartesian angstrom/fs
+    au_time_fs = 2.4188843265864e-2  # CODATA Hartree atomic unit of time, in fs
     r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])  # Lattice vectors are the columns, in bohr
     jif = JDFTXInfile.from_str(
         "lattice 10 2 1 0 9 3 0 0 8\nion H 0.1 0.2 0.3 v 0.01 0.02 0.03 1\nion O 0.4 0.5 0.6 1\n"
     )
     jstruct = JDFTXStructure.from_jdftxinfile(jif)
-    np.testing.assert_allclose(jstruct.velocities[0], r @ [0.01, 0.02, 0.03] * bohr_to_ang)
+    np.testing.assert_allclose(jstruct.velocities[0], r @ [0.01, 0.02, 0.03] * bohr_to_ang / au_time_fs)
     assert jstruct.velocities[1] is None
     # Writing in the same coordinates gives back the original ion tags
     assert_same_value(JDFTXInfile.from_str(jstruct.get_str())["ion"], jif["ion"])

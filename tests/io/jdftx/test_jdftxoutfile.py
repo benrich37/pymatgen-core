@@ -247,6 +247,17 @@ def test_aimd_parse(aimd_outfile_path: Path, aimd_outfile_known: dict, aimd_outf
         assert_same_value(jdftxoutfile.structure.site_properties[sp], val)
 
 
+def test_aimd_velocity_units():
+    # The kinetic energy from the parsed velocities (angstrom/fs) matches the kinetic energy JDFTx reports
+    jdftxoutfile = JDFTXOutfile.from_file(example_aimd_outfile_path)
+    structure = jdftxoutfile.structure
+    masses = np.array([site.specie.atomic_mass for site in structure])  # amu
+    velocities = np.array(structure.site_properties["velocities"])  # angstrom/fs
+    amu_ang2_per_fs2_to_ev = 1.66053906892e-27 * 1e10 / 1.602176634e-19  # CODATA amu and e
+    ke = 0.5 * np.sum(masses[:, None] * velocities**2) * amu_ang2_per_fs2_to_ev
+    assert ke == pytest.approx(jdftxoutfile.ke, rel=1e-4)
+
+
 @pytest.mark.parametrize(
     ("outfile_path", "infile_path", "outfile_known"),
     [
