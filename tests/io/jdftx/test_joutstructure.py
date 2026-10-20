@@ -137,3 +137,14 @@ def test_posns_constraints_to_infile():
     assert [ion["constraint type"] for ion in jif["ion"]] == ["Linear", "Planar"]
     jstruct = JDFTXStructure.from_jdftxinfile(jif)
     np.testing.assert_allclose(jstruct.constraint_vectors, jst.constraint_vectors)
+
+
+@pytest.mark.parametrize("coords_type", ["lattice", "cartesian"])
+def test_posns_velocities_are_cartesian(coords_type: str):
+    r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])  # Lattice vectors are the columns, in bohr
+    jst = JOutStructure(lattice=Lattice(r.T * bohr_to_ang), species=[], coords=[])
+    posns_lines = [f"# Ionic positions in {coords_type} coordinates:", "ion H 0.1 0.2 0.3 v 0.01 0.02 0.03 1"]
+    jst._parse_posns_lines(posns_lines, [])
+    # Velocities end up in Cartesian coordinates (angstrom per time unit) either way
+    expected = (r @ [0.01, 0.02, 0.03] if coords_type == "lattice" else np.array([0.01, 0.02, 0.03])) * bohr_to_ang
+    np.testing.assert_allclose(jst.velocities[0], expected)

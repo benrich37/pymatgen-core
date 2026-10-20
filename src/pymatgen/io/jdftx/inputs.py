@@ -1149,8 +1149,9 @@ class JDFTXStructure(MSONable):
         sort_structure (bool): Whether to sort the structure. Useful if species are not grouped properly together.
             Defaults to False.
         write_cart_coords (bool): Whether to write cartesian coordinates. Defaults to False.
-        velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available. Kept separate from
-            structure.site_properties["velocities"] to allow inhomogeneous shaping.
+        velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available, in Cartesian
+            coordinates (angstrom per JDFTx time unit). Kept separate from structure.site_properties["velocities"] to
+            allow inhomogeneous shaping.
         constraint_types (list[str | None]): Constraint type ("Linear", "Planar", "HyperPlane", or None) for each site
             if available. Read from structure.site_properties["constraint_types"] if not given.
         constraint_vectors (list[np.ndarray | list[np.ndarray] | None]): Constraint vectors for each site if
@@ -1289,10 +1290,12 @@ class JDFTXStructure(MSONable):
         coords_are_cartesian = False  # is default for JDFTx
         if "coords-type" in jdftxinfile:
             coords_are_cartesian = jdftxinfile["coords-type"].lower() == "cartesian"
+        # Velocities are stored in Cartesian coordinates (angstrom per time unit), converted like the positions are
         if coords_are_cartesian:
             coords *= bohr_to_ang
-            if not _allnone(velocities):
-                velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
+            velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
+        else:
+            velocities = [lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
         constraint_types: list[str | None] = []
         constraint_vectors: list = []
         hyperplane_groups: list[list[str | None] | None] = []
@@ -1394,14 +1397,12 @@ class JDFTXStructure(MSONable):
             }
             # Gather velocities if present
             if (self.velocities is not None) and (self.velocities[i] is not None):
-                conv = 1
+                velocity = np.asarray(self.velocities[i], dtype=float)
                 if in_cart_coords:
-                    conv = 1 / bohr_to_ang
-                ion_dict_rep["v"] = {
-                    "vx0": self.velocities[i][0] * conv,
-                    "vx1": self.velocities[i][1] * conv,
-                    "vx2": self.velocities[i][2] * conv,
-                }
+                    velocity = velocity / bohr_to_ang
+                else:
+                    velocity = self.structure.lattice.get_fractional_coords(velocity)
+                ion_dict_rep["v"] = {"vx0": velocity[0], "vx1": velocity[1], "vx2": velocity[2]}
             # Gather constraints if present
             if self.constraint_types is not None and self.constraint_types[i] is not None:
                 ion_dict_rep.update(self._get_constraint_tags(i, sd, in_cart_coords))

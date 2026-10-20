@@ -742,8 +742,10 @@ class JOutStructure(Structure):
                 return cur_species
             self.remove_sites(list(range(len(cur_species))))
             posns = np.array(_posns)
+            # Velocities and constraint vectors are converted to Cartesian coordinates like the positions are
             if coords_type.lower() != "cartesian":
                 posns = np.dot(posns, self.lattice.matrix)
+                velocities = [self.lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
                 constraint_vectors = [
                     _constraint_vectors_to_cartesian(ctype, vectors, self.lattice)
                     for ctype, vectors in zip(constraint_types, constraint_vectors, strict=True)

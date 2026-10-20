@@ -1063,3 +1063,19 @@ def test_copy_is_independent():
     # Cleaning nans works on a copy, so the original's nested entries are left untouched
     assert "epsBulk" not in clean_infile_of_nans(jif)["fluid-solvent"][1]
     assert "epsBulk" in jif["fluid-solvent"][1]
+
+
+def test_jdftxstructure_velocities_are_cartesian():
+    # Velocities in lattice coordinates are converted to Cartesian (angstrom per time unit) like positions are
+    r = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])  # Lattice vectors are the columns, in bohr
+    jif = JDFTXInfile.from_str(
+        "lattice 10 2 1 0 9 3 0 0 8\nion H 0.1 0.2 0.3 v 0.01 0.02 0.03 1\nion O 0.4 0.5 0.6 1\n"
+    )
+    jstruct = JDFTXStructure.from_jdftxinfile(jif)
+    np.testing.assert_allclose(jstruct.velocities[0], r @ [0.01, 0.02, 0.03] * bohr_to_ang)
+    assert jstruct.velocities[1] is None
+    # Writing in the same coordinates gives back the original ion tags
+    assert_same_value(JDFTXInfile.from_str(jstruct.get_str())["ion"], jif["ion"])
+    # Writing in Cartesian coordinates converts the velocities along with the positions
+    cart_jstruct = JDFTXStructure.from_jdftxinfile(JDFTXInfile.from_str(jstruct.get_str(in_cart_coords=True)))
+    np.testing.assert_allclose(cart_jstruct.velocities[0], jstruct.velocities[0])
