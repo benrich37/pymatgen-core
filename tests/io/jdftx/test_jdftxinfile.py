@@ -285,7 +285,7 @@ def test_jdftxstructure():
     # Double checking I got the column/row order right
     assert_same_value(jstruct.structure.lattice, newstruct.structure.lattice)
     assert jstruct.natoms == 16
-    with open(ex_infile2_fname) as f:
+    with open(ex_infile2_fname, encoding="utf-8") as f:
         lines = list.copy(list(f))
     # Test different ways of creating a JDFTXStructure object create the same object if data is the same
     data = "\n".join(lines)
@@ -454,8 +454,10 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 v "
-            "1.000000000000000 1.000000000000000 1.000000000000000 0",
+            (
+                "ion H 1.000000000000000 1.000000000000000 1.000000000000000 v "
+                "1.000000000000000 1.000000000000000 1.000000000000000 0"
+            ),
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -470,8 +472,10 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 Linear "
-            "1.000000000000000 1.000000000000000 1.000000000000000",
+            (
+                "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 Linear "
+                "1.000000000000000 1.000000000000000 1.000000000000000"
+            ),
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -485,9 +489,11 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 HyperPlane "
-            "1.000000000000000 1.000000000000000 1.000000000000000 g1 "
-            "HyperPlane 1.000000000000000 1.000000000000000 1.000000000000000 g1",
+            (
+                "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 HyperPlane "
+                "1.000000000000000 1.000000000000000 1.000000000000000 g1 "
+                "HyperPlane 1.000000000000000 1.000000000000000 1.000000000000000 g1"
+            ),
             {
                 "species-id": "H",
                 "x0": 1.0,

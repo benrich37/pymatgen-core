@@ -54,7 +54,7 @@ def read_file(file_name: str) -> list[str]:
     text: list[str]
         list of strings from file
     """
-    with open(file_name) as f:
+    with open(file_name, encoding="utf-8") as f:
         text = f.readlines()
     f.close()
     return text
@@ -503,7 +503,7 @@ def _parse_kptsfrom_bandprojections_file(bandfile_filepath: str | Path) -> tuple
     wk_list: list[float] = []
     k_points_list: list[NDArray] = []
     kpt_lines = []
-    with open(bandfile_filepath) as f:
+    with open(bandfile_filepath, encoding="utf-8") as f:
         for line in f:
             if line.startswith("#") and ";" in line:
                 _line = line.split(";")[0].lstrip("#")
@@ -530,7 +530,7 @@ def _is_complex_bandfile_filepath(bandfile_filepath: str | Path) -> bool:
     """
     hash_lines = 0
     val = True
-    with open(bandfile_filepath) as f:
+    with open(bandfile_filepath, encoding="utf-8") as f:
         for _i, line in enumerate(f):
             if "#" in line:
                 hash_lines += 1
@@ -557,7 +557,7 @@ orb_ref_to_o_dict = {
     "dyz": int(Orbital.dyz),
     "dz2": int(Orbital.dz2),
     "dxz": int(Orbital.dxz),
-    "dx2-y2": int(Orbital.dx2),
+    "dx2-y2": int(Orbital.dx2_y2),
     # Keep the f-orbitals arbitrary-ish until they get designated names in pymatgen.
     orb_ref_list[-1][0]: int(Orbital.f_3),
     orb_ref_list[-1][1]: int(Orbital.f_2),

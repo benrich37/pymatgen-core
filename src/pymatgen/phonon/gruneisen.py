@@ -20,7 +20,7 @@ try:
     import phonopy
     from phonopy.phonon.dos import TotalDos
 except ImportError:
-    phonopy = TotalDos = None
+    phonopy = TotalDos = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -174,7 +174,7 @@ class GruneisenParameter(MSONable):
         return thermal_cond
 
     @property
-    @requires(phonopy, "This method requires phonopy to be installed")
+    @requires(phonopy is not None, "This method requires phonopy to be installed")
     def tdos(self):
         """The total DOS (re)constructed from the gruneisen.yaml file."""
 
@@ -212,19 +212,32 @@ class GruneisenParameter(MSONable):
         """Get Debye temperature in K as implemented in phonopy.
 
         Args:
-            freq_max_fit: Maximum frequency to include for fitting.
-                          Defaults to include first quartile of frequencies.
+            freq_max_fit: Maximum frequency for fitting.
+                Defaults to the first quartile of frequencies.
 
         Returns:
             Debye temperature in K.
         """
         if self.structure is None:
-            raise ValueError("Structure is not defined.")
-        # Use of phonopy classes to compute Debye frequency
+            raise ValueError("Structure not defined.")
+        # Use phonopy classes to compute Debye frequency.
         t = self.tdos
-        t.set_Debye_frequency(num_atoms=len(self.structure), freq_max_fit=freq_max_fit)
-        f_d = t.get_Debye_frequency()  # in THz
-        # f_d in THz is converted in a temperature (K)
+        if hasattr(t, "run_debye_frequency"):
+            try:
+                f_d = t.run_debye_frequency(freq_max_fit=freq_max_fit)
+            except AttributeError as exc:
+                raise RuntimeError(
+                    "Installed phonopy exposes run_debye_frequency() but cannot compute "
+                    "Debye frequency in this environment."
+                ) from exc
+            if f_d is None and hasattr(t, "get_Debye_frequency"):
+                f_d = t.get_Debye_frequency()
+        elif hasattr(t, "set_Debye_frequency") and hasattr(t, "get_Debye_frequency"):
+            t.set_Debye_frequency(num_atoms=len(self.structure), freq_max_fit=freq_max_fit)
+            f_d = t.get_Debye_frequency()
+        else:
+            raise AttributeError("Phonopy TotalDos does not expose a Debye frequency API.")
+        # f_d in THz converted to temperature (K)
         return const.value("Planck constant") * f_d * const.tera / const.value("Boltzmann constant")
 
     @property

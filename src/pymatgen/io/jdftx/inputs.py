@@ -219,7 +219,7 @@ class JDFTXInfile(dict, MSONable):
         path_parent = None
         if assign_path_parent:
             path_parent = Path(filename).parents[0]
-        with open(filename) as file:
+        with open(filename, encoding="utf-8") as file:
             return cls.from_str(
                 file.read(),
                 dont_require_structure=dont_require_structure,
@@ -508,7 +508,7 @@ class JDFTXInfile(dict, MSONable):
         write_infile = self
         if strip_nan:
             write_infile = clean_infile_of_nans(self)
-        with open(filename, mode="w") as file:
+        with open(filename, encoding="utf-8", mode="w") as file:
             file.write(str(write_infile))
 
     @classmethod
@@ -1400,7 +1400,7 @@ class JDFTXStructure(MSONable):
             if label not in valid_labels:
                 # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
                 # (e.g. "Fe" for species "Fe2+")
-                fallbacks = (site.species_string, getattr(site.specie, "name", None))
+                fallbacks: tuple[str, ...] = (site.species_string, getattr(site.specie, "name", ""))
                 label = next((x for x in fallbacks if x in valid_labels), label)
                 if label not in valid_labels:
                     raise ValueError(f"Could not correct site label {label} for site (index {i})")
@@ -1475,7 +1475,7 @@ class JDFTXStructure(MSONable):
             filename (PathLike): Filename to write to.
             **kwargs: Kwargs to pass to JDFTXStructure.get_str.
         """
-        with open(filename, mode="w") as file:
+        with open(filename, encoding="utf-8", mode="w") as file:
             file.write(self.get_str(**kwargs))
 
     def as_dict(self) -> dict:

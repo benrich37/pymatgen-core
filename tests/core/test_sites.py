@@ -246,8 +246,9 @@ class TestPeriodicSite(MatSciTest):
 
         site = PeriodicSite("Fe", [0.25, 0.35, 0.45], self.lattice)
 
-        # Assignment via attribute syntax must land in .properties
-        site.magmom = 5
+        # Assignment via attribute syntax must land in .properties (deprecated, but still supported)
+        with pytest.warns(DeprecationWarning, match="Setting attribute magmom on PeriodicSite is deprecated"):
+            site.magmom = 5
         assert site.properties["magmom"] == 5, "magmom should be stored in site.properties, not as a bare attribute"
 
         # Round-trip through from_sites must preserve it
@@ -262,8 +263,9 @@ class TestPeriodicSite(MatSciTest):
             ["Cr", "Fe"],
             [[0, 0, 0], [0.5, 0.5, 0.5]],
         )
-        struct.sites[0].magmom = -5
-        struct.sites[1].magmom = 5
+        for site, magmom in zip(struct.sites, (-5, 5), strict=True):
+            with pytest.warns(DeprecationWarning, match="Setting attribute magmom on PeriodicSite is deprecated"):
+                site.magmom = magmom
         sorted_struct = struct.get_sorted_structure()
         assert all("magmom" in site.properties for site in sorted_struct.sites), (
             "magmom lost on one or more sites after get_sorted_structure"
@@ -278,6 +280,19 @@ class TestPeriodicSite(MatSciTest):
         assert str(self.site2) == "[0. 0. 0.] Si:0.5"
         assert str(self.propertied_site) == "[2.5 3.5 4.5] Fe2+"
         assert str(self.labeled_site) == "[2.5 3.5 4.5] Fe"
+
+    def test_invalid_coordinate(self):
+        """Test that non (3,)-shaped coordinate settings are blocked."""
+        with pytest.raises(ValueError, match="Coordinates"):
+            PeriodicSite("H", np.zeros((2,)), Lattice.cubic(1))
+
+        # Also block the setters from accepting false shapes
+        okay = PeriodicSite("H", np.zeros((3,)), Lattice.cubic(1))
+        with pytest.raises(ValueError, match="coordinates"):
+            okay.frac_coords = np.zeros((2,))
+        okay = PeriodicSite("H", np.zeros((3,)), Lattice.cubic(1))
+        with pytest.raises(ValueError, match="coordinates"):
+            okay.coords = np.zeros((2,))
 
 
 def get_distance_and_image_old(site1, site2, jimage=None):

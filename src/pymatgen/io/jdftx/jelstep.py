@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
-from monty.dev import deprecated
 
 from pymatgen.core.units import Ha_to_eV
 from pymatgen.io.jdftx._output_utils import get_colon_val
@@ -204,7 +203,7 @@ class JElStep:
             fillings_line (str): A line of text from a JDFTx out file containing the electronic
             minimization data.
         """
-        _fillings_line = fillings_line.split("magneticMoment: [ ")[1].split(" ]")[0].strip()
+        _fillings_line = fillings_line.split("magneticMoment: [ ")[1].split(" ]", maxsplit=1)[0].strip()
         self.abs_magneticmoment = get_colon_val(_fillings_line, "Abs: ")
         self.tot_magneticmoment = get_colon_val(_fillings_line, "Tot: ")
 
@@ -245,10 +244,6 @@ class JElStep:
             else:
                 dct[fld] = value
         return dct
-
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
 
     def __str__(self) -> str:
         """
@@ -433,10 +428,6 @@ class JElSteps:
                 dct[fld] = value
         return dct
 
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
-
     def __getitem__(self, key: int | str) -> JElStep | Any:
         """Return item.
 
@@ -547,7 +538,7 @@ def _gather_JElSteps_line_collections(opt_type: str, text_slice: list[str]) -> t
     return line_collections, lines_collect
 
 
-def _parse_ending_lines(ending_lines: list[str], opt_type: str) -> tuple[None | bool, None | str]:
+def _parse_ending_lines(ending_lines: list[str], opt_type: str) -> tuple[bool | None, str | None]:
     """Parse ending lines.
 
     Parses the ending lines of text from a JDFTx out file corresponding to
@@ -601,7 +592,7 @@ def _is_stopping_line(i: int, line_text: str, opt_type: str) -> bool:
     return f"{opt_type}:" in line_text and "Stopping" in line_text
 
 
-def _read_converged_line(line_text: str) -> tuple[bool, None | str]:
+def _read_converged_line(line_text: str) -> tuple[bool, str | None]:
     """Set class variables converged and converged_reason.
 
     Args:
@@ -609,11 +600,11 @@ def _read_converged_line(line_text: str) -> tuple[bool, None | str]:
         convergence for a JDFTx optimization step.
     """
     converged = True
-    converged_reason = line_text.split("(")[1].split(")")[0].strip()
+    converged_reason = line_text.split("(")[1].split(")", maxsplit=1)[0].strip()
     return converged, converged_reason
 
 
-def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, None | str]:
+def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, str | None]:
     """Set class variables converged and converged_reason.
 
     Args:
@@ -621,7 +612,7 @@ def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, None | str
         stopping for a JDFTx optimization step.
     """
     converged = False
-    converged_reason = line_text.split(f"{opt_type}:")[1].split("Stopping")[0].rstrip("(").strip()
+    converged_reason = line_text.split(f"{opt_type}:")[1].split("Stopping", maxsplit=1)[0].rstrip("(").strip()
     if "roundoff" in converged_reason:
         converged = True
     return converged, converged_reason

@@ -10,7 +10,6 @@ import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
-from monty.dev import deprecated
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1051,10 +1050,6 @@ class JOutStructure(Structure):
             else:
                 dct[fld] = value
         return dct
-
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
 
     # TODO: Add string representation for JOutStructure-specific meta-data
     # This method currently only returns the Structure Summary as inherited from
