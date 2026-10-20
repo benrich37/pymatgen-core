@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
+from pymatgen.io.jdftx.inputs import _constraint_vector_to_cartesian
 from pymatgen.io.jdftx.jelstep import JElSteps
 
 __author__ = "Ben Rich"
@@ -114,7 +115,7 @@ class JOutStructure(Structure):
     _velocities: list[NDArray[np.float64] | None] | None = None
     _constraint_vectors: list[NDArray[np.float64] | list[NDArray[np.float64]] | None] | None = None
     _constraint_types: list[str | None] | None = None
-    _group_names: list[list[str] | None] | None = None
+    _group_names: list[list[str | None] | None] | None = None
 
     def _elecmindata_postinit(self) -> None:
         """Post-initialization method for attributes taken from elecmindata."""
@@ -267,29 +268,31 @@ class JOutStructure(Structure):
             constraint_vectors (list[np.ndarray | list[np.ndarray] | None] | None): The constraint_vectors of the
             atoms in the system.
         """
+        self._constraint_vectors = constraint_vectors
         if (constraint_vectors is not None) and _is_homogenous(constraint_vectors):
             self.add_site_property("constraint_vectors", list(constraint_vectors))
         elif "constraint_vectors" in self.site_properties:
             self.remove_site_property("constraint_vectors")
 
     @property
-    def group_names(self) -> Sequence | list[list[str] | None] | None:
+    def group_names(self) -> Sequence | list[list[str | None] | None] | None:
         """Return the group_names.
 
         Returns:
-            list[list[str] | None] | None: The group_names of the atoms in the system.
+            list[list[str | None] | None] | None: The group_names of the atoms in the system.
         """
         if "group_names" not in self.site_properties:
             return self._group_names
         return self.site_properties["group_names"]
 
     @group_names.setter
-    def group_names(self, group_names: list[list[str] | None] | None) -> None:
+    def group_names(self, group_names: list[list[str | None] | None] | None) -> None:
         """Set the group_names.
 
         Args:
-            group_names (list[list[str] | None] | None): The group_names of the atoms in the system.
+            group_names (list[list[str | None] | None] | None): The group_names of the atoms in the system.
         """
+        self._group_names = group_names
         if (group_names is not None) and _is_homogenous(group_names):
             self.add_site_property("group_names", list(group_names))
         elif "group_names" in self.site_properties:
@@ -719,7 +722,7 @@ class JOutStructure(Structure):
             velocities: list[NDArray[np.float64] | None] = []
             constraint_types: list[str | None] = []
             constraint_vectors: list[list[NDArray[np.float64]] | NDArray[np.float64] | None] = []
-            group_names_list: list[list[str] | None] = []
+            group_names_list: list[list[str | None] | None] = []
             natoms = len(posns_lines) - 1
             if "thermostat-velocity" in posns_lines[-1]:
                 natoms -= 1
@@ -741,6 +744,10 @@ class JOutStructure(Structure):
             posns = np.array(_posns)
             if coords_type.lower() != "cartesian":
                 posns = np.dot(posns, self.lattice.matrix)
+                constraint_vectors = [
+                    _constraint_vectors_to_cartesian(ctype, vectors, self.lattice)
+                    for ctype, vectors in zip(constraint_types, constraint_vectors, strict=True)
+                ]
             else:
                 posns *= bohr_to_ang
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
@@ -1052,6 +1059,27 @@ class JOutStructure(Structure):
 constraint_types = ["HyperPlane", "Linear", "Planar"]
 
 
+def _constraint_vectors_to_cartesian(
+    constraint_type: str | None, vectors: NDArray[np.float64] | list[NDArray[np.float64]] | None, lattice: Lattice
+) -> NDArray[np.float64] | list[NDArray[np.float64]] | None:
+    """Convert a site's constraint vector(s) from lattice to Cartesian coordinates.
+
+    Args:
+        constraint_type (str | None): Constraint type of the site.
+        vectors (NDArray | list[NDArray] | None): Constraint vector (one per hyperplane for a HyperPlane constraint)
+            in lattice coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        NDArray | list[NDArray] | None: Constraint vector(s) in Cartesian coordinates.
+    """
+    if constraint_type is None or vectors is None:
+        return vectors
+    if constraint_type == "HyperPlane":
+        return [_constraint_vector_to_cartesian(constraint_type, v, lattice) for v in vectors]
+    return _constraint_vector_to_cartesian(constraint_type, vectors, lattice)
+
+
 def _parse_posn_line(
     posn_line: str,
 ) -> tuple[
@@ -1061,14 +1089,14 @@ def _parse_posn_line(
     NDArray[np.float64] | None,
     str | None,
     list[NDArray[np.float64]] | NDArray[np.float64] | None,
-    list[str] | None,
+    list[str | None] | None,
 ]:
     """Parse a single position line.
 
     Parse a line of text corresponding to the position of an ion (atom) in a
     JDFTx out file. Returns ion name, ion position, selective dynamics, velocity (optional), constraint
-    type (optional), constraint vector(s) (optional, may be a list if multiple HyperPlane constraints), and group names
-    (if multiple HyperPlane constraints).
+    type (optional), constraint vector(s) (optional, a list for HyperPlane constraints), and group names
+    (for HyperPlane constraints).
 
     tuple: A tuple containing the following elements:
         - str: Ion name (element symbol)
@@ -1077,10 +1105,11 @@ def _parse_posn_line(
         - np.ndarray | None: Velocity as a 3D vector if present, otherwise None
         - str | None: Constraint type (e.g., "HyperPlane") if constrained, otherwise None
         - list[np.ndarray] | np.ndarray | None: Constraint vector(s), returns:
-            - list[np.ndarray]: Multiple constraint vectors if multiple HyperPlane constraints
-            - np.ndarray: Single constraint vector for a single constraint
+            - list[np.ndarray]: One vector per hyperplane for a HyperPlane constraint
+            - np.ndarray: Single constraint vector for a Linear or Planar constraint
             - None: If no constraints are present
-        - list[str] | None: Group names for constraints if multiple HyperPlane constraints, otherwise None
+        - list[str | None] | None: Group name of each hyperplane (None if unlabeled) for a HyperPlane constraint,
+            otherwise None
     """
     psplit: list[str] = list(posn_line.split())
     name: str = psplit[1]
@@ -1089,7 +1118,7 @@ def _parse_posn_line(
     sd: list[int] = []
     constraint_type: str | None = None
     constraint_vector: NDArray[np.float64] | list[NDArray[np.float64]] | None = None
-    group_names: list[str] | None = None
+    group_names: list[str | None] | None = None
     # Expecting a line to looks like "ion Ir   0.087   0.23   0.285 0"
     # If that last (6th) element is "v", we are dealing with an MD calculation and line might look like
     # "ion Ir   0.087481227766366   0.236770029479291   0.285789315528821 v   0.002  0.10   0.03 1"
@@ -1108,14 +1137,14 @@ def _parse_posn_line(
         try:
             constraint_type = psplit[offset + 6]
             if constraint_type in constraint_types:
-                # Check for multiple HyperPlane constraints
+                # A HyperPlane constraint can hold several hyperplanes
                 if constraint_type == "HyperPlane":
-                    if psplit.count("HyperPlane") > 1:
-                        idcs = [i for i, v in enumerate(psplit) if v == "HyperPlane"]
-                        constraint_vector = [np.array([float(x) for x in psplit[i + 1 : i + 4]]) for i in idcs]
-                        group_names = [psplit[i + 4] for i in idcs]
-                    else:
-                        constraint_vector = np.array([float(x) for x in psplit[offset + 7 : offset + 10]])
+                    idcs = [i for i, v in enumerate(psplit) if v == "HyperPlane"]
+                    constraint_vector = [np.array([float(x) for x in psplit[i + 1 : i + 4]]) for i in idcs]
+                    # A hyperplane's group label is optional (JDFTx prints nothing for an unlabeled one)
+                    group_names = [
+                        psplit[i + 4] if i + 4 < len(psplit) and psplit[i + 4] != "HyperPlane" else None for i in idcs
+                    ]
                 else:
                     constraint_vector = np.array([float(x) for x in psplit[offset + 7 : offset + 10]])
             else:

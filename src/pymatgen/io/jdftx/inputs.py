@@ -466,13 +466,13 @@ class JDFTXInfile(dict, MSONable):
                     continue
                 added_tag_in_group = True
                 tag_object: AbstractTag = MASTER_TAG_LIST[tag_group][tag]
-                if isinstance(tag_object, MultiformatTag):
-                    i, _ = tag_object._determine_format_option(tag, self_as_dict[tag])
-                    tag_object = tag_object.format_options[i]
-                if tag_object.can_repeat and isinstance(self_as_dict[tag], list):
-                    text += [tag_object.write(tag, entry) for entry in self_as_dict[tag]]
-                else:
-                    text.append(tag_object.write(tag, self_as_dict[tag]))
+                value = self_as_dict[tag]
+                for entry in value if tag_object.can_repeat and isinstance(value, list) else [value]:
+                    entry_object = tag_object
+                    if isinstance(tag_object, MultiformatTag):  # Entries of a repeated tag can use different formats
+                        i, _ = tag_object._determine_format_option(tag, entry)
+                        entry_object = tag_object.format_options[i]
+                    text.append(entry_object.write(tag, entry))
             if added_tag_in_group:
                 text.append("")
         return text
@@ -783,20 +783,14 @@ class JDFTXInfile(dict, MSONable):
         # if val2 = {b: 3}, then val2 -> {a: 1, b: 3} and the comparison will return False)
         differing_tags = []
         for tag in self:
-            val1 = self[tag]
-            obj1 = get_tag_object_on_val(tag, val1)
-            val2 = None
-            obj2 = None
-            if tag not in other:
-                if tag in ref_infile:
-                    val2 = ref_infile[tag]
-                    obj2 = get_tag_object_on_val(tag, val2)
-                else:
-                    differing_tags.append(tag)
-            else:
+            if tag in other:
                 val2 = other[tag]
-                obj2 = get_tag_object_on_val(tag, val2)
-            if not (val2 is None or obj2 is None) and not obj1.is_equal_to(val1, obj2, val2):
+            elif tag in ref_infile:
+                val2 = ref_infile[tag]
+            else:
+                differing_tags.append(tag)
+                continue
+            if not _is_equal_tag_value(tag, self[tag], val2):
                 differing_tags.append(tag)
         return differing_tags
 
@@ -960,6 +954,39 @@ class JDFTXInfile(dict, MSONable):
 ref_infile = JDFTXInfile.from_dict(default_inputs, validate_value_boundaries=False)
 
 
+def _is_equal_tag_value(tag: str, val1: Any, val2: Any) -> bool:
+    """Check if two values of a tag are equal.
+
+    Entries of a repeated multiformat tag can each use a different format (e.g. ion tags with different constraint
+    types), so each entry is compared using the format it matches.
+
+    Args:
+        tag (str): Tag name.
+        val1 (Any): First value of the tag.
+        val2 (Any): Second value of the tag.
+
+    Returns:
+        bool: Whether the two values are equal.
+    """
+    tag_object = get_tag_object(tag)
+    if not (
+        isinstance(tag_object, MultiformatTag)
+        and tag_object.can_repeat
+        and isinstance(val1, list)
+        and isinstance(val2, list)
+    ):
+        return get_tag_object_on_val(tag, val1).is_equal_to(val1, get_tag_object_on_val(tag, val2), val2)
+    if len(val1) != len(val2):
+        return False
+
+    def entries_equal(v1: Any, v2: Any) -> bool:
+        return get_tag_object_on_val(tag, v1).is_equal_to([v1], get_tag_object_on_val(tag, v2), [v2])
+
+    if tag_object.format_options[0].ordered:
+        return all(entries_equal(v1, v2) for v1, v2 in zip(val1, val2, strict=True))
+    return all(any(entries_equal(v1, v2) for v2 in val2) for v1 in val1)
+
+
 def _allnone(val) -> bool:
     """Check if all elements in a list are None.
 
@@ -1070,7 +1097,10 @@ def _get_removal_path(edit_infile: JDFTXInfile, popmap: list[str | int]) -> list
     tag = popmap[0]
     if not isinstance(tag, str):
         raise TypeError("First element of popmap must be a tag string here")
-    tag_object = get_tag_object_on_val(tag, edit_infile[tag])
+    value = edit_infile[tag]
+    if get_tag_object(tag).can_repeat and isinstance(value, list) and len(popmap) > 1 and isinstance(popmap[1], int):
+        value = value[popmap[1]]  # Entries of a repeated multiformat tag can each use a different format
+    tag_object = get_tag_object_on_val(tag, value)
     if not isinstance(tag_object, TagContainer):
         return list(popmap)
     subtag: AbstractTag = tag_object
@@ -1122,15 +1152,16 @@ class JDFTXStructure(MSONable):
         write_cart_coords (bool): Whether to write cartesian coordinates. Defaults to False.
         velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available. Kept separate from
             structure.site_properties["velocities"] to allow inhomogeneous shaping.
-        constraint_types (list[str | None]): Constraint types for each site if available. Kept separate from
-            structure.site_properties["constraint_types"] to allow inhomogeneous shaping.
+        constraint_types (list[str | None]): Constraint type ("Linear", "Planar", "HyperPlane", or None) for each site
+            if available. Read from structure.site_properties["constraint_types"] if not given.
         constraint_vectors (list[np.ndarray | list[np.ndarray] | None]): Constraint vectors for each site if
-            available. Kept separate from structure.site_properties["constraint_vectors"] to allow inhomogeneous
-            shaping. i'th entry must be a list of vectors if the i'th constraint_type is "HyperPlane". Otherwise,
-            a single vector is expected.
-        hyperplane_group_names (list[list[str] | None]): Group names for each site if available. Kept separate from
-            structure.site_properties["group_names"] to allow inhomogeneous shaping. i'th entry must be a list of group
-            names if the i'th constraint_type is "HyperPlane". Otherwise, None is expected.
+            available, in Cartesian coordinates (see _constraint_vector_to_cartesian). Read from
+            structure.site_properties["constraint_vectors"] if not given. i'th entry must be a list of vectors if the
+            i'th constraint_type is "HyperPlane". Otherwise, a single vector is expected.
+        hyperplane_group_names (list[list[str | None] | None]): Group names for each site if available. Read from
+            structure.site_properties["group_names"] if not given. i'th entry must be a list of group names (one per
+            hyperplane, None for an unlabeled hyperplane) if the i'th constraint_type is "HyperPlane". Otherwise, None
+            is expected.
     """
 
     structure: Structure | None = None
@@ -1156,29 +1187,27 @@ class JDFTXStructure(MSONable):
             self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(self.selective_dynamics)
         # For the optional properties, if they are all None, set to None to avoid writing them out, but check for
         # data in structure.site_properties to populate them if available.
-        properties_to_sync = []
-        if _allnone(self.selective_dynamics):
-            self.selective_dynamics = None
-            properties_to_sync.append("selective_dynamics")
-        if _allnone(self.velocities):
-            self.velocities = None
-            properties_to_sync.append("velocities")
-        # We do not continue this for constraint_types, constraint_vectors, hyperplane_group_names
-        # because these are likely inhomogeneous, and thus cannot be stored in structure.site_properties
-        for x in properties_to_sync:
-            self._sync_site_property(x)
+        optional_properties = [
+            "selective_dynamics",
+            "velocities",
+            "constraint_types",
+            "constraint_vectors",
+            "hyperplane_group_names",
+        ]
+        for x in optional_properties:
+            if _allnone(getattr(self, x)):
+                setattr(self, x, None)
+                self._sync_site_property(x)
 
     def _sync_site_property(self, x: str) -> None:
         """Update a single JDFTXStructure class variable from structure site properties."""
-        if self.structure is None:
+        site_property = "group_names" if x == "hyperplane_group_names" else x
+        if self.structure is None or site_property not in self.structure.site_properties:
             return
-        if x in ["velocities", "constraint_types", "constraint_vectors", "group_names"]:
-            if x in self.structure.site_properties:
-                setattr(self, x, self.structure.site_properties[x])
-        elif x == "selective_dynamics" and "selective_dynamics" in self.structure.site_properties:
-            self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(
-                self.structure.site_properties["selective_dynamics"]
-            )
+        value = self.structure.site_properties[site_property]
+        setattr(
+            self, x, selective_dynamics_site_prop_to_jdftx_interpretable(value) if x == "selective_dynamics" else value
+        )
 
     def __repr__(self) -> str:
         """Return representation of JDFTXStructure file.
@@ -1265,23 +1294,28 @@ class JDFTXStructure(MSONable):
             coords *= bohr_to_ang
             if not _allnone(velocities):
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
-        constraint_types = [x.get("constraint-type", None) for x in jdftxinfile["ion"]]
-        constraint_vectors = [
-            [x["d0"], x["d1"], x["d2"]] if "constraint-type" in x else None for x in jdftxinfile["ion"]
-        ]
-        hyperplane_vectors = [
-            [[y["d0"], y["d1"], y["d2"]] for y in x["HyperPlane"]] if "HyperPlane" in x else None
-            for x in jdftxinfile["ion"]
-        ]
-        hyperplane_groups: list = [None for _ in range(len(hyperplane_vectors))]
-        if not all(x is None for x in hyperplane_vectors):
-            for i in range(len(hyperplane_vectors)):
-                if hyperplane_vectors[i] is not None:
-                    constraint_types[i] = "HyperPlane"
-                    constraint_vectors[i] = hyperplane_vectors[i]
-            hyperplane_groups = [
-                [y["group"] for y in x["HyperPlane"]] if "HyperPlane" in x else None for x in jdftxinfile["ion"]
-            ]
+        constraint_types: list[str | None] = []
+        constraint_vectors: list = []
+        hyperplane_groups: list[list[str | None] | None] = []
+        for ion in jdftxinfile["ion"]:
+            ctype: str | None = None
+            vectors: list | None = None
+            groups: list[str | None] | None = None
+            if "HyperPlane" in ion:  # One or more labeled hyperplanes
+                ctype, groups = "HyperPlane", [hp["group"] for hp in ion["HyperPlane"]]
+                vectors = [[hp["d0"], hp["d1"], hp["d2"]] for hp in ion["HyperPlane"]]
+            elif "constraint type" in ion:  # Linear, Planar, or a single unlabeled hyperplane
+                ctype = ion["constraint type"]
+                groups = [None] if ctype == "HyperPlane" else None
+                vectors = [[ion["d0"], ion["d1"], ion["d2"]]]
+            if ctype is not None and vectors is not None:
+                if not coords_are_cartesian:
+                    vectors = [_constraint_vector_to_cartesian(ctype, v, lattice).tolist() for v in vectors]
+                if ctype != "HyperPlane":
+                    vectors = vectors[0]
+            constraint_types.append(ctype)
+            constraint_vectors.append(vectors)
+            hyperplane_groups.append(groups)
 
         struct: Structure = Structure(
             lattice,
@@ -1292,9 +1326,10 @@ class JDFTXStructure(MSONable):
             coords_are_cartesian=coords_are_cartesian,
         )
         if fill_site_properties:
+            site_properties: list[list] = [velocities, constraint_types, constraint_vectors, hyperplane_groups]
             for prop, val in zip(
                 ["velocities", "constraint_types", "constraint_vectors", "group_names"],
-                [velocities, constraint_types, constraint_vectors, hyperplane_groups],
+                site_properties,
                 strict=True,
             ):
                 if (val is not None) and (not all(x is None for x in val)):
@@ -1369,25 +1404,49 @@ class JDFTXStructure(MSONable):
                     "vx2": self.velocities[i][2] * conv,
                 }
             # Gather constraints if present
-            if ((self.constraint_types is not None) and (self.constraint_vectors is not None)) and (
-                self.constraint_types[i] is not None
-            ):
-                ctype = self.constraint_types[i]
-                if ctype == "HyperPlane":
-                    ion_dict_rep["HyperPlane"] = []
-                    if self.constraint_vectors[i] is not None:
-                        for j, hyperplane in enumerate(self.constraint_vectors[i]):
-                            _hyperplane = {}
-                            for k in range(3):
-                                _hyperplane["d" + str(k)] = hyperplane[k]
-                            _hyperplane["group"] = self.hyperplane_group_names[i][j]
-                            ion_dict_rep["HyperPlane"].append(_hyperplane)
-                else:
-                    ion_dict_rep["constraint-type"] = ctype
-                    for j in range(3):
-                        ion_dict_rep["d" + str(j)] = self.constraint_vectors[i][j]
+            if self.constraint_types is not None and self.constraint_types[i] is not None:
+                ion_dict_rep.update(self._get_constraint_tags(i, sd, in_cart_coords))
             jdftx_tag_dict["ion"].append(ion_dict_rep)
         return str(JDFTXInfile.from_dict(jdftx_tag_dict))
+
+    def _get_constraint_tags(self, i: int, move_scale: int, in_cart_coords: bool) -> dict[str, Any]:
+        """Get the ion tag entries for the constraint on a site.
+
+        Args:
+            i (int): Site index.
+            move_scale (int): moveScale written for the site.
+            in_cart_coords (bool): Whether the ion tags are written in Cartesian coordinates.
+
+        Returns:
+            dict[str, Any]: Constraint entries to add to the site's ion tag.
+
+        Raises:
+            ValueError: If the constraint can't be written as a valid JDFTx constraint.
+        """
+        ctype = cast("list", self.constraint_types)[i]
+        if ctype not in ("Linear", "Planar", "HyperPlane"):
+            raise ValueError(f"Unknown constraint type {ctype} for site (index {i})")
+        if cast("list", self.constraint_vectors)[i] is None:
+            raise ValueError(f"Site (index {i}) has a {ctype} constraint but has no constraint vector")
+        if not move_scale:  # JDFTx rejects constraints on fixed ions
+            raise ValueError(f"Site (index {i}) has a {ctype} constraint but a moveScale of 0")
+        vectors = np.reshape(cast("list", self.constraint_vectors)[i], (-1, 3)).astype(float)
+        if ctype != "HyperPlane" and (len(vectors) != 1 or not vectors.any()):
+            raise ValueError(f"{ctype} constraint vector for site (index {i}) must be a single non-zero vector")
+        if not in_cart_coords:
+            vectors = np.array([_constraint_vector_from_cartesian(ctype, v, self.structure.lattice) for v in vectors])
+        groups = None if self.hyperplane_group_names is None else self.hyperplane_group_names[i]
+        if groups is None:
+            groups = [None] * len(vectors)
+        if len(vectors) == 1 and groups[0] is None:  # Linear, Planar, or a single unlabeled hyperplane
+            return {"constraint type": ctype, "d0": vectors[0][0], "d1": vectors[0][1], "d2": vectors[0][2]}
+        if None in groups:
+            raise ValueError(f"Each hyperplane on site (index {i}) needs a group name when there is more than one")
+        return {
+            "HyperPlane": [
+                {"d0": v[0], "d1": v[1], "d2": v[2], "group": group} for v, group in zip(vectors, groups, strict=True)
+            ]
+        }
 
     def write_file(self, filename: PathLike, **kwargs) -> None:
         """Write JDFTXStructure to a file.
@@ -1516,3 +1575,41 @@ def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
         latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]])
         _lattice *= latt_scale
     return Lattice(_lattice.T * bohr_to_ang)  # convert to row vector format, in Ang
+
+
+def _constraint_vector_to_cartesian(constraint_type: str, vector: ArrayLike, lattice: Lattice) -> np.ndarray:
+    """Convert an ion constraint vector from JDFTx lattice coordinates to Cartesian coordinates.
+
+    As in JDFTx, a Linear constraint direction is covariant (like a direction index) and a Planar or HyperPlane
+    normal is contravariant (like a plane index). The result is in the bohr-based units JDFTx uses internally, so it
+    matches what JDFTx reads from an input file with Cartesian coords-type.
+
+    Args:
+        constraint_type (str): "Linear", "Planar", or "HyperPlane".
+        vector (ArrayLike): Constraint vector in lattice coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        np.ndarray: Constraint vector in Cartesian coordinates.
+    """
+    r = lattice.matrix.T / bohr_to_ang  # JDFTx lattice vectors (columns), in bohr
+    vector = np.asarray(vector, dtype=float)
+    return r @ vector if constraint_type == "Linear" else np.linalg.solve(r.T, vector)
+
+
+def _constraint_vector_from_cartesian(constraint_type: str, vector: ArrayLike, lattice: Lattice) -> np.ndarray:
+    """Convert an ion constraint vector from Cartesian coordinates to JDFTx lattice coordinates.
+
+    Inverse of _constraint_vector_to_cartesian.
+
+    Args:
+        constraint_type (str): "Linear", "Planar", or "HyperPlane".
+        vector (ArrayLike): Constraint vector in Cartesian coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        np.ndarray: Constraint vector in lattice coordinates.
+    """
+    r = lattice.matrix.T / bohr_to_ang  # JDFTx lattice vectors (columns), in bohr
+    vector = np.asarray(vector, dtype=float)
+    return np.linalg.solve(r, vector) if constraint_type == "Linear" else r.T @ vector

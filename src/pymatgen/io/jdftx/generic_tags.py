@@ -1236,6 +1236,12 @@ class MultiformatTag(AbstractTag):
         Returns:
             tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
         """
+        if self.can_repeat and isinstance(value, list) and all(option.can_repeat for option in self.format_options):
+            # Entries of a repeated tag can each use a different format (e.g. ion tags with different constraints)
+            entries = [
+                self._determine_format_option(tag, [entry], try_auto_type_fix=try_auto_type_fix)[1] for entry in value
+            ]
+            return tag, True, [entry for entry_list in entries for entry in entry_list]
         format_index, value = self._determine_format_option(tag, value, try_auto_type_fix=try_auto_type_fix)
         is_valid = format_index is not None
         return tag, is_valid, value

@@ -960,12 +960,95 @@ def test_jdftxstructure_keeps_structure_species():
     assert JDFTXStructure(structure=struct).structure.species == species_before
 
 
-def test_jdftxstructure_hyperplane_roundtrip():
-    text = "lattice Cubic 10.0\nion H 0.1 0.1 0.1 1 HyperPlane 1 0 0 g1 HyperPlane 0 1 0 g2\nion O 0.5 0.5 0.5 1\n"
-    jif = JDFTXInfile.from_str(text)
+# Non-orthogonal cell (lattice vectors are the columns, in bohr), so lattice and Cartesian constraint vectors differ
+CONSTRAINT_R = np.array([[10.0, 2.0, 1.0], [0.0, 9.0, 3.0], [0.0, 0.0, 8.0]])
+CONSTRAINT_TEXT = (
+    "lattice 10 2 1 0 9 3 0 0 8\n"
+    "ion H 0.1 0.2 0.3 1 Linear 1 0 0\n"
+    "ion O 0.4 0.5 0.6 v 0.01 0.02 0.03 1 Planar 0 1 1\n"
+    "ion H 0.7 0.8 0.9 1 HyperPlane 1 2 0 g1 HyperPlane 0 0 1 g2\n"
+    "ion O 0.2 0.4 0.6 1 HyperPlane 0 1 0\n"
+    "ion H 0.5 0.5 0.5 1\n"
+)
+
+
+def _assert_same_constraints(jstruct1: JDFTXStructure, jstruct2: JDFTXStructure):
+    assert jstruct1.constraint_types == jstruct2.constraint_types
+    assert jstruct1.hyperplane_group_names == jstruct2.hyperplane_group_names
+    for v1, v2 in zip(jstruct1.constraint_vectors, jstruct2.constraint_vectors, strict=True):
+        assert (v1 is None and v2 is None) or np.allclose(v1, v2)
+
+
+def test_jdftxstructure_constraints_are_cartesian():
+    jstruct = JDFTXStructure.from_jdftxinfile(JDFTXInfile.from_str(CONSTRAINT_TEXT))
+    assert jstruct.constraint_types == ["Linear", "Planar", "HyperPlane", "HyperPlane", None]
+    # A HyperPlane site holds a list of vectors and a list of group names (None for an unlabeled hyperplane)
+    assert jstruct.hyperplane_group_names == [None, None, ["g1", "g2"], [None], None]
+    vectors = jstruct.constraint_vectors
+    # Lattice-coordinate line directions are covariant (d_cart = R d), plane normals are contravariant (R^T d_cart = d)
+    np.testing.assert_allclose(vectors[0], CONSTRAINT_R @ [1, 0, 0])
+    np.testing.assert_allclose(CONSTRAINT_R.T @ vectors[1], [0, 1, 1])
+    np.testing.assert_allclose([CONSTRAINT_R.T @ v for v in vectors[2]], [[1, 2, 0], [0, 0, 1]])
+    np.testing.assert_allclose([CONSTRAINT_R.T @ v for v in vectors[3]], [[0, 1, 0]])
+    assert vectors[4] is None
+
+
+def test_jdftxstructure_constraints_roundtrip():
+    jif = JDFTXInfile.from_str(CONSTRAINT_TEXT)
     jstruct = JDFTXStructure.from_jdftxinfile(jif)
-    # A HyperPlane site holds a list of vectors and a list of group names; other sites hold None
-    assert jstruct.constraint_types == ["HyperPlane", None]
-    assert jstruct.constraint_vectors == [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], None]
-    assert jstruct.hyperplane_group_names == [["g1", "g2"], None]
-    assert JDFTXInfile.from_str(jstruct.get_str())["ion"] == jif["ion"]
+    # Writing in the same coordinates gives back the original ion tags
+    assert_same_value(JDFTXInfile.from_str(jstruct.get_str())["ion"], jif["ion"])
+    # Writing in Cartesian coordinates converts the constraint vectors along with the positions
+    cart_jif = JDFTXInfile.from_str(jstruct.get_str(in_cart_coords=True))
+    assert cart_jif["coords-type"] == "Cartesian"
+    _assert_same_constraints(JDFTXStructure.from_jdftxinfile(cart_jif), jstruct)
+    # Constraints are kept as site properties, so they survive a trip through a pymatgen Structure
+    _assert_same_constraints(JDFTXStructure.from_jdftxinfile(JDFTXInfile.from_structure(jif.structure)), jstruct)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_match"),
+    [
+        ({"constraint_types": ["Linear", None]}, "Constraint types are present but constraint vectors are not"),
+        ({"constraint_types": ["Twisted", None], "constraint_vectors": [[0, 0, 1], None]}, "Unknown constraint type"),
+        (
+            {"constraint_types": ["Linear", "Linear"], "constraint_vectors": [[0, 0, 1], None]},
+            "has no constraint vector",
+        ),
+        ({"constraint_types": ["Planar", None], "constraint_vectors": [[0, 0, 0], None]}, "must be a single non-zero"),
+        (
+            {
+                "constraint_types": ["Linear", None],
+                "constraint_vectors": [[0, 0, 1], None],
+                "selective_dynamics": [0, 1],
+            },
+            "moveScale of 0",
+        ),
+        (
+            {
+                "constraint_types": ["HyperPlane", None],
+                "constraint_vectors": [[[1, 0, 0], [0, 1, 0]], None],
+                "hyperplane_group_names": [["g1", None], None],
+            },
+            "needs a group name",
+        ),
+    ],
+)
+def test_jdftxstructure_constraint_errors(kwargs: dict, error_match: str):
+    jstruct = JDFTXStructure(
+        structure=Structure(Lattice.cubic(5.0), ["H", "H"], [[0, 0, 0], [0.5, 0.5, 0.5]]), **kwargs
+    )
+    with pytest.raises(ValueError, match=error_match):
+        jstruct.get_str()
+
+
+def test_mixed_format_ion_tags():
+    # Linear and labeled-HyperPlane ion tags use different ion tag formats in the same list
+    text = "lattice Cubic 10.0\nion H 0.1 0.2 0.3 1 Linear 1 0 0\nion O 0.7 0.8 0.9 1 HyperPlane 1 2 0 g1\n"
+    jif = JDFTXInfile.from_str(text)
+    assert JDFTXInfile.from_str(str(jif))["ion"] == jif["ion"]
+    assert jif.get_differing_tags(JDFTXInfile.from_str(text)) == []
+    assert jif.get_differing_tags(JDFTXInfile.from_str(text.replace("HyperPlane 1 2 0", "HyperPlane 5 2 0"))) == ["ion"]
+    # A nan in one entry only removes that entry
+    nan_jif = JDFTXInfile.from_str(text.replace("0.8 0.9 1 HyperPlane", "nan 0.9 1 HyperPlane"))
+    assert clean_infile_of_nans(nan_jif)["ion"] == jif["ion"][:1]
