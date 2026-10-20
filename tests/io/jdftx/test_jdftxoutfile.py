@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from itertools import combinations
-from time import time
+from time import process_time
+from timeit import Timer
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -66,6 +67,16 @@ def test_JDFTXOutfile_fromfile(filename: Path, known: dict):
     jdftxoutfile_fromfile_matches_known(filename, known)
 
 
+def _parse_time(filename: Path, skim_levels: tuple[str, ...] | None = None) -> float:
+    """Best-of-n CPU time of parsing an out file.
+
+    CPU time leaves out time spent waiting on other processes (e.g. other pytest-xdist workers), and taking the
+    fastest of several parses discards the ones slowed by interruptions, since noise can only add time.
+    """
+    timer = Timer(lambda: JDFTXOutfile.from_file(filename, skim_levels=skim_levels), timer=process_time)
+    return min(timer.repeat(repeat=5, number=1))
+
+
 @pytest.mark.parametrize(
     ("filename", "known", "known_simple"),
     [
@@ -75,16 +86,8 @@ def test_JDFTXOutfile_fromfile(filename: Path, known: dict):
     ],
 )
 def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
-    # Parse multiple times to get average time
-    n_iters = 3
-    # Time parsing the out file in regular mode
-    time_fulls: list[float] = []
-    for _ in range(n_iters):
-        start1 = time()
-        jof_full = JDFTXOutfile.from_file(filename)
-        time_full = time() - start1
-        time_fulls.append(time_full)
-    time_full = sum(time_fulls) / n_iters
+    jof_full = JDFTXOutfile.from_file(filename)
+    time_full = _parse_time(filename)
     # Count how minimum fewer objects can be read at each depth level
     nless_outslices = len(jof_full.slices) - 1
     nless_last_geom = len(jof_full.slices[-1].jstrucs.slices) - 1
@@ -101,14 +104,7 @@ def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
     time_save_logs = []
 
     for skim_levels in skim_levelss:
-        # Time parsing the out file in skimmed mode
-        skim_times = []
-        for _ in range(n_iters):
-            skim_start = time()
-            jof_skim = JDFTXOutfile.from_file(filename, skim_levels=skim_levels)
-            skim_time = time() - skim_start
-            skim_times.append(skim_time)
-        skim_time = sum(skim_times) / n_iters
+        jof_skim = JDFTXOutfile.from_file(filename, skim_levels=skim_levels)
         # Check that the skimmed version matches the full version where it should
         jdftxoutfile_matches_known(jof_skim, known)
         jdftxoutfile_matches_known_simple(jof_skim, known_simple)
@@ -126,8 +122,10 @@ def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
         less_outfile_slices_read = nless_outslices if "outfile" in skim_levels else 0
         less_geom_slices_read = nless_last_geom if "geom" in skim_levels else 0
         less_elec_slices_read = nless_last_elec if "elec" in skim_levels else 0
-        less_sum = less_outfile_slices_read + less_geom_slices_read + less_elec_slices_read
-        if less_sum > 0:
+        # Skipping only electronic steps does not save enough time to be detectable over noise in timing, so only
+        # test the speedup when whole out file slices or geometry steps are skipped
+        if less_outfile_slices_read + less_geom_slices_read > 0:
+            skim_time = _parse_time(filename, skim_levels)
             time_save_info = [
                 filename.name,
                 skim_levels,
@@ -137,22 +135,11 @@ def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
                 less_geom_slices_read,
                 less_elec_slices_read,
             ]
-            if not ((len(skim_levels) == 1) and (skim_levels[0] == "elec")):
-                # elec only skimming does not save enough time to be consistently fast enough
-                # to be detectable over noise in timing.
-                assert skim_time < time_full, time_save_info
-                levels_time_tested += 1
-                time_save_logs.append(time_save_info)
-                time_save_info = [
-                    filename.name,
-                    skim_levels,
-                    time_full,
-                    skim_time,
-                    less_outfile_slices_read,
-                    less_geom_slices_read,
-                    less_elec_slices_read,
-                ]
-    assert levels_time_tested > 0, "No skim levels tested - likely an error in test code."
+            assert skim_time < time_full, time_save_info
+            levels_time_tested += 1
+            time_save_logs.append(time_save_info)
+    if nless_outslices + nless_last_geom > 0:
+        assert levels_time_tested > 0, "No skim levels tested - likely an error in test code."
     print(time_save_logs)
 
 
