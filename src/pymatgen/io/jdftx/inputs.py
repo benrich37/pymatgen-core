@@ -20,6 +20,7 @@ class is written.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import warnings
 from copy import deepcopy
@@ -565,7 +566,7 @@ class JDFTXInfile(dict, MSONable):
         Strip all structural tags from the JDFTXInfile. This is useful for preparing a JDFTXInfile object
         from a pre-existing calculation for a new structure.
         """
-        strucural_tags = ["lattice", "ion", "lattice-scale", "coords-type"]
+        strucural_tags = ["lattice", "ion", "latt-scale", "coords-type"]
         for tag in strucural_tags:
             if tag in self:
                 del self[tag]
@@ -1394,7 +1395,7 @@ class JDFTXStructure(MSONable):
             return ""
         for i, site in enumerate(self.structure):
             label = site.label
-            coords = site.coords * (1 / bohr_to_ang) if in_cart_coords else site.frac_coords
+            coords = site.coords / bohr_to_ang if in_cart_coords else site.frac_coords
             sd = int(bool(cast("np.ndarray", self.selective_dynamics)[i])) if self.selective_dynamics is not None else 1
             if label not in valid_labels:
                 # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
@@ -1547,33 +1548,56 @@ def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
         NotImplementedError: If the lattice uses a modification.
         ValueError: If the lattice type is not recognized.
     """
-    jl = jdftxinfile["lattice"].copy()
-    for key in ["a", "b", "c"]:
-        if key in jl and isinstance(jl[key], float):
-            jl[key] *= bohr_to_ang
+    jl = jdftxinfile["lattice"]
     if "modification" in jl:
         raise NotImplementedError("Special case lattices with modification not implemented yet")
-    if "Monoclinic" in jl:
-        lattice = Lattice.monoclinic(jl["a"], jl["b"], jl["c"], jl["beta"])
-    elif "Orthorhombic" in jl:
-        lattice = Lattice.orthorhombic(jl["a"], jl["b"], jl["c"])
-    elif "Cubic" in jl:
-        lattice = Lattice.cubic(jl["a"])
-    elif "Hexagonal" in jl:
-        lattice = Lattice.hexagonal(jl["a"], jl["c"])
-    elif "Rhombohedral" in jl:
-        lattice = Lattice.rhombohedral(jl["a"], jl["alpha"])
-    elif "Tetragonal" in jl:
-        lattice = Lattice.tetragonal(jl["a"], jl["c"])
-    elif "Triclinic" in jl:
-        lattice = Lattice.from_parameters(jl["a"], jl["b"], jl["c"], jl["alpha"], jl["beta"], jl["gamma"])
-    else:
+    # Lengths (bohr) and angles (degrees) a, b, c, alpha, beta, gamma of each named lattice
+    parameters = {
+        "Cubic": lambda: (jl["a"], jl["a"], jl["a"], 90.0, 90.0, 90.0),
+        "Tetragonal": lambda: (jl["a"], jl["a"], jl["c"], 90.0, 90.0, 90.0),
+        "Orthorhombic": lambda: (jl["a"], jl["b"], jl["c"], 90.0, 90.0, 90.0),
+        "Hexagonal": lambda: (jl["a"], jl["a"], jl["c"], 90.0, 90.0, 120.0),
+        "Rhombohedral": lambda: (jl["a"], jl["a"], jl["a"], jl["alpha"], jl["alpha"], jl["alpha"]),
+        "Monoclinic": lambda: (jl["a"], jl["b"], jl["c"], 90.0, jl["beta"], 90.0),
+        "Triclinic": lambda: (jl["a"], jl["b"], jl["c"], jl["alpha"], jl["beta"], jl["gamma"]),
+    }
+    lattice_type = next((name for name in parameters if name in jl), None)
+    if lattice_type is None:
         raise ValueError(f"Unable to convert JDFTX lattice tag {jl} to pymatgen Lattice object")
+    r = _jdftx_named_lattice_vectors(*(float(x) for x in parameters[lattice_type]()))
     if "latt-scale" in jdftxinfile:
-        # JDFTx scales lattice vector k by s_k (the rows of a pymatgen Lattice matrix are the lattice vectors)
-        latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]], dtype=float)
-        lattice = Lattice(lattice.matrix * latt_scale[:, np.newaxis])
-    return lattice
+        # JDFTx scales lattice vector k (column k) by s_k
+        r = r * np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]], dtype=float)
+    return Lattice(r.T * bohr_to_ang)  # convert to row vector format, in Ang
+
+
+def _jdftx_named_lattice_vectors(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> np.ndarray:
+    """Get the lattice vectors of a named lattice as JDFTx builds them (GridInfo::setLatticeVectors).
+
+    JDFTx puts a along x and b in the xy-plane, which pymatgen's Lattice.from_parameters does not (it puts c along z).
+    The orientation decides where ions given in Cartesian coordinates sit in the cell, so JDFTx's construction (and
+    arithmetic) is followed exactly.
+
+    Args:
+        a (float): Length of the first lattice vector (bohr).
+        b (float): Length of the second lattice vector (bohr).
+        c (float): Length of the third lattice vector (bohr).
+        alpha (float): Angle between b and c (degrees).
+        beta (float): Angle between a and c (degrees).
+        gamma (float): Angle between a and b (degrees).
+
+    Returns:
+        np.ndarray: Lattice vectors as columns (bohr).
+    """
+    cos_alpha = math.cos(alpha * math.pi / 180.0)
+    cos_beta = math.cos(beta * math.pi / 180.0)
+    sin_gamma, cos_gamma = math.sin(gamma * math.pi / 180.0), math.cos(gamma * math.pi / 180.0)
+    r = np.zeros((3, 3))
+    r[:, 0] = [a, 0.0, 0.0]
+    r[:, 1] = [b * cos_gamma, b * sin_gamma, 0.0]
+    r[:, 2] = [c * cos_beta, c * ((cos_alpha - cos_beta * cos_gamma) / sin_gamma), 0.0]
+    r[2, 2] = math.sqrt(c * c - r[0, 2] * r[0, 2] - r[1, 2] * r[1, 2])
+    return r
 
 
 def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:

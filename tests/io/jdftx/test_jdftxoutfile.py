@@ -17,6 +17,7 @@ from .inputs_test_utils import aimd_infile_fname
 from .outputs_test_utils import (
     etot_etype_outfile_known_simple,
     etot_etype_outfile_path,
+    ex_out_files_dir,
     example_aimd_outfile_known,
     example_aimd_outfile_known_site_properties,
     example_aimd_outfile_path,
@@ -297,3 +298,51 @@ def test_etot_bug_handling():
     assert outfile.slices[-1].jstrucs.slices[0].etype == "F"
     assert "F" not in outfile.slices[-1].jstrucs.slices[0].ecomponents
     assert_same_value(outfile.slices[-1].jstrucs.slices[0].e, -3.018425965201787 * Ha_to_eV)
+
+
+def _printed_final_ions(text: str) -> tuple[str, list[list[str]]] | None:
+    """Coordinate system and ion lines of the last positions block JDFTx printed (None if there isn't one)."""
+    if "# Ionic positions in " not in text:
+        return None
+    header, *lines = text.rsplit("# Ionic positions in ", maxsplit=1)[-1].splitlines()
+    return header.split()[0], [line.split() for line in lines if line.startswith("ion ")]
+
+
+def _check_restart_matches_out_file(text: str, restart: JDFTXInfile, infile: JDFTXInfile, lattice_changed: bool):
+    printed_ions = _printed_final_ions(text)
+    if printed_ions is None:  # No positions were printed, so the input's ions are kept
+        assert restart["ion"] == infile["ion"]
+        return
+    # The ions are exactly as JDFTx printed them, as if the final positions block was copied into a new input
+    coords_type, printed = printed_ions
+    assert restart.get("coords-type", "Lattice").lower() == coords_type.lower()
+    assert len(restart["ion"]) == len(printed)
+    for ion, row in zip(restart["ion"], printed, strict=True):
+        assert ion["species-id"] == row[1]
+        assert [ion[f"x{k}"] for k in range(3)] == [float(x) for x in row[2:5]]
+        if "v" in row:
+            i = row.index("v")
+            assert [ion["v"][f"vx{k}"] for k in range(3)] == [float(x) for x in row[i + 1 : i + 4]]
+    # An unchanged lattice keeps the input's own lattice and latt-scale tags
+    if not lattice_changed:
+        assert restart["lattice"] == infile["lattice"]
+        assert restart.get("latt-scale") == infile.get("latt-scale")
+
+
+@pytest.mark.parametrize("outfile_path", sorted(ex_out_files_dir.glob("*.out")), ids=lambda path: path.name)
+def test_to_jdftxinfile_matches_out_file(outfile_path: Path):
+    outfile = JDFTXOutfile.from_file(outfile_path)
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    infile = outfile.slices[-1].infile
+    lattice_changed = not np.array_equal(infile.structure.lattice.matrix, outfile.structure.lattice.matrix)
+    _check_restart_matches_out_file(outfile_path.read_text(), restart, infile, lattice_changed)
+
+
+@pytest.mark.parametrize("latt_scale", ["2 2 1", "1.5 0.75 2"])
+def test_to_jdftxinfile_with_latt_scale(tmp_path: Path, latt_scale: str):
+    # A supercell made with latt-scale is not scaled a second time in the restart input
+    text = example_aimd_outfile_path.read_text().replace("latt-scale 1 1 1 ", f"latt-scale {latt_scale} ", 1)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)

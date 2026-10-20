@@ -200,7 +200,8 @@ def test_JDFTXInfile_expected_exceptions():
 
 def test_JDFTXInfile_strip_structure():
     jif = JDFTXInfile.from_file(ex_infile1_fname)
-    structural_tags = ["lattice", "ion", "coords-type"]
+    jif["latt-scale"] = {"s0": 2.0, "s1": 2.0, "s2": 1.0}
+    structural_tags = ["lattice", "ion", "coords-type", "latt-scale"]
     assert all(tag in jif for tag in structural_tags)
     jif.strip_structure_tags()
     assert all(tag not in jif for tag in structural_tags)
@@ -443,7 +444,7 @@ def test_ion_reading(value_str: str, expected_dict: dict):
     ("expected_out", "stored_dict"),
     [
         (
-            "ion H 1.000000000000 1.000000000000 1.000000000000 0",
+            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 0",
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -453,7 +454,8 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000 1.000000000000 1.000000000000 v 1.000000000000 1.000000000000 1.000000000000 0",
+            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 v "
+            "1.000000000000000 1.000000000000000 1.000000000000000 0",
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -468,7 +470,8 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000 1.000000000000 1.000000000000 1 Linear 1.000000000000 1.000000000000 1.000000000000",
+            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 Linear "
+            "1.000000000000000 1.000000000000000 1.000000000000000",
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -482,8 +485,9 @@ def test_ion_reading(value_str: str, expected_dict: dict):
             },
         ),
         (
-            "ion H 1.000000000000 1.000000000000 1.000000000000 1 HyperPlane 1.000000000000 1.000000000000 "
-            "1.000000000000 g1 HyperPlane 1.000000000000 1.000000000000 1.000000000000 g1",
+            "ion H 1.000000000000000 1.000000000000000 1.000000000000000 1 HyperPlane "
+            "1.000000000000000 1.000000000000000 1.000000000000000 g1 "
+            "HyperPlane 1.000000000000000 1.000000000000000 1.000000000000000 g1",
             {
                 "species-id": "H",
                 "x0": 1.0,
@@ -1080,3 +1084,45 @@ def test_jdftxstructure_velocities_are_cartesian():
     # Writing in Cartesian coordinates converts the velocities along with the positions
     cart_jstruct = JDFTXStructure.from_jdftxinfile(JDFTXInfile.from_str(jstruct.get_str(in_cart_coords=True)))
     np.testing.assert_allclose(cart_jstruct.velocities[0], jstruct.velocities[0])
+
+
+def _jdftx_named_lattice(a, b, c, alpha, beta, gamma):
+    """Lattice vectors (columns, bohr) as JDFTx builds a named lattice (GridInfo::setLatticeVectors)."""
+    cos_a, cos_b = np.cos(np.radians(alpha)), np.cos(np.radians(beta))
+    sin_g, cos_g = np.sin(np.radians(gamma)), np.cos(np.radians(gamma))
+    r = np.zeros((3, 3))
+    r[:, 0] = [a, 0, 0]
+    r[:, 1] = [b * cos_g, b * sin_g, 0]
+    r[:, 2] = [c * cos_b, c * (cos_a - cos_b * cos_g) / sin_g, 0]
+    r[2, 2] = np.sqrt(c * c - r[0, 2] ** 2 - r[1, 2] ** 2)
+    return r
+
+
+@pytest.mark.parametrize(
+    ("lattice_value", "params"),
+    [
+        ("Cubic 10", (10, 10, 10, 90, 90, 90)),
+        ("Hexagonal 8 12", (8, 8, 12, 90, 90, 120)),
+        ("Monoclinic 8 9 10 100", (8, 9, 10, 90, 100, 90)),
+        ("Rhombohedral 9 70", (9, 9, 9, 70, 70, 70)),
+        ("Triclinic 8 9 10 80 85 95", (8, 9, 10, 80, 85, 95)),
+    ],
+)
+def test_named_lattice_matches_jdftx(lattice_value: str, params: tuple):
+    # JDFTx puts a along x and b in the xy-plane, which decides where Cartesian ion coordinates end up in the cell
+    jif = JDFTXInfile.from_str(f"lattice {lattice_value}\ncoords-type Cartesian\nion H 1 2 3 1\n")
+    r = _jdftx_named_lattice(*params)
+    np.testing.assert_allclose(jif.structure.lattice.matrix, r.T * bohr_to_ang, atol=1e-12)
+    np.testing.assert_allclose(jif.structure.frac_coords[0], np.linalg.solve(r, [1, 2, 3]), atol=1e-12)
+
+
+def test_structure_values_keep_jdftx_precision():
+    # JDFTx prints positions and velocities with 15 decimals, which must survive reading and writing unchanged
+    text = (
+        "lattice \\\n 12.345678901234567 0 0 \\\n 0 10.000000000000002 0 \\\n 1.5 0 9.876543210987654\n"
+        "ion H 0.123456789012345 0.987654321098765 0.5 v 0.000012345678901 -0.000009876543210 0.000000123456789 1\n"
+    )
+    jif = JDFTXInfile.from_str(text)
+    assert JDFTXInfile.from_str(str(jif)) == jif
+    # Positions and velocities also survive conversion to and from a JDFTXStructure (angstrom, angstrom/fs)
+    assert JDFTXInfile.from_str(jif.to_jdftxstructure(jif).get_str())["ion"] == jif["ion"]

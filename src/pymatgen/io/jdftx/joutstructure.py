@@ -116,6 +116,10 @@ class JOutStructure(Structure):
     _constraint_vectors: list[NDArray[np.float64] | list[NDArray[np.float64]] | None] | None = None
     _constraint_types: list[str | None] | None = None
     _group_names: list[list[str | None] | None] | None = None
+    # Ion lines and their coordinate system exactly as JDFTx printed them, since converting positions to pymatgen
+    # units and back can change them in the last digit
+    _printed_ion_lines: list[str] | None = None
+    _printed_coords_type: str | None = None
 
     def _elecmindata_postinit(self) -> None:
         """Post-initialization method for attributes taken from elecmindata."""
@@ -741,10 +745,13 @@ class JOutStructure(Structure):
                 # Abort structure updating if we have a pre-existing structure
                 return cur_species
             self.remove_sites(list(range(len(cur_species))))
+            self._printed_ion_lines = [posns_lines[i + 1].strip() for i in range(natoms)]
+            self._printed_coords_type = coords_type.lower()
             posns = np.array(_posns)
-            # Velocities and constraint vectors are converted to Cartesian coordinates like the positions are
-            if coords_type.lower() != "cartesian":
-                posns = np.dot(posns, self.lattice.matrix)
+            # Lattice-coordinate positions are stored as given (fractional coordinates), so they stay exact. Velocities
+            # and constraint vectors are converted to Cartesian coordinates
+            coords_are_cartesian = coords_type.lower() == "cartesian"
+            if not coords_are_cartesian:
                 velocities = [self.lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
                 constraint_vectors = [
                     _constraint_vectors_to_cartesian(ctype, vectors, self.lattice)
@@ -755,7 +762,7 @@ class JOutStructure(Structure):
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
             velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]  # angstrom/fs
             for i in range(natoms):
-                self.append(species=names[i], coords=posns[i], coords_are_cartesian=True)
+                self.append(species=names[i], coords=posns[i], coords_are_cartesian=coords_are_cartesian)
             for prop, vals in zip(
                 ["selective_dynamics", "velocities", "constraint_types", "constraint_vectors", "group_names"],
                 [selective_dynamics, velocities, constraint_types, constraint_vectors, group_names_list],

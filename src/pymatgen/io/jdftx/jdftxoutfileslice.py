@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import math
 import pprint
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -1282,19 +1283,69 @@ class JDFTXOutfileSlice:
         """
         # Use internal infile as a reference for calculation parameters
         base_infile = self.infile.copy()
-        # Strip references to the input
-        base_infile.strip_structure_tags()
         if self.structure is None:
+            base_infile.strip_structure_tags()
             return base_infile
-        # Optimization restrictions and velocities are carried over the structure site properties
-        add_infile = JDFTXInfile.from_structure(self.structure)
+        # Optimization restrictions and velocities are carried over the structure site properties. Ions are written in
+        # the input's coordinate system, so they match the positions JDFTx printed
+        in_cart_coords = base_infile.get("coords-type", "Lattice").lower() == "cartesian"
+        add_infile = JDFTXInfile.from_structure(self.structure, write_cart_coords=in_cart_coords)
+        printed_ions = self._get_printed_ions(in_cart_coords)
+        if printed_ions is not None:
+            add_infile["ion"] = printed_ions
+        if self.initial_structure is not None and np.array_equal(
+            self.structure.lattice.matrix, self.initial_structure.lattice.matrix
+        ):
+            # Keep the input's own lattice and latt-scale tags for an unchanged lattice, so the lattice stays exact
+            del add_infile["lattice"]
+            for tag in ("ion", "coords-type"):
+                if tag in base_infile:
+                    del base_infile[tag]
+        else:
+            base_infile.strip_structure_tags()
         infile = base_infile + add_infile
-        # infile +=
-        # Set most recent thermostat velocity if MD with Nose-Hoover
+        # Set most recent thermostat velocity if MD with Nose-Hoover (none is printed for some runs)
         if self.is_md and self.infile["ionic-dynamics"]["statMethod"] == "NoseHoover":
             tv = self.jstrucs.thermostat_velocity
-            infile["thermostat-velocity"] = {"v1": tv[0], "v2": tv[1], "v3": tv[2]}
+            if tv is not None:
+                infile["thermostat-velocity"] = {"v1": tv[0], "v2": tv[1], "v3": tv[2]}
         return infile
+
+    def _get_printed_ions(self, in_cart_coords: bool) -> list[dict] | None:
+        """Get the final ion tags exactly as JDFTx printed them, if they still describe the final structure.
+
+        Converting positions to pymatgen units and back can change them in the last digit, so a restart input uses the
+        values JDFTx printed (as if they were copied into a new input file) unless the structure has been changed.
+
+        Args:
+            in_cart_coords (bool): Whether the ion tags are written in Cartesian coordinates.
+
+        Returns:
+            list[dict] | None: Ion tags as printed by JDFTx, or None if they can't be used.
+        """
+        jstruc = self.jstrucs.slices[-1] if self.jstrucs is not None and self.jstrucs.slices else None
+        lines = getattr(jstruc, "_printed_ion_lines", None)
+        if self.structure is None or not lines:
+            return None
+        if jstruc._printed_coords_type != ("cartesian" if in_cart_coords else "lattice"):
+            return None
+        try:
+            ions = JDFTXInfile.from_str("\n".join(lines), dont_require_structure=True, validate_value_boundaries=False)
+        except ValueError as err:
+            warnings.warn(
+                f"Could not read the printed ion positions, using the parsed structure instead: {err}", stacklevel=2
+            )
+            return None
+        ion_tags = ions["ion"]
+        positions = np.array([[ion[f"x{k}"] for k in range(3)] for ion in ion_tags])
+        expected = self.structure.cart_coords / bohr_to_ang if in_cart_coords else self.structure.frac_coords
+        if (
+            [ion["species-id"] for ion in ion_tags] != [site.specie.symbol for site in self.structure]
+            or positions.shape != expected.shape
+            or not np.allclose(positions, expected, rtol=0, atol=1e-8)
+        ):
+            return None  # The structure has been changed since it was parsed
+        return ion_tags
 
     def _check_solvation(self) -> bool:
         """Check for implicit solvation.
