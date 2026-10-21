@@ -17,6 +17,9 @@ from pymatgen.io.jdftx.inputs import (
     _remove_at_path,
     clean_infile_of_nans,
     get_nanmaps,
+    get_popmaps,
+    hasnan,
+    movescale_array_to_selective_dynamics_site_prop,
     selective_dynamics_site_prop_to_jdftx_interpretable,
 )
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import antoinePvap, default_inputs
@@ -939,6 +942,20 @@ def test_get_nanmaps():
     # For a JDFTXInfile, each path starts at its tag name
     jif = JDFTXInfile.from_str("fluid-solvent H2O 55.338 ScalarEOS epsBulk nan\n", dont_require_structure=True)
     assert get_nanmaps(jif) == [["fluid-solvent", 0, "epsBulk"]]
+
+
+def test_deprecated_helpers():
+    # The removed public helpers still work, matching their original behavior, but warn
+    jif = JDFTXInfile.from_str("fluid-solvent H2O 55.338 ScalarEOS epsBulk nan\n", dont_require_structure=True)
+    with pytest.warns(FutureWarning, match="hasnan is deprecated"):
+        assert hasnan({"a": [1.0, [np.nan]]})
+    with pytest.warns(FutureWarning, match="hasnan is deprecated"):
+        assert not hasnan({"a": [1.0, "nan", None, True]})
+    with pytest.warns(FutureWarning, match="get_popmaps is deprecated"):
+        assert get_popmaps(jif) == [["fluid-solvent", 0, "epsBulk"]]
+    with pytest.warns(FutureWarning, match="movescale_array_to_selective_dynamics_site_prop is deprecated"):
+        sd = movescale_array_to_selective_dynamics_site_prop(np.array([0, 1, 0.5]))
+    assert sd == [[False] * 3, [True] * 3, [True] * 3]
 
 
 def test_jdftxstructure_label_fallbacks():

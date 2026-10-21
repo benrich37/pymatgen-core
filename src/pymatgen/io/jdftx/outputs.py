@@ -564,6 +564,10 @@ class JDFTXOutfile:
         stress (np.ndarray): The stress tensor of the most recent JDFTx call as a 3x3 numpy array. In units of
             eV/Angstrom^3.
         strain (np.ndarray): The strain tensor of the most recent JDFTx call as a 3x3 numpy array.
+        thermostat_velocity (np.ndarray | None): Nose-Hoover chain thermostat velocities of the most recent JDFTx call
+            (one per chain element, chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of
+            time) so they can be written back unchanged as the thermostat-velocity tag of a restart input. None if not
+            printed.
         nstep (int): The number of geometric optimization steps in the most recent JDFTx call.
         e (float): The final energy in eV of the most recent JDFTx call (equivalent to the call's etype).
         grad_k (float): The final norm of the preconditioned gradient for geometric optimization of the most recent

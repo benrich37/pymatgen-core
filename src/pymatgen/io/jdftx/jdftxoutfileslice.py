@@ -173,6 +173,10 @@ class JDFTXOutfileSlice:
         elecmindata (JElSteps): elecmindata from most recent JOutStructure.
         stress (np.ndarray | None): Stress tensor from most recent JOutStructure in units eV/Ang^3.
         strain (np.ndarray | None): Strain tensor from most recent JOutStructure (unitless).
+        thermostat_velocity (np.ndarray | None): Nose-Hoover chain thermostat velocities from most recent JOutStructure
+            (one per chain element, chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of
+            time) so they can be written back unchanged as the thermostat-velocity tag of a restart input. None if not
+            printed.
         nstep (int | None): (geometric) nstep from most recent JOutStructure.
         e (float | None): Energy of system "etype" from most recent JOutStructure.
         grad_k (float): The final norm of the preconditioned gradient for geometric optimization of the most recent

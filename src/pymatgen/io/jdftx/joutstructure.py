@@ -48,6 +48,9 @@ class JOutStructure(Structure):
         elecmindata (JElSteps | None): The electronic minimization data.
         stress (np.ndarray | None): The stress tensor.
         strain (np.ndarray | None): The strain tensor.
+        thermostat_velocity (np.ndarray | None): The Nose-Hoover chain thermostat velocities (one per chain element,
+            chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of time) so they can be
+            written back unchanged as the thermostat-velocity tag of a restart input. None if not printed.
         nstep (int | None): The most recent step number.
         e (float | None): The total energy of the system.
         grad_k (float | None): The gradient of the electronic density along the most recent line minimization.

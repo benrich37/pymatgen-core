@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from monty.dev import deprecated
 from monty.json import MSONable
 
 from pymatgen.core import Lattice, Structure
@@ -246,8 +247,20 @@ class JDFTXInfile(dict, MSONable):
             structure (Structure): Structure to convert.
             selective_dynamics (ArrayLike, optional): Selective dynamics attribute for each site if available.
                 Shape Nx1, by default None. If None, will check structure.site_properties for "selective_dynamics".
-            velocities (ArrayLike, optional): Velocities attribute for each site if available.
-                Shape Nx3, by default None. If None, will check structure.site_properties for "velocities".
+            velocities (ArrayLike, optional): Velocities for each site if available, in Cartesian angstrom/fs (the
+                same units as structure.site_properties["velocities"]), regardless of write_cart_coords. Converted
+                to JDFTx units on writing. Shape Nx3, by default None. If None, will check
+                structure.site_properties for "velocities".
+            constraint_types (ArrayLike, optional): Constraint type ("Linear", "Planar", "HyperPlane", or None) for
+                each site if available. By default None. If None, will check structure.site_properties for
+                "constraint_types".
+            constraint_vectors (ArrayLike, optional): Constraint vectors for each site if available, in Cartesian
+                coordinates (see _constraint_vector_to_cartesian), regardless of write_cart_coords. A list of vectors
+                for a "HyperPlane" site, a single vector otherwise. By default None. If None, will check
+                structure.site_properties for "constraint_vectors".
+            hyperplane_group_names (ArrayLike, optional): Group names for each site if available (a list with one
+                name per hyperplane for a "HyperPlane" site, None otherwise). By default None. If None, will check
+                structure.site_properties for "group_names".
             write_cart_coords (bool, optional): Whether to write Cartesian coordinates instead of fractional.
                 Defaults to False.
             ignore_site_properties (bool, optional): Whether to ignore site properties in the structure.
@@ -1068,6 +1081,24 @@ def get_nanmaps(val: Any) -> list[list[str | int]]:
     # Any other value (str, bool, None, ...) holds no nans to map
     items = val.items() if isinstance(val, dict) else enumerate(val) if isinstance(val, list) else []
     return [[key, *nanmap] for key, v in items for nanmap in get_nanmaps(v)]
+
+
+@deprecated(get_nanmaps, "Use bool(get_nanmaps(val)) to check for nans.", deadline=(2027, 10, 20))
+def hasnan(val: Any) -> bool:
+    """Deprecated. Check if a value is or contains a nan."""
+    return bool(get_nanmaps(val))
+
+
+@deprecated(get_nanmaps, "get_nanmaps gives the same paths when called on a JDFTXInfile.", deadline=(2027, 10, 20))
+def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
+    """Deprecated. Get the path to each nan in a JDFTXInfile."""
+    return get_nanmaps(infile)
+
+
+@deprecated(message="Use [[bool(s)] * 3 for s in movescale] instead.", deadline=(2027, 10, 20))
+def movescale_array_to_selective_dynamics_site_prop(movescale: Sequence[float] | np.ndarray) -> list[list[bool]]:
+    """Deprecated. Convert a JDFTx moveScale array to the selective dynamics site property format."""
+    return [[bool(s)] * 3 for s in movescale]
 
 
 def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> None:
