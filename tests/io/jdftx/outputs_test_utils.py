@@ -304,6 +304,13 @@ etot_etype_outfile_known_simple = {
     "elec_grad_k": 2.991e-07,
 }
 
+# Minimal H2 runs (10 bohr isolated box, 10 Ha) made with each electronic optimizer: electronic-minimize and
+# electronic-scf (both with Fermi smearing), and electronic-scf with two ionic steps (no smearing, so JDFTx labels
+# the energy "Etot")
+eopt_elecmin_outfile_path = ex_out_files_dir / Path("eopt_elecmin.out")
+eopt_scf_outfile_path = ex_out_files_dir / Path("eopt_scf.out")
+eopt_scf_ionmin_outfile_path = ex_out_files_dir / Path("eopt_scf_ionmin.out")
+
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {
     "00": 13.850216000000000 * bohr_to_ang,

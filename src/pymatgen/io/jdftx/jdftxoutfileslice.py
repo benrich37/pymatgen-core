@@ -922,6 +922,8 @@ class JDFTXOutfileSlice:
             # skim_levels,
             # skip_props,
             opt_type=self.geom_opt_label,
+            # JDFTx optimizes the electrons by SCF instead of the default variational minimizer if electronic-scf is set
+            eopt_type="SCF" if "electronic-scf" in self.infile else "ElecMinimize",
             init_struc=self.initial_structure,
             is_md=self.is_md,
             has_igp="ionic-gaussian-potential" in self.infile,

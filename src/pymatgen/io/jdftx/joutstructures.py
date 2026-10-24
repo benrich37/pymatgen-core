@@ -156,6 +156,7 @@ class JOutStructures:
         cls,
         out_slice: list[str],
         opt_type: str = "IonicMinimize",
+        eopt_type: str = "ElecMinimize",
         init_struc: Structure | None = None,
         is_md: bool = False,
         has_igp: bool = False,
@@ -171,6 +172,8 @@ class JOutStructures:
 
         Args:
             out_slice (list[str]): A slice of a JDFTx out file (individual call of JDFTx).
+            eopt_type (str): The type of electronic optimizer ("ElecMinimize" for electronic-minimize, "SCF" for
+                electronic-scf).
 
         Returns:
             JOutStructures: The created JOutStructures object.
@@ -182,6 +185,7 @@ class JOutStructures:
         slices = _get_joutstructure_list(
             out_slice[start_idx:],
             opt_type,
+            eopt_type=eopt_type,
             init_structure=init_struc,
             is_md=is_md,
             has_igp=has_igp,
@@ -400,6 +404,7 @@ def _get_joutstructures_start_idx(
 def _get_joutstructure_list(
     out_slice: list[str],
     opt_type: str | None,
+    eopt_type: str = "ElecMinimize",
     init_structure: Structure | None = None,
     is_md: bool = False,
     has_igp: bool = False,
@@ -416,6 +421,7 @@ def _get_joutstructure_list(
     Args:
         out_slice (list[str]): A slice of a JDFTx out file (individual call of JDFTx).
         opt_type (str | None): Flag string indicating optimization type.
+        eopt_type (str): Flag string indicating the electronic optimizer type ("ElecMinimize" or "SCF").
         init_structure (Structure | None): The initial structure if available, otherwise None.
         is_md (bool): True if the calculation is a molecular dynamics (MD) simulation, False otherwise.
         skip_error_structures (bool): If True, skip any structures that raise errors during parsing.
@@ -434,6 +440,7 @@ def _get_joutstructure_list(
                 [],
                 init_structure=init_structure,
                 opt_type=opt_type,
+                eopt_type=eopt_type,
                 is_md=is_md,
                 has_igp=has_igp,
                 expected_etype=expected_etype,
@@ -455,6 +462,7 @@ def _get_joutstructure_list(
                 raise_on_error=False,
                 skip_props=skip_props,
                 req_new_geom=True,
+                eopt_type=eopt_type,
             )
             if joutstructure is not None:
                 joutstructure_list.append(joutstructure)
@@ -476,6 +484,7 @@ def _get_joutstructure_list(
             skim_levels,
             raise_on_error=((i != len(out_bounds) - 1) and (not skip_error_structures)),
             skip_props=skip_props,
+            eopt_type=eopt_type,
         )
         if joutstructure is not None:
             joutstructure_list.append(joutstructure)
@@ -499,6 +508,7 @@ def parse_joutstructure_bounds(
     # is the input structure in this case,
     # not the structure from the previous geometry optimization step.
     req_new_geom: bool = False,
+    eopt_type: str = "ElecMinimize",
 ) -> JOutStructure | None:
     joutstructure = None
     try:
@@ -506,6 +516,7 @@ def parse_joutstructure_bounds(
             out_slice[bounds[0] : bounds[1]],
             init_structure=init_structure,
             opt_type=opt_type,
+            eopt_type=eopt_type,
             is_md=is_md,
             has_igp=has_igp,
             expected_etype=expected_etype,

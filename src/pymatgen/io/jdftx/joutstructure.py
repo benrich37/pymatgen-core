@@ -22,7 +22,7 @@ from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
 from pymatgen.io.jdftx.inputs import JDFTX_TIME_UNIT_TO_FS, _constraint_vector_to_cartesian
-from pymatgen.io.jdftx.jelstep import JElSteps
+from pymatgen.io.jdftx.jelstep import JElSteps, _eopt_step_keys
 
 __author__ = "Ben Rich"
 
@@ -527,6 +527,9 @@ class JOutStructure(Structure):
             out file.
         """
         etype = None
+        # Only search what follows "<eopt_type>: ", as the prefix can itself look like a label ("SCF: " ends in "F: ")
+        emin_lines = [line.split(f"{self.eopt_type}: ", maxsplit=1)[-1] for line in emin_lines]
+        step_key = f"{_eopt_step_keys.get(str(self.eopt_type), 'Iter')}:"
         for line in emin_lines:
             if "F:" in line:
                 etype = "F"
@@ -544,9 +547,9 @@ class JOutStructure(Structure):
         # to be checked by reading through the source code (TODO)
         if etype is None:
             for line in emin_lines:
-                if "Iter:" in line:
-                    # Assume line will have etype in "... Iter: n <etype>: num ..."
-                    etype = line.split("Iter:")[1].split(":")[0].strip().split()[-1].strip()
+                if step_key in line:
+                    # Assume line will have etype in "... Iter: n <etype>: num ..." (or "Cycle: n <etype>: ..." for SCF)
+                    etype = line.split(step_key)[1].split(":")[0].strip().split()[-1].strip()
         return etype
 
     def _set_etype_from_emin_lines(self, emin_lines: list[str]) -> None:

@@ -17,6 +17,9 @@ from pymatgen.io.jdftx.outputs import JDFTXOutfile, _jof_atr_from_last_slice
 
 from .inputs_test_utils import aimd_infile_fname
 from .outputs_test_utils import (
+    eopt_elecmin_outfile_path,
+    eopt_scf_ionmin_outfile_path,
+    eopt_scf_outfile_path,
     etot_etype_outfile_known_simple,
     etot_etype_outfile_path,
     ex_out_files_dir,
@@ -286,6 +289,53 @@ def test_etot_bug_handling():
     assert outfile.slices[-1].jstrucs.slices[0].etype == "F"
     assert "F" not in outfile.slices[-1].jstrucs.slices[0].ecomponents
     assert_same_value(outfile.slices[-1].jstrucs.slices[0].e, -3.018425965201787 * Ha_to_eV)
+
+
+@pytest.mark.parametrize(
+    ("outfile_path", "eopt_type", "converged_reason", "geom_converged"),
+    [
+        (eopt_elecmin_outfile_path, "ElecMinimize", "|Delta F|<1.000000e-08 for 2 iters", True),
+        (eopt_scf_outfile_path, "SCF", "|Delta E|<1.000000e-08 for 2 iters", True),
+        # Stopped after 2 ionic steps, each converged electronically
+        (eopt_scf_ionmin_outfile_path, "SCF", "|Delta E|<1.000000e-08 for 2 iters", False),
+    ],
+    ids=["elecmin", "scf", "scf_ionmin"],
+)
+def test_eopt_types(outfile_path: Path, eopt_type: str, converged_reason: str, geom_converged: bool):
+    """Electronic steps are read for each electronic optimizer (logged as "ElecMinimize: Iter:" or "SCF: Cycle:")."""
+    outfile = JDFTXOutfile.from_file(outfile_path, none_slice_on_error=False)
+    jstrucs = outfile.slices[-1].jstrucs
+    assert outfile.eopt_type == eopt_type
+    assert outfile.converged is geom_converged
+    for jstruc in jstrucs:
+        assert jstruc.elecmindata.opt_type == eopt_type
+        assert jstruc.elecmindata.converged
+        assert jstruc.elecmindata.converged_reason == converged_reason
+    # Every step JDFTx printed is parsed, with its step number, energy label and energy
+    printed = [
+        (int(m["nstep"]), m["etype"], float(m["e"]))
+        for m in re.finditer(
+            rf"^{re.escape(eopt_type)}: (?:Iter|Cycle):\s+(?P<nstep>\d+)\s+(?P<etype>F|G|Etot): (?P<e>\S+)",
+            outfile_path.read_text(),
+            flags=re.MULTILINE,
+        )
+    ]
+    parsed = [(step.nstep, step.etype, step.e / Ha_to_eV) for jstruc in jstrucs for step in jstruc.elecmindata]
+    assert [p[:2] for p in parsed] == [p[:2] for p in printed]
+    assert [p[2] for p in parsed] == pytest.approx([p[2] for p in printed], rel=0, abs=1e-12)
+    # SCF steps have no line-minimization data
+    last_step = jstrucs[-1].elecmindata[-1]
+    assert (last_step.grad_k is None) is (eopt_type == "SCF")
+    assert last_step.t_s is not None
+
+
+def test_eopt_types_agree():
+    # Both electronic optimizers converge the same calculation to the same free energy
+    elecmin = JDFTXOutfile.from_file(eopt_elecmin_outfile_path, none_slice_on_error=False)
+    scf = JDFTXOutfile.from_file(eopt_scf_outfile_path, none_slice_on_error=False)
+    assert scf.e == pytest.approx(elecmin.e, rel=0, abs=1e-8 * Ha_to_eV)
+    assert scf.elec_nstep > 0
+    assert elecmin.elec_nstep > 0
 
 
 @pytest.mark.parametrize("smearing", [True, False])
