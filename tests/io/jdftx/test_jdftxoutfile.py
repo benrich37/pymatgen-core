@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from itertools import combinations
 from time import process_time
 from timeit import Timer
@@ -307,9 +308,12 @@ def _check_restart_matches_out_file(text: str, restart: JDFTXInfile, infile: JDF
     for ion, row in zip(restart["ion"], printed, strict=True):
         assert ion["species-id"] == row[1]
         assert [ion[f"x{k}"] for k in range(3)] == [float(x) for x in row[2:5]]
+        i_move_scale = 5
         if "v" in row:
             i = row.index("v")
             assert [ion["v"][f"vx{k}"] for k in range(3)] == [float(x) for x in row[i + 1 : i + 4]]
+            i_move_scale = i + 4
+        assert ion["moveScale"] == float(row[i_move_scale])
     # An unchanged lattice keeps the input's own lattice and latt-scale tags
     if not lattice_changed:
         assert restart["lattice"] == infile["lattice"]
@@ -323,6 +327,18 @@ def test_to_jdftxinfile_matches_out_file(outfile_path: Path):
     infile = outfile.slices[-1].infile
     lattice_changed = not np.array_equal(infile.structure.lattice.matrix, outfile.structure.lattice.matrix)
     _check_restart_matches_out_file(outfile_path.read_text(), restart, infile, lattice_changed)
+
+
+def test_to_jdftxinfile_keeps_fractional_move_scale(tmp_path: Path):
+    # A moveScale below 1 must not become 0 (a fixed ion) in the restart input
+    text = re.sub(r"^(ion \S+(?: +\S+){3}) 1$", r"\1 0.5", example_ionmin_outfile_path.read_text(), flags=re.MULTILINE)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    # The fixed ions (moveScale 0) are left as they are
+    assert {ion["moveScale"] for ion in outfile.slices[-1].infile["ion"]} == {0.0, 0.5}
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    assert {ion["moveScale"] for ion in restart["ion"]} == {0.0, 0.5}
+    _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)
 
 
 @pytest.mark.parametrize("latt_scale", ["2 2 1", "1.5 0.75 2"])

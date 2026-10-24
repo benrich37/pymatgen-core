@@ -313,8 +313,8 @@ def test_disordered_structures():
 def test_jdftxstructure_infile_site_properties_conversion():
     """Test conversions related to going back and forth between JDFTXInfile and JDFTXStructure/Structure"""
     jif = JDFTXInfile.from_file(ex_infile2_fname)
-    jif["ion"][0]["moveScale"] = 0
-    jif["ion"][1]["moveScale"] = 1
+    jif["ion"][0]["moveScale"] = 0.0
+    jif["ion"][1]["moveScale"] = 1.0
     for i in range(len(jif["ion"])):
         jif["ion"][i]["v"] = {"vx0": 0.0, "vx1": 0.0, "vx2": 0.0}
     jif["ion"][3]["v"] = {"vx0": 1.0, "vx1": 2.0, "vx2": 3.0}
@@ -377,7 +377,7 @@ def test_jdftxtructure_naming():
                 "x0": 1.0,
                 "x1": 1.0,
                 "x2": 1.0,
-                "moveScale": 0,
+                "moveScale": 0.0,
             },
         ),
         (
@@ -392,7 +392,17 @@ def test_jdftxtructure_naming():
                     "vx1": 1.0,
                     "vx2": 1.0,
                 },
-                "moveScale": 0,
+                "moveScale": 0.0,
+            },
+        ),
+        (
+            "H 1.0 1.0 1.0 0.5",
+            {
+                "species-id": "H",
+                "x0": 1.0,
+                "x1": 1.0,
+                "x2": 1.0,
+                "moveScale": 0.5,
             },
         ),
         (
@@ -402,7 +412,7 @@ def test_jdftxtructure_naming():
                 "x0": 1.0,
                 "x1": 1.0,
                 "x2": 1.0,
-                "moveScale": 1,
+                "moveScale": 1.0,
                 "constraint type": "Linear",
                 "d0": 1.0,
                 "d1": 1.0,
@@ -416,7 +426,7 @@ def test_jdftxtructure_naming():
                 "x0": 1.0,
                 "x1": 1.0,
                 "x2": 1.0,
-                "moveScale": 1,
+                "moveScale": 1.0,
                 "HyperPlane": [
                     {
                         "d0": 1.0,
@@ -527,6 +537,23 @@ def test_ion_writing(expected_out: str, stored_dict: dict):
     tag_object: TagContainer = ion_tag.format_options[i]
     output = tag_object.write("ion", stored_dict)
     assert_same_value(output.strip().split(), expected_out.strip().split())
+
+
+def test_fractional_move_scale():
+    """moveScale is a double in JDFTx: any nonzero value lets the ion move (and scales its step)."""
+    jif = JDFTXInfile.from_str(
+        "lattice Cubic 10.0\nion H 0 0 0 0.5\nion H 0.5 0.5 0.5 1.5 Linear 1 0 0\nion O 0.2 0.2 0.2 0\n"
+    )
+    assert [ion["moveScale"] for ion in jif["ion"]] == [0.5, 1.5, 0.0]
+    # Written values read back unchanged
+    assert [ion["moveScale"] for ion in JDFTXInfile.from_str(str(jif))["ion"]] == [0.5, 1.5, 0.0]
+    # Integer values are accepted and stored as floats
+    jif["ion"] = ["H 0 0 0 1", {"species-id": "O", "x0": 0.1, "x1": 0.1, "x2": 0.1, "moveScale": 0}]
+    assert [ion["moveScale"] for ion in jif["ion"]] == [1.0, 0.0]
+    # The Structure path only keeps whether an ion can move (selective_dynamics is boolean)
+    struct = JDFTXInfile.from_str("lattice Cubic 10.0\nion H 0 0 0 0.5\nion O 0.2 0.2 0.2 0\n").structure
+    assert struct.site_properties["selective_dynamics"] == [[True] * 3, [False] * 3]
+    assert [ion["moveScale"] for ion in JDFTXInfile.from_structure(struct)["ion"]] == [1.0, 0.0]
 
 
 @pytest.mark.parametrize(

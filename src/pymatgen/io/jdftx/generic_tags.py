@@ -635,6 +635,11 @@ class FloatTag(AbstractNumericTag):
         Returns:
             tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
         """
+        # JDFTx reads any number as a double, so integers (but not bools) are valid and are converted to floats
+        if self.can_repeat and isinstance(value, list):
+            value = [_int_to_float(x) for x in value]
+        else:
+            value = _int_to_float(value)
         return self._validate_value_type(float, tag, value, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user)
 
     def read(self, tag: str, value: str) -> float:
@@ -1473,6 +1478,20 @@ class DumpTagContainer(TagContainer):
                             warnmsg += f"{tags_list_list[i][j]} "
             warnings.warn(warnmsg, stacklevel=2)
         return tag_out, is_valid_out, updated_value
+
+
+def _int_to_float(value: Any) -> Any:
+    """Convert an integer (but not a bool) to a float, leaving any other value unchanged.
+
+    Args:
+        value (Any): The value to convert.
+
+    Returns:
+        Any: The value as a float if it was an integer, otherwise the value itself.
+    """
+    if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
+        return float(value)
+    return value
 
 
 def _flatten_list(tag: str, list_of_lists: list[Any]) -> list[Any]:

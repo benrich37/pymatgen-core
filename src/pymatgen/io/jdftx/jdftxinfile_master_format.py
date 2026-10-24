@@ -254,7 +254,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                                 "vx2": FloatTag(write_tagname=False, optional=False, prec=15),
                             },
                         ),
-                        "moveScale": IntTag(write_tagname=False, optional=False),
+                        "moveScale": FloatTag(write_tagname=False, optional=False),
                     },
                 ),
                 TagContainer(
@@ -281,7 +281,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                                 "vx2": FloatTag(write_tagname=False, optional=False, prec=15),
                             },
                         ),
-                        "moveScale": IntTag(write_tagname=False, optional=False),
+                        "moveScale": FloatTag(write_tagname=False, optional=False),
                         "constraint type": StrTag(
                             options=["Linear", "Planar", "HyperPlane"],
                             write_tagname=False,
@@ -316,7 +316,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                                 "vx2": FloatTag(write_tagname=False, optional=False, prec=15),
                             },
                         ),
-                        "moveScale": IntTag(write_tagname=False, optional=False),
+                        "moveScale": FloatTag(write_tagname=False, optional=False),
                         "HyperPlane": TagContainer(
                             write_tagname=True,
                             can_repeat=True,
