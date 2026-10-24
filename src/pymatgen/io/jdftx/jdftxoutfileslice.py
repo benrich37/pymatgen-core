@@ -1068,15 +1068,19 @@ class JDFTXOutfileSlice:
         Args:
             text (list[str]): Output of read_file for out file.
         """
+        # JDFTx always prints the number of bands it uses in the "nBands:" line. The echoed "elec-n-bands <n>
+        # [<multiplier>]" command is only a fallback, since <n> = 0 means a (multiplied) default number of bands.
+        lines = find_all_key("nBands:", text)
+        if len(lines):
+            self.nbands = int(text[lines[0]].split("nBands:")[1].split()[0])
+            return
         lines = find_all_key("elec-n-bands", text)
         if len(lines):
-            line = lines[0]
-            nbands = int(text[line].strip().split()[-1].strip())
-        else:
-            lines = find_all_key("nBands:", text)
-            line = lines[0]
-            nbands = int(text[line].split("nBands:")[1].strip().split()[0].strip())
-        self.nbands = nbands
+            nbands = int(text[lines[0]].split()[1])
+            if nbands > 0:
+                self.nbands = nbands
+                return
+        warnings.warn("Could not determine the number of bands from the out file.", stacklevel=2)
 
     def _set_atom_vars(self, text: list[str]) -> None:
         """Set the atom variables.

@@ -229,6 +229,37 @@ def test_determine_is_metal():
         joutslice.determine_is_metal()
 
 
+_nbands_line = "nElectrons:   2.000000   nBands: 3   nStates: 1"
+
+
+@pytest.mark.parametrize(
+    ("text", "nbands"),
+    [
+        # Echo of JDFTx before the multiplier was added (upstream commit 6ffe5cf0)
+        (["elec-n-bands 3", _nbands_line], 3),
+        # Echo of current JDFTx, which always appends the multiplier
+        (["elec-n-bands 3 1", _nbands_line], 3),
+        # <n> = 0 requests the default number of bands scaled by the multiplier
+        (["elec-n-bands 0 1.5", _nbands_line], 3),
+        ([_nbands_line], 3),
+        # Without an nBands line, fall back to an explicit <n>
+        (["elec-n-bands 3 1"], 3),
+    ],
+)
+def test_set_nbands(text: list[str], nbands: int):
+    joutslice = JDFTXOutfileSlice()
+    joutslice._set_nbands(text)
+    assert joutslice.nbands == nbands
+
+
+@pytest.mark.parametrize("text", [["elec-n-bands 0 1.5"], []])
+def test_set_nbands_unknown(text: list[str]):
+    joutslice = JDFTXOutfileSlice()
+    with pytest.warns(UserWarning, match="Could not determine the number of bands"):
+        joutslice._set_nbands(text)
+    assert joutslice.nbands is None
+
+
 def test_write():
     joutslice = JDFTXOutfileSlice._from_out_slice(ex_slice1, [], [])
     with pytest.raises(NotImplementedError):

@@ -151,6 +151,19 @@ nh3_ex_calc_dir_bandprojections_metadata = {
     "first val": -0.0688767 + 0.9503786j,
 }
 
+# Natively generated H2 run (see the notes on generating fixtures) with "elec-n-bands 0 1.5": JDFTx scales the
+# default 2 bands (one atomic orbital per H) by 1.5, so neither token of the echoed command is the number of bands.
+h2_nbands_multiplier_calc_dir = ex_calc_dirs_dir / Path("H2_nbands_multiplier")
+h2_nbands_multiplier_calc_dir_known_paths = {
+    "bandProjections": h2_nbands_multiplier_calc_dir / Path("bandProjections"),
+    "eigenvals": h2_nbands_multiplier_calc_dir / Path("eigenvals"),
+}
+h2_nbands_multiplier_calc_dir_bandprojections_metadata = {
+    "orb_label_list": ["H#1(s)", "H#2(s)"],
+    "shape": (1, 3, 2),
+    "first val": 0.8709816,
+}
+
 example_sp_outfile_path = ex_out_files_dir / Path("example_sp.out")
 example_sp_outfile_known = {
     "nat": 16,
