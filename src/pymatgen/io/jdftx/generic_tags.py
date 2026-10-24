@@ -617,9 +617,15 @@ class FloatTag(AbstractNumericTag):
     """Tag for float values in JDFTx input files.
 
     Tag for float values in JDFTx input files.
+
+    Attributes:
+        prec (int | None): Number of decimals to write the value with.
+        value_if_bare (float | None): Value read when the tag is given without a value, for tags whose value is an
+            optional argument that JDFTx defaults when omitted. A bare tag is not valid if this is None.
     """
 
     prec: int | None = None
+    value_if_bare: float | None = None
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -653,6 +659,8 @@ class FloatTag(AbstractNumericTag):
             float: The parsed float value.
         """
         self._single_value_read_validate(tag, value)
+        if self.value_if_bare is not None and not value.strip():
+            return self.value_if_bare
         try:
             value_float = float(value)
         except (ValueError, TypeError) as err:

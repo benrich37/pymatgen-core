@@ -593,6 +593,25 @@ def test_fractional_move_scale():
     assert [ion["moveScale"] for ion in JDFTXInfile.from_structure(struct)["ion"]] == [1.0, 0.0]
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Bare van-der-waals (DFT-D2 with the default scale; how JDFTx echoes a scale of 0) is a scale of 0
+        ("van-der-waals", 0.0),
+        ("van-der-waals ", 0.0),
+        ("van-der-waals 0", 0.0),
+        ("van-der-waals 0.75", 0.75),
+        ("van-der-waals D3", "D3"),
+        ("van-der-waals D3BJ", "D3BJ"),
+    ],
+)
+def test_van_der_waals(line: str, expected: float | str):
+    jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert jif["van-der-waals"] == expected
+    # Written values read back unchanged
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["van-der-waals"] == expected
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

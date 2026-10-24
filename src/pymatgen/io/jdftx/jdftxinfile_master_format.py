@@ -497,10 +497,12 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             }
         ),
         "lj-override": FloatTag(),
+        # van-der-waals [<scaleOverride>=0] | D3 | D3BJ: a bare van-der-waals (which is how JDFTx echoes a scale of 0)
+        # is DFT-D2 with the default scale, read as a scale of 0
         "van-der-waals": MultiformatTag(
             format_options=[
                 StrTag(options=["D3", "D3BJ"]),
-                FloatTag(),
+                FloatTag(value_if_bare=0.0),
             ]
         ),
         "elec-cutoff": TagContainer(

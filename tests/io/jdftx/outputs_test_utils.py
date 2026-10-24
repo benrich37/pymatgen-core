@@ -329,6 +329,8 @@ eopt_scf_ionmin_outfile_path = ex_out_files_dir / Path("eopt_scf_ionmin.out")
 nolowdin_ionmin_outfile_path = ex_out_files_dir / Path("nolowdin_ionmin.out")
 nolowdin_md_outfile_path = ex_out_files_dir / Path("nolowdin_md.out")
 nolowdin_latmin_outfile_path = ex_out_files_dir / Path("nolowdin_latmin.out")
+# Natively generated H2 single point with a bare "van-der-waals" (DFT-D2 with the default scale)
+vdw_d2_outfile_path = ex_out_files_dir / Path("vdw_d2.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

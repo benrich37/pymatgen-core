@@ -55,6 +55,7 @@ from .outputs_test_utils import (
     problem2_outfile_known_simple,
     problem2_outfile_path,
     problem3_outfile_path,
+    vdw_d2_outfile_path,
 )
 from .shared_test_utils import assert_same_value
 
@@ -460,6 +461,14 @@ def test_to_jdftxinfile_keeps_fractional_move_scale(tmp_path: Path):
     restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
     assert {ion["moveScale"] for ion in restart["ion"]} == {0.0, 0.5}
     _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)
+
+
+def test_to_jdftxinfile_keeps_d2_dispersion():
+    # JDFTx echoes DFT-D2 with the default scale as a bare "van-der-waals", which must not be dropped
+    outfile = JDFTXOutfile.from_file(vdw_d2_outfile_path)
+    assert outfile.infile["van-der-waals"] == 0.0
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    assert restart["van-der-waals"] == 0.0
 
 
 @pytest.mark.parametrize("latt_scale", ["2 2 1", "1.5 0.75 2"])

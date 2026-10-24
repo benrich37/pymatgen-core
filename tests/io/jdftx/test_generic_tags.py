@@ -150,6 +150,11 @@ def test_float_tag():
     value = "1.2.3"  # (1.2.3 cannot be a float)
     with pytest.raises(ValueError, match=f"Could not set value '{value}' to a float for tag '{tag}'!"):
         float_tag.read("barbie", "1.2.3")
+    # A bare tag is only valid if it has a value to read it as
+    with pytest.raises(ValueError, match="Could not set value '' to a float for tag 'barbie'!"):
+        float_tag.read("barbie", "")
+    assert FloatTag(value_if_bare=0.0).read("barbie", "") == 0.0
+    assert FloatTag(value_if_bare=0.0).read("barbie", "1.5") == 1.5
 
 
 def test_read_from_tokens_consumes_one_token_for_single_value_tags():
