@@ -593,17 +593,17 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "electric-field": TagContainer(
             allow_list_representation=True,
             subtags={
-                "Ex": IntTag(write_tagname=False, optional=False),
-                "Ey": IntTag(write_tagname=False, optional=False),
-                "Ez": IntTag(write_tagname=False, optional=False),
+                "Ex": FloatTag(write_tagname=False, optional=False),
+                "Ey": FloatTag(write_tagname=False, optional=False),
+                "Ez": FloatTag(write_tagname=False, optional=False),
             },
         ),
         "perturb-electric-field": TagContainer(
             allow_list_representation=True,
             subtags={
-                "Ex": IntTag(write_tagname=False, optional=False),
-                "Ey": IntTag(write_tagname=False, optional=False),
-                "Ez": IntTag(write_tagname=False, optional=False),
+                "Ex": FloatTag(write_tagname=False, optional=False),
+                "Ey": FloatTag(write_tagname=False, optional=False),
+                "Ez": FloatTag(write_tagname=False, optional=False),
             },
         ),
         "box-potential": TagContainer(

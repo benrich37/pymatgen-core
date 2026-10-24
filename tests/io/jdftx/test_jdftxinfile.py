@@ -556,6 +556,21 @@ def test_fractional_move_scale():
     assert [ion["moveScale"] for ion in JDFTXInfile.from_structure(struct)["ion"]] == [1.0, 0.0]
 
 
+@pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
+def test_electric_field_components_are_floats(tag: str):
+    """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""
+    expected = {"Ex": 0.01, "Ey": 0.0, "Ez": -2.5e-3}
+    jif = JDFTXInfile.from_str(f"{tag} 0.01 0 -2.5e-3\n", dont_require_structure=True)
+    assert_same_value(jif[tag], expected)
+    # Written values read back unchanged
+    assert_same_value(JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag], expected)
+    # Setting the tag from a dict or a list
+    jif[tag] = {"Ex": 0, "Ey": 0.5, "Ez": 0}
+    assert_same_value(jif[tag], {"Ex": 0.0, "Ey": 0.5, "Ez": 0.0})
+    jif[tag] = [0.0, 0.0, 0.002]
+    assert_same_value(JDFTXInfile.get_dict_representation(jif)[tag], {"Ex": 0.0, "Ey": 0.0, "Ez": 0.002})
+
+
 @pytest.mark.parametrize(
     ("lattice_type", "value_str"),
     [
