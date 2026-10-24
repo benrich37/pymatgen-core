@@ -323,6 +323,12 @@ etot_etype_outfile_known_simple = {
 eopt_elecmin_outfile_path = ex_out_files_dir / Path("eopt_elecmin.out")
 eopt_scf_outfile_path = ex_out_files_dir / Path("eopt_scf.out")
 eopt_scf_ionmin_outfile_path = ex_out_files_dir / Path("eopt_scf_ionmin.out")
+# Natively generated H2 runs (see the notes on generating fixtures) with a pseudopotential stripped of its atomic
+# orbitals, so JDFTx prints no Lowdin population analysis. nolowdin_ionmin.out and nolowdin_latmin.out include
+# electronic minimizations at rejected line-search positions.
+nolowdin_ionmin_outfile_path = ex_out_files_dir / Path("nolowdin_ionmin.out")
+nolowdin_md_outfile_path = ex_out_files_dir / Path("nolowdin_md.out")
+nolowdin_latmin_outfile_path = ex_out_files_dir / Path("nolowdin_latmin.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

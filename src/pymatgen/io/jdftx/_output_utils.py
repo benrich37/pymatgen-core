@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
+from monty.dev import deprecated
 
 from pymatgen.core.units import Ha_to_eV
 from pymatgen.electronic_structure.core import Orbital
@@ -148,27 +149,13 @@ def get_colon_val(linetext: str, lkey: str) -> float | np.float64 | None:
 get_colon_var_t1 = get_colon_val
 
 
-# This function matches the format of the generic "is_<x>_start_line" functions specific to
-# the JOutStructure object initialization, but is not moved to the joutstructure module
-# as it is also used in methods for other JDFTx IO modules (e.g. JOutStructures) so it
-# is kept here to avoid circular imports.
+@deprecated(
+    message="JDFTx skips the Lowdin block when no pseudopotential has atomic orbitals, so it is no longer used to "
+    "find ionic steps.",
+    deadline=(2027, 10, 24),
+)
 def is_lowdin_start_line(line_text: str) -> bool:
-    """Return True if the line_text is the start of Lowdin log message.
-
-    Return True if the line_text is the start of a Lowdin population analysis
-    in a JDFTx out file.
-
-    Parameters
-    ----------
-    line_text: str
-        A line of text from a JDFTx out file
-
-    Returns
-    -------
-    is_line: bool
-        True if the line_text is the start of a Lowdin population analysis in a
-        JDFTx out file
-    """
+    """Deprecated. Return True if the line_text is the start of a Lowdin population analysis in a JDFTx out file."""
     return "#--- Lowdin population analysis ---" in line_text
 
 

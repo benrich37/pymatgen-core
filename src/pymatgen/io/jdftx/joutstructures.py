@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from pymatgen.io.jdftx.jelstep import JElSteps
 
 
-from pymatgen.io.jdftx._output_utils import correct_geom_opt_type, is_lowdin_start_line
+from pymatgen.io.jdftx._output_utils import correct_geom_opt_type
 from pymatgen.io.jdftx.joutstructure import JOutStructure
 
 __author__ = "Ben Rich"
@@ -343,6 +343,11 @@ class JOutStructures:
 
 
 _elec_min_start_flag: str = "-------- Electronic minimization -----------"
+_geom_step_line_flags: tuple[str, ...] = ("IonicMinimize: Iter:", "LatticeMinimize: Iter:", "IonicDynamics: Step:")
+
+
+def _is_geom_step_line(line_text: str) -> bool:
+    return line_text.startswith(_geom_step_line_flags)
 
 
 def _get_joutstructure_step_bounds(
@@ -362,19 +367,20 @@ def _get_joutstructure_step_bounds(
     """
     bounds_list = []
     bounds = None
-    end_started = False
+    has_geom_step_line = False
     for i, line in enumerate(out_slice):
-        if not end_started:
-            if out_slice_start_flag in line:
-                bounds = [i]
-            elif (bounds is not None) and (is_lowdin_start_line(line)):
-                end_started = True
-        elif not len(line.strip()) and bounds is not None:
-            bounds.append(i)
-            bounds_list.append(bounds)
-            bounds = None
-            end_started = False
-    # This case is for jdftx calls that were interrupted prematurely
+        if out_slice_start_flag in line:
+            # A step that logged its geometry step line is ended by the start of the next one. Otherwise the open
+            # bounds only hold an electronic minimization at a line-search trial position, which is discarded.
+            # (The Lowdin block can't end a step, since JDFTx skips it when no pseudopotential has atomic orbitals.)
+            if bounds is not None and has_geom_step_line:
+                bounds.append(i)
+                bounds_list.append(bounds)
+            bounds = [i]
+            has_geom_step_line = False
+        elif bounds is not None and _is_geom_step_line(line):
+            has_geom_step_line = True
+    # The last step (or the step a prematurely interrupted jdftx call was on) runs to the end of the slice
     if bounds is not None:
         bounds.append(len(out_slice) - 1)
         bounds_list.append(bounds)

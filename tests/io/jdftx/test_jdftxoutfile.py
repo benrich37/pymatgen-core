@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from pymatgen.core.units import Ha_to_eV
+from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import read_outfile_slices
 from pymatgen.io.jdftx.inputs import JDFTXInfile
 from pymatgen.io.jdftx.jdftxoutfileslice import JDFTXOutfileSlice
@@ -47,6 +47,9 @@ from .outputs_test_utils import (
     jdftxoutfile_matches_known_simple,
     noeigstats_outfile_known_simple,
     noeigstats_outfile_path,
+    nolowdin_ionmin_outfile_path,
+    nolowdin_latmin_outfile_path,
+    nolowdin_md_outfile_path,
     partial_lattice_init_outfile_known_lattice,
     partial_lattice_init_outfile_path,
     problem2_outfile_known_simple,
@@ -336,6 +339,45 @@ def test_eopt_types_agree():
     assert scf.e == pytest.approx(elecmin.e, rel=0, abs=1e-8 * Ha_to_eV)
     assert scf.elec_nstep > 0
     assert elecmin.elec_nstep > 0
+
+
+@pytest.mark.parametrize(
+    ("outfile_path", "geom_opt_type", "geom_converged"),
+    [
+        (nolowdin_ionmin_outfile_path, "IonicMinimize", True),
+        (nolowdin_md_outfile_path, "IonicDynamics", False),
+        (nolowdin_latmin_outfile_path, "LatticeMinimize", False),
+    ],
+    ids=["ionmin", "md", "latmin"],
+)
+def test_no_lowdin_steps(outfile_path: Path, geom_opt_type: str, geom_converged: bool):
+    """Every geometry step is kept when JDFTx skips the Lowdin block (no pseudopotential has atomic orbitals)."""
+    text = outfile_path.read_text()
+    assert "Lowdin" not in text
+    outfile = JDFTXOutfile.from_file(outfile_path, none_slice_on_error=False)
+    jstrucs = outfile.slices[-1].jstrucs
+    assert jstrucs.opt_type == geom_opt_type
+    assert outfile.converged is geom_converged
+    # One structure per printed geometry step, with its step number and energy (MD prints PE with 6 decimals)
+    step_key = "Step" if geom_opt_type == "IonicDynamics" else "Iter"
+    printed = [
+        (int(m["nstep"]), float(m["e"]))
+        for m in re.finditer(
+            rf"^{geom_opt_type}: {step_key}:\s+(?P<nstep>\d+)\s+(?:Etot|PE):\s+(?P<e>\S+)", text, flags=re.MULTILINE
+        )
+    ]
+    assert [jstruc.nstep for jstruc in jstrucs] == [p[0] for p in printed]
+    assert [jstruc.e / Ha_to_eV for jstruc in jstrucs] == pytest.approx([p[1] for p in printed], rel=0, abs=1e-6)
+    # Each structure has the positions printed for its step, and its own converged electronic minimization
+    printed_posns = [
+        np.array([line.split()[2:5] for line in block.splitlines()], dtype=float) * bohr_to_ang
+        for block in re.findall(r"^# Ionic positions in cartesian coordinates:\n((?:ion .*\n)+)", text, re.MULTILINE)
+    ]
+    assert len(printed_posns) == len(jstrucs)
+    for jstruc, posns in zip(jstrucs, printed_posns, strict=True):
+        assert jstruc.cart_coords == pytest.approx(posns)
+        assert len(jstruc.elecmindata)
+        assert jstruc.elecmindata.converged
 
 
 @pytest.mark.parametrize("smearing", [True, False])
