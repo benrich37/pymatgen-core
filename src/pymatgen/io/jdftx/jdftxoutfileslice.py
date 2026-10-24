@@ -102,24 +102,25 @@ class JDFTXOutfileSlice:
         geom_opt_type (str | None): Type of geometric optimization performed (lattice or ionic, where lattice implies
             ionic as well unless geometry was given in direct coordinates).
         efermi (float | None): Fermi energy in eV (may be None if eigstats are not dumped).
-        egap (float | None): Band gap in eV (None if eigstats are not dumped).
+        egap (float | None): Band gap in eV (None if eigstats are not dumped, or if JDFTx reports it unavailable,
+            e.g. when there are no empty bands).
         emin (float | None): Minimum energy in eV (None if eigstats are not dumped).
         emax (float | None): Maximum energy in eV (None if eigstats are not dumped).
         homo (float | None): Energy of last band-state before Fermi level (acronym for Highest Occupied Molecular
             Orbital, even though these are not molecular orbitals and this state may not be entirely occupied)
-            (None if eigstats are not dumped).
+            (None if eigstats are not dumped, or if JDFTx reports it unavailable).
         lumo (float | None): Energy of first band-state after Fermi level (acronym for Lowest Unoccupied Molecular
             Orbital, even though these are not molecular orbitals, and this state may not be entirely unoccupied)
-            (None if eigstats are not dumped).
+            (None if eigstats are not dumped, or if JDFTx reports it unavailable, e.g. when there are no empty bands).
         homo_filling (float | None): Filling of "homo" band-state as calculated within this class object from the homo
             energy, Fermi level, electronic broadening type and electronic broadening parameter. (None if eigstats are
-            not dumped).
+            not dumped, or if the homo energy or Fermi level needed with broadening is unavailable).
         lumo_filling (float | None): Filling of "lumo" band-state as calculated within this class object from the homo
             energy, Fermi level, electronic broadening type and electronic broadening parameter. (None if eigstats are
-            not dumped).
+            not dumped, or if the lumo energy or Fermi level needed with broadening is unavailable).
         is_metal (bool | None): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an
             arbitrary tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001
-            and 0 would not be). (Only available if eigstats was dumped).
+            and 0 would not be). (None unless eigstats were dumped and both fillings are available).
         etype (str | None): String representation of total energy-type of system. Commonly "G" (grand-canonical
             potential) for GC calculations, and "F" for canonical (fixed electron count) calculations.
         broadening_type (str): Type of broadening for electronic filling about Fermi-level requested. Either "Fermi",
@@ -985,20 +986,33 @@ class JDFTXOutfileSlice:
         self.lumo_filling = 0
 
     def _set_orb_fillings_broad(
-        self, nspin: float, ehomo: float, elumo: float, efermi: float, broadening_type: str, broadening: float
+        self,
+        nspin: float,
+        ehomo: float | None,
+        elumo: float | None,
+        efermi: float | None,
+        broadening_type: str,
+        broadening: float,
     ) -> None:
         """Set the orbital fillings with broadening.
 
+        A filling is set to None if an energy it needs is None (JDFTx reports e.g. the LUMO as unavailable when there
+        are no empty bands).
+
         Args:
             nspin (float): Number of spins in calculation.
-            ehomo (float): Energy of the highest occupied molecular orbital.
-            elumo (float): Energy of the lowest unoccupied molecular orbital.
-            efermi (float): Fermi energy.
+            ehomo (float | None): Energy of the highest occupied molecular orbital.
+            elumo (float | None): Energy of the lowest unoccupied molecular orbital.
+            efermi (float | None): Fermi energy.
             broadening_type (str): Type of broadening.
             broadening (float): Broadening parameter.
         """
-        self.homo_filling = (2 / nspin) * self._calculate_filling(broadening_type, broadening, ehomo, efermi)
-        self.lumo_filling = (2 / nspin) * self._calculate_filling(broadening_type, broadening, elumo, efermi)
+        self.homo_filling, self.lumo_filling = (
+            None
+            if eig is None or efermi is None
+            else (2 / nspin) * self._calculate_filling(broadening_type, broadening, eig, efermi)
+            for eig in (ehomo, elumo)
+        )
 
     def _set_orb_fillings(self) -> None:
         """Set the orbital fillings.
@@ -1009,25 +1023,15 @@ class JDFTXOutfileSlice:
             if self.nspin is not None:
                 if self.broadening_type is not None:
                     if self.broadening is not None:
-                        if self.efermi is not None:
-                            if self.homo is not None:
-                                if self.lumo is not None:
-                                    self._set_orb_fillings_broad(
-                                        self.nspin,
-                                        self.homo,
-                                        self.lumo,
-                                        self.efermi,
-                                        self.broadening_type,
-                                        self.broadening,
-                                    )
-                                else:
-                                    raise ValueError(
-                                        "Cannot set orbital fillings with broadening with self.lumo as None"
-                                    )
-                            else:
-                                raise ValueError("Cannot set orbital fillings with broadening with self.homo as None")
-                        else:
-                            raise ValueError("Cannot set orbital fillings with broadening with self.efermi as None")
+                        # homo, lumo and efermi may be None (unavailable), leaving the fillings that need them None
+                        self._set_orb_fillings_broad(
+                            self.nspin,
+                            self.homo,
+                            self.lumo,
+                            self.efermi,
+                            self.broadening_type,
+                            self.broadening,
+                        )
                     else:
                         raise ValueError("Cannot set orbital fillings with broadening with self.broadening as None")
                 else:
@@ -1179,16 +1183,15 @@ class JDFTXOutfileSlice:
         """Determine if the system is a metal based on the fillings of homo and lumo.
 
         Returns:
-            bool: True if system is metallic.
+            bool | None: True if system is metallic, None if eigstats were not dumped or a filling is unavailable.
         """
         tol_partial = 0.01
         if self.has_eigstats:
             if self.nspin is not None:
-                if self.homo_filling is not None:
-                    if self.lumo_filling is not None:
-                        return self._determine_is_metal(tol_partial, self.nspin, self.homo_filling, self.lumo_filling)
-                    raise ValueError("Cannot determine if system is metal - self.lumo_filling undefined")
-                raise ValueError("Cannot determine if system is metal - self.homo_filling undefined")
+                # A filling is None if an energy it needs was unavailable, so metallicity can't be determined
+                if self.homo_filling is None or self.lumo_filling is None:
+                    return None
+                return self._determine_is_metal(tol_partial, self.nspin, self.homo_filling, self.lumo_filling)
             raise ValueError("Cannot determine if system is metal - self.nspin undefined")
         return None
 

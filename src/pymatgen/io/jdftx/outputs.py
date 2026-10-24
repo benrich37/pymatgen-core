@@ -504,21 +504,25 @@ class JDFTXOutfile:
             'lattice' or 'ionic' if geom_opt, else "single point". ('lattice' optimizations perform ionic optimizations
             as well unless ion positions are given in direct coordinates).
         ecomponents (dict): The components of the total energy in eV of the most recent JDFTx call.
-        efermi (float): The Fermi energy in eV of the most recent JDFTx call. Equivalent to "mu".
-        egap (float): The band gap in eV of the most recent JDFTx call. (Only available if eigstats was dumped).
-        emin (float): The minimum energy in eV (smallest Kohn-Sham eigenvalue) of the most recent JDFTx call. (Only
-            available if eigstats was dumped).
-        emax (float): The maximum energy in eV (largest Kohn-Sham eigenvalue) of the most recent JDFTx call. (Only
-            available if eigstats was dumped).
-        homo (float): The energy in eV of the band-gap lower bound (Highest Occupied Molecular Orbital) (Only available
-            if eigstats was dumped).
-        lumo (float): The energy in eV of the band-gap upper bound (Lowest Unoccupied Molecular Orbital) (Only
-            available if eigstats was dumped).
-        homo_filling (float): The electron filling at the homo band-state. (Only available if eigstats was dumped).
-        lumo_filling (float): The electron filling at the lumo band-state. (Only available if eigstats was dumped).
-        is_metal (bool): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an arbitrary
-            tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001 and 0
-            would not be). (Only available if eigstats was dumped).
+        efermi (float | None): The Fermi energy in eV of the most recent JDFTx call. Equivalent to "mu".
+        egap (float | None): The band gap in eV of the most recent JDFTx call. (Only available if eigstats was dumped,
+            and None if JDFTx reports it unavailable, e.g. when there are no empty bands).
+        emin (float | None): The minimum energy in eV (smallest Kohn-Sham eigenvalue) of the most recent JDFTx call.
+            (Only available if eigstats was dumped).
+        emax (float | None): The maximum energy in eV (largest Kohn-Sham eigenvalue) of the most recent JDFTx call.
+            (Only available if eigstats was dumped).
+        homo (float | None): The energy in eV of the band-gap lower bound (Highest Occupied Molecular Orbital) (Only
+            available if eigstats was dumped, and None if JDFTx reports it unavailable).
+        lumo (float | None): The energy in eV of the band-gap upper bound (Lowest Unoccupied Molecular Orbital) (Only
+            available if eigstats was dumped, and None if JDFTx reports it unavailable, e.g. when there are no empty
+            bands).
+        homo_filling (float | None): The electron filling at the homo band-state. (Only available if eigstats was
+            dumped, and None if an energy it needs is unavailable).
+        lumo_filling (float | None): The electron filling at the lumo band-state. (Only available if eigstats was
+            dumped, and None if an energy it needs is unavailable).
+        is_metal (bool | None): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an
+            arbitrary tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001
+            and 0 would not be). (Only available if eigstats was dumped and both fillings are available).
         converged (bool): True if most recent SCF cycle converged (and geom forces converged is calc is geom_opt)
         etype (str): String representation of total energy-type of system. Commonly "G" (grand-canonical potential) for
             GC calculations, and "F" for canonical (fixed electron count) calculations.
@@ -616,15 +620,15 @@ class JDFTXOutfile:
     fftgrid: list[int] = field(init=False)
     geom_opt: bool = field(init=False)
     geom_opt_type: str = field(init=False)
-    efermi: float = field(init=False)
-    egap: float = field(init=False)
-    emin: float = field(init=False)
-    emax: float = field(init=False)
-    homo: float = field(init=False)
-    lumo: float = field(init=False)
-    homo_filling: float = field(init=False)
-    lumo_filling: float = field(init=False)
-    is_metal: bool = field(init=False)
+    efermi: float | None = field(init=False)
+    egap: float | None = field(init=False)
+    emin: float | None = field(init=False)
+    emax: float | None = field(init=False)
+    homo: float | None = field(init=False)
+    lumo: float | None = field(init=False)
+    homo_filling: float | None = field(init=False)
+    lumo_filling: float | None = field(init=False)
+    is_metal: bool | None = field(init=False)
     converged: bool = field(init=False)
     etype: str = field(init=False)
     broadening_type: str = field(init=False)

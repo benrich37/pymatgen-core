@@ -8,6 +8,7 @@ import pytest
 
 from pymatgen.core.trajectory import Trajectory
 from pymatgen.core.units import Ha_to_eV, ang_to_bohr
+from pymatgen.io.jdftx._output_utils import _get_eigstats_varsdict
 from pymatgen.io.jdftx.jdftxoutfileslice import JDFTXOutfileSlice
 
 from .outputs_test_utils import ex_outfileslice1 as ex_slice1
@@ -89,6 +90,28 @@ def test_get_eigstats_varsdict():
         assert getattr(joutslice, key) is None
 
 
+def test_get_eigstats_varsdict_unavailable():
+    # JDFTx prints "unavailable" for statistics it can't compute (no LUMO or mu without empty bands)
+    text = [
+        "Dumping 'jdft.eigStats' ... \n",
+        "\teMin: -0.500000 at state 0 ( [ +0.000000 +0.000000 +0.000000 ] spin 0 )\n",
+        "\tHOMO: -0.200000 at state 0 ( [ +0.000000 +0.000000 +0.000000 ] spin 0 )\n",
+        "\tmu  : unavailable\n",
+        "\tLUMO: unavailable\n",
+        "\teMax: -0.200000 at state 0 ( [ +0.000000 +0.000000 +0.000000 ] spin 0 )\n",
+        "\tHOMO-LUMO gap: unavailable\n",
+        "\tOptical gap  : unavailable\n",
+        "Dumping 'jdft.Ecomponents' ... done\n",
+    ]
+    has_eigstats, varsdict = _get_eigstats_varsdict(text)
+    assert has_eigstats
+    assert varsdict["emin"] == pytest.approx(-0.5 * Ha_to_eV)
+    assert varsdict["homo"] == pytest.approx(-0.2 * Ha_to_eV)
+    assert varsdict["emax"] == pytest.approx(-0.2 * Ha_to_eV)
+    for key in ["efermi", "lumo", "egap", "optical_egap"]:
+        assert varsdict[key] is None
+
+
 def test_get_pp_type():
     joutslice = JDFTXOutfileSlice._from_out_slice(ex_slice1, [], [])
     assert joutslice._get_pp_type(["Reading pseudopotential file root/PAW:"]) is None
@@ -139,21 +162,19 @@ def test_set_orb_fillings_nobroad():
 
 def test_set_orb_fillings_broad():
     joutslice = JDFTXOutfileSlice._from_out_slice(ex_slice1, [], [])
+    # An unavailable energy (None) leaves only the filling that needs it unset
     joutslice.lumo = None
-    with pytest.raises(
-        ValueError, match=re.escape("Cannot set orbital fillings with broadening with self.lumo as None")
-    ):
-        joutslice._set_orb_fillings()
+    joutslice._set_orb_fillings()
+    assert joutslice.lumo_filling is None
+    assert joutslice.homo_filling is not None
     joutslice.homo = None
-    with pytest.raises(
-        ValueError, match=re.escape("Cannot set orbital fillings with broadening with self.homo as None")
-    ):
-        joutslice._set_orb_fillings()
-    joutslice.efermi = None
-    with pytest.raises(
-        ValueError, match=re.escape("Cannot set orbital fillings with broadening with self.efermi as None")
-    ):
-        joutslice._set_orb_fillings()
+    joutslice._set_orb_fillings()
+    assert joutslice.homo_filling is None
+    # Both fillings need the Fermi level
+    joutslice.homo, joutslice.lumo, joutslice.efermi = -1.0, 1.0, None
+    joutslice._set_orb_fillings()
+    assert joutslice.homo_filling is None
+    assert joutslice.lumo_filling is None
     joutslice.broadening = None
     with pytest.raises(
         ValueError, match=re.escape("Cannot set orbital fillings with broadening with self.broadening as None")
@@ -199,10 +220,13 @@ def test_calculate_filling():
 
 def test_determine_is_metal():
     joutslice = JDFTXOutfileSlice._from_out_slice(ex_slice1, [], [])
-    for varname in ["lumo_filling", "homo_filling", "nspin"]:
+    # Metallicity is unknown if a filling is unavailable
+    for varname in ["lumo_filling", "homo_filling"]:
         setattr(joutslice, varname, None)
-        with pytest.raises(ValueError, match=f"Cannot determine if system is metal - self.{varname} undefined"):
-            joutslice.determine_is_metal()
+        assert joutslice.determine_is_metal() is None
+    joutslice.nspin = None
+    with pytest.raises(ValueError, match=re.escape("Cannot determine if system is metal - self.nspin undefined")):
+        joutslice.determine_is_metal()
 
 
 def test_write():

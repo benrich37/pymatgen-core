@@ -789,7 +789,8 @@ def _get_eigstats_varsdict(text: list[str]) -> tuple[bool, dict[str, float | Non
         prefix (str): Prefix for the eigStats section in the out file.
 
     Returns:
-        dict[str, float | None]: Dictionary of eigenvalue statistics.
+        dict[str, float | None]: Dictionary of eigenvalue statistics. A statistic JDFTx printed as "unavailable"
+            (e.g. LUMO and mu when there are no empty bands) is None.
     """
     has_eigstats = False
     varsdict: dict[str, float | None] = {}
@@ -806,7 +807,8 @@ def _get_eigstats_varsdict(text: list[str]) -> tuple[bool, dict[str, float | Non
         line_end = lines1[line_start_rel_idx + 1] if len(lines1) >= line_start_rel_idx + 2 else len(lines1) - 1
         _varsdict = _init_dict_from_colon_dump_lines([text[idx] for idx in range(line_start, line_end)])
         for key in _varsdict:
-            varsdict[eigstats_keymap[key]] = float(_varsdict[key]) * Ha_to_eV
+            value = _varsdict[key]
+            varsdict[eigstats_keymap[key]] = None if value == "unavailable" else float(value) * Ha_to_eV
         has_eigstats = all(eigstats_keymap[key] in varsdict for key in eigstats_keymap) and all(
             eigstats_keymap[key] is not None for key in eigstats_keymap
         )

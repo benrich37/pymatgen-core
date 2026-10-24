@@ -288,6 +288,35 @@ def test_etot_bug_handling():
     assert_same_value(outfile.slices[-1].jstrucs.slices[0].e, -3.018425965201787 * Ha_to_eV)
 
 
+@pytest.mark.parametrize("smearing", [True, False])
+def test_unavailable_eigstats(tmp_path: Path, smearing: bool):
+    # Without empty bands (e.g. an insulator with the default number of bands), JDFTx prints the LUMO, mu and gaps
+    # as "unavailable"; the slice must still be parsed
+    text = example_sp_outfile_path.read_text()
+    for key in ["LUMO", "mu  ", "HOMO-LUMO gap", "Optical gap  "]:
+        text = re.sub(rf"^(\s*{re.escape(key)}): .*$", r"\1: unavailable", text, flags=re.MULTILINE)
+    if not smearing:
+        text = re.sub(r"^elec-smearing .*\n", "", text, flags=re.MULTILINE)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out", none_slice_on_error=False)
+    reference = JDFTXOutfile.from_file(example_sp_outfile_path)
+    assert len(outfile.slices) == 1
+    assert outfile.lumo is None
+    assert outfile.egap is None
+    assert outfile.homo == pytest.approx(reference.homo)
+    # The Fermi level falls back to the mu printed during the electronic minimization
+    assert outfile.efermi == pytest.approx(outfile.mu)
+    if smearing:
+        # The lumo filling needs the (unavailable) lumo energy, so metallicity is unknown
+        assert outfile.homo_filling == pytest.approx(reference.homo_filling)
+        assert outfile.lumo_filling is None
+        assert outfile.is_metal is None
+    else:
+        # Without smearing the fillings don't depend on the band energies
+        assert outfile.lumo_filling == 0
+        assert outfile.is_metal is False
+
+
 def _printed_final_ions(text: str) -> tuple[str, list[list[str]]] | None:
     """Coordinate system and ion lines of the last positions block JDFTx printed (None if there isn't one)."""
     if "# Ionic positions in " not in text:
