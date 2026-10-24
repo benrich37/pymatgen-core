@@ -352,12 +352,7 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             JDFTXInfile: The created JDFTXInfile object.
         """
-        # Join lines ending in "\" (line continuation) with the line after them
-        lines = re.sub(r"[ \t]*\\\n", " ", "\n".join(clean_lines(string.splitlines()))).splitlines()
-        # Previous implementation, kept in case the regex above is not accepted (restore along with the commented-out
-        # `_gather_tags` method below):
-        # lines: list[str] = list(clean_lines(string.splitlines()))
-        # lines = cls._gather_tags(lines)
+        lines = cls._splice_includes(cls._get_lines(string), path_parent)
 
         params: dict[str, Any] = {}
         # process all tag value lines using specified tag formats in MASTER_TAG_LIST
@@ -373,23 +368,6 @@ class JDFTXInfile(dict, MSONable):
                     warnings.warn(f"Skipping invalid tag line: '{line}'. Error: {e}", stacklevel=2)
                     continue
                 raise
-        pop_idcs = []
-        if "include" in params:
-            for i, filename in enumerate(params["include"]):
-                _filename = filename
-                if not Path(_filename).exists():
-                    if path_parent is not None:
-                        _filename = path_parent / filename
-                    if not Path(_filename).exists():
-                        warnings.warn(f"The include file {filename} ({_filename}) does not exist!", stacklevel=2)
-                        # raise ValueError(f"The include file {filename} ({_filename}) does not exist!")
-                if Path(_filename).exists():
-                    params.update(cls.from_file(_filename, dont_require_structure=True, assign_path_parent=False))
-                    pop_idcs.append(i)
-            for i in reversed(pop_idcs):
-                del params["include"][i]
-            if len(params["include"]) == 0:
-                del params["include"]
 
         if (
             not dont_require_structure
@@ -844,6 +822,63 @@ class JDFTXInfile(dict, MSONable):
         temp = cls({k: v for k, v in dct.items() if k not in ("@module", "@class")})
         temp = cls.get_dict_representation(cls.get_list_representation(temp))
         return cls.get_list_representation(temp)
+
+    @staticmethod
+    def _get_lines(string: str) -> list[str]:
+        """Return the lines of an input file's text, without comments and with continued lines joined.
+
+        Args:
+            string (str): Text of the input file.
+
+        Returns:
+            list[str]: The lines of the input file.
+        """
+        # Join lines ending in "\" (line continuation) with the line after them. Previous implementation, kept in case
+        # the regex is not accepted (restore along with the commented-out `_gather_tags` method below):
+        # lines: list[str] = list(clean_lines(string.splitlines()))
+        # return JDFTXInfile._gather_tags(lines)
+        return re.sub(r"[ \t]*\\\n", " ", "\n".join(clean_lines(string.splitlines()))).splitlines()
+
+    @classmethod
+    def _splice_includes(
+        cls, lines: list[str], path_parent: Path | None, include_stack: tuple[Path, ...] = ()
+    ) -> list[str]:
+        """Replace each include line with the lines of the file it names.
+
+        JDFTx reads an included file's lines in place of the include line (so repeatable tags such as ion are added to
+        those of the including file), and does the same for includes within included files. An include line for a
+        file that cannot be found is kept, with a warning.
+
+        Args:
+            lines (list[str]): Lines of the input file.
+            path_parent (Path, optional): Directory to look for include files in if they are not found relative to the
+                current working directory.
+            include_stack (tuple[Path, ...]): Resolved paths of the include files being read, to detect cyclic
+                includes.
+
+        Returns:
+            list[str]: Lines of the input file with the include files' lines spliced in.
+        """
+        spliced_lines = []
+        for line in lines:
+            line_list = line.split(maxsplit=1)
+            if len(line_list) != 2 or line_list[0] != "include":
+                spliced_lines.append(line)
+                continue
+            filename = line_list[1].strip()
+            path = Path(filename)
+            if not path.exists() and path_parent is not None:
+                path = path_parent / filename
+            if not path.exists():
+                warnings.warn(f"The include file {filename} ({path}) does not exist!", stacklevel=2)
+                spliced_lines.append(line)
+                continue
+            resolved_path = path.resolve()
+            if resolved_path in include_stack:
+                raise ValueError(f"The include file {filename} ({path}) (in)directly includes itself!")
+            included_lines = cls._get_lines(path.read_text(encoding="utf-8"))
+            spliced_lines += cls._splice_includes(included_lines, path_parent, (*include_stack, resolved_path))
+        return spliced_lines
 
     @staticmethod
     def _preprocess_line(line: str) -> tuple[AbstractTag, str, str]:

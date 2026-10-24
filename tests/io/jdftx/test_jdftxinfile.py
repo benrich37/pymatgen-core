@@ -201,6 +201,43 @@ def test_JDFTXInfile_expected_exceptions():
         jif[1.2] = 3.4
 
 
+def test_include_splices_lines(tmp_path):
+    """Included lines are read in place of the include line, as JDFTx does, so repeatable tags are added to."""
+    (tmp_path / "main.in").write_text(
+        "lattice Cubic 10\nion-species GBRV/$ID_pbe.uspp\nion H 0 0 0 1\ninclude ions.in\nion H 0 0 1.5 1\n"
+    )
+    (tmp_path / "ions.in").write_text("ion-species SG15/$ID_ONCV_PBE.upf\nion O 0 1.5 0 1\ninclude more_ions.in\n")
+    # Includes within included files are also found next to the main file
+    (tmp_path / "more_ions.in").write_text("ion H 0 0 3 1\n")
+    jif = JDFTXInfile.from_file(tmp_path / "main.in")
+    assert jif["ion-species"] == ["GBRV/$ID_pbe.uspp", "SG15/$ID_ONCV_PBE.upf"]
+    assert [(ion["species-id"], ion["x0"], ion["x1"], ion["x2"]) for ion in jif["ion"]] == [
+        ("H", 0, 0, 0),
+        ("O", 0, 1.5, 0),
+        ("H", 0, 0, 3),
+        ("H", 0, 0, 1.5),
+    ]
+    assert "include" not in jif
+    # An include line for a missing file is kept
+    with pytest.warns(UserWarning, match="does not exist"):
+        jif = JDFTXInfile.from_str("include barbie\n", dont_require_structure=True)
+    assert jif["include"] == ["barbie"]
+
+
+def test_include_errors(tmp_path):
+    """Inputs JDFTx refuses to read because of their include files raise errors."""
+    # A tag that cannot repeat is given in both files
+    (tmp_path / "main.in").write_text("lattice Cubic 10\nelec-cutoff 20\ninclude cutoff.in\n")
+    (tmp_path / "cutoff.in").write_text("elec-cutoff 30\n")
+    with pytest.raises(ValueError, match="The 'elec-cutoff' tag appears multiple times"):
+        JDFTXInfile.from_file(tmp_path / "main.in", dont_require_structure=True)
+    # Cyclic includes
+    (tmp_path / "a.in").write_text("include b.in\n")
+    (tmp_path / "b.in").write_text("include a.in\n")
+    with pytest.raises(ValueError, match=re.escape("(in)directly includes itself")):
+        JDFTXInfile.from_file(tmp_path / "a.in", dont_require_structure=True)
+
+
 def test_JDFTXInfile_strip_structure():
     jif = JDFTXInfile.from_file(ex_infile1_fname)
     jif["latt-scale"] = {"s0": 2.0, "s1": 2.0, "s2": 1.0}
