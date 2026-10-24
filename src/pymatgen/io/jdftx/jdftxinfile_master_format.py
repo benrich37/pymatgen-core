@@ -821,10 +821,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "fix-electron-potential": StrTag(),
         "Vexternal": MultiformatTag(
             format_options=[
-                TagContainer(subtags={"filename": StrTag(write_value=False, optional=False)}),
+                TagContainer(subtags={"filename": StrTag(write_tagname=False, optional=False)}),
                 TagContainer(
                     subtags={
-                        "filenameUp": StrTag(write_value=False, optional=False),
+                        "filenameUp": StrTag(write_tagname=False, optional=False),
                         "filenameDn": StrTag(write_tagname=False, optional=False),
                     }
                 ),

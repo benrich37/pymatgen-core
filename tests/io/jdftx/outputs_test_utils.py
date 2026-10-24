@@ -333,6 +333,8 @@ nolowdin_latmin_outfile_path = ex_out_files_dir / Path("nolowdin_latmin.out")
 vdw_d2_outfile_path = ex_out_files_dir / Path("vdw_d2.out")
 # Natively generated H2 single point with "rhoExternal ../n yes" (n: the density dumped by an H2 run)
 rho_external_outfile_path = ex_out_files_dir / Path("rho_external.out")
+# Natively generated z-spin H2 single point with a spin-polarized Vexternal (the same grid file for both spins)
+vexternal_spin_outfile_path = ex_out_files_dir / Path("vexternal_spin.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

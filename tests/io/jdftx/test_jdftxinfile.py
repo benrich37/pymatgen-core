@@ -628,6 +628,21 @@ def test_rho_external(line: str, expected: dict):
     assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["rhoExternal"] == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Vexternal V.bin", {"filename": "V.bin"}),
+        # Spin-polarized potential
+        ("Vexternal Vup.bin Vdn.bin", {"filenameUp": "Vup.bin", "filenameDn": "Vdn.bin"}),
+    ],
+)
+def test_vexternal(line: str, expected: dict):
+    jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert jif["Vexternal"] == expected
+    assert str(jif).split() == line.split()
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["Vexternal"] == expected
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

@@ -57,6 +57,7 @@ from .outputs_test_utils import (
     problem3_outfile_path,
     rho_external_outfile_path,
     vdw_d2_outfile_path,
+    vexternal_spin_outfile_path,
 )
 from .shared_test_utils import assert_same_value
 
@@ -470,6 +471,13 @@ def test_to_jdftxinfile_keeps_rho_external():
     expected = {"filename": "../n", "includeSelfEnergy": True}
     assert outfile.infile["rhoExternal"] == expected
     assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["rhoExternal"] == expected
+
+
+def test_to_jdftxinfile_keeps_vexternal():
+    outfile = JDFTXOutfile.from_file(vexternal_spin_outfile_path)
+    expected = {"filenameUp": "../../rhoext/n", "filenameDn": "../../rhoext/n"}
+    assert outfile.infile["Vexternal"] == expected
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["Vexternal"] == expected
 
 
 def test_to_jdftxinfile_keeps_d2_dispersion():
