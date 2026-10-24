@@ -833,7 +833,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "rhoExternal": TagContainer(
             subtags={
                 "filename": StrTag(write_tagname=False, optional=False),
-                "includeSelfEnergy": FloatTag(write_tagname=False),
+                "includeSelfEnergy": BoolTag(write_tagname=False),
             }
         ),
         "slab-epsilon": TagContainer(

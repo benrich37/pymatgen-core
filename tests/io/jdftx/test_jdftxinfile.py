@@ -612,6 +612,22 @@ def test_van_der_waals(line: str, expected: float | str):
     assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["van-der-waals"] == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("rhoExternal rho.bin", {"filename": "rho.bin"}),
+        ("rhoExternal rho.bin yes", {"filename": "rho.bin", "includeSelfEnergy": True}),
+        ("rhoExternal rho.bin no", {"filename": "rho.bin", "includeSelfEnergy": False}),
+    ],
+)
+def test_rho_external(line: str, expected: dict):
+    """includeSelfEnergy is a yes/no flag in JDFTx."""
+    jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert jif["rhoExternal"] == expected
+    assert str(jif).split() == line.split()
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["rhoExternal"] == expected
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

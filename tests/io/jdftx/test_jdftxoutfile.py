@@ -55,6 +55,7 @@ from .outputs_test_utils import (
     problem2_outfile_known_simple,
     problem2_outfile_path,
     problem3_outfile_path,
+    rho_external_outfile_path,
     vdw_d2_outfile_path,
 )
 from .shared_test_utils import assert_same_value
@@ -461,6 +462,14 @@ def test_to_jdftxinfile_keeps_fractional_move_scale(tmp_path: Path):
     restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
     assert {ion["moveScale"] for ion in restart["ion"]} == {0.0, 0.5}
     _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)
+
+
+def test_to_jdftxinfile_keeps_rho_external():
+    # JDFTx always echoes rhoExternal with its yes/no includeSelfEnergy flag
+    outfile = JDFTXOutfile.from_file(rho_external_outfile_path)
+    expected = {"filename": "../n", "includeSelfEnergy": True}
+    assert outfile.infile["rhoExternal"] == expected
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["rhoExternal"] == expected
 
 
 def test_to_jdftxinfile_keeps_d2_dispersion():
