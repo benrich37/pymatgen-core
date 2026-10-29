@@ -663,23 +663,40 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "sigma": FloatTag(write_tagname=False, optional=False),
             },
         ),
-        "charged-defect-correction": TagContainer(
-            subtags={
-                "Slab": TagContainer(
+        # charged-defect-correction [Slab <dir>] <DtotFile> <bulkEps>|<slabEpsFile> <rMin> <rSigma>: JDFTx reads Eps as
+        # the bulk dielectric constant for coulomb-interaction Periodic, or as a slab-epsilon output file for
+        # coulomb-interaction Slab or with the Slab override (which JDFTx only recognizes as the first token)
+        "charged-defect-correction": MultiformatTag(
+            format_options=[
+                TagContainer(
                     subtags={
-                        "dir": StrTag(options=["100", "010", "001"], write_tagname=False),
+                        "DtotFile": StrTag(write_tagname=False, optional=False),
+                        "Eps": FloatTag(write_tagname=False, optional=False),
+                        "rMin": FloatTag(write_tagname=False, optional=False),
+                        "rSigma": FloatTag(write_tagname=False, optional=False),
                     }
                 ),
-                "DtotFile": StrTag(write_tagname=False, optional=False),
-                "Eps": MultiformatTag(
-                    format_options=[
-                        FloatTag(write_tagname=False, optional=False),
-                        StrTag(write_tagname=False, optional=False),
-                    ]
+                TagContainer(
+                    subtags={
+                        "Slab": TagContainer(
+                            optional=False,
+                            subtags={"dir": StrTag(options=["100", "010", "001"], write_tagname=False, optional=False)},
+                        ),
+                        "DtotFile": StrTag(write_tagname=False, optional=False),
+                        "Eps": StrTag(write_tagname=False, optional=False),
+                        "rMin": FloatTag(write_tagname=False, optional=False),
+                        "rSigma": FloatTag(write_tagname=False, optional=False),
+                    }
                 ),
-                "rMin": FloatTag(write_tagname=False, optional=False),
-                "rSigma": FloatTag(write_tagname=False, optional=False),
-            }
+                TagContainer(
+                    subtags={
+                        "DtotFile": StrTag(write_tagname=False, optional=False),
+                        "Eps": StrTag(write_tagname=False, optional=False),
+                        "rMin": FloatTag(write_tagname=False, optional=False),
+                        "rSigma": FloatTag(write_tagname=False, optional=False),
+                    }
+                ),
+            ]
         ),
         "Cprime-params": TagContainer(
             subtags={

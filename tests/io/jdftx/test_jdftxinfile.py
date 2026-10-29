@@ -705,6 +705,59 @@ def test_perturb_incommensurate_wavefunctions(line: str, expected: dict):
     assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # Bulk defect: Eps is the bulk dielectric constant
+        ("Dtot 2.5 1 2", {"DtotFile": "Dtot", "Eps": 2.5, "rMin": 1.0, "rSigma": 2.0}),
+        # Surface defect: Eps is a slab-epsilon output file (with the Slab override for periodic Coulomb)
+        ("Dtot slabEps 1 2", {"DtotFile": "Dtot", "Eps": "slabEps", "rMin": 1.0, "rSigma": 2.0}),
+        (
+            "Slab 001 Dtot slabEps 1 2",
+            {"Slab": {"dir": "001"}, "DtotFile": "Dtot", "Eps": "slabEps", "rMin": 1.0, "rSigma": 2.0},
+        ),
+        # With the Slab override, JDFTx always reads Eps as a file name, even one that looks like a number
+        (
+            "Slab 010 Dtot 1e3 1 2",
+            {"Slab": {"dir": "010"}, "DtotFile": "Dtot", "Eps": "1e3", "rMin": 1.0, "rSigma": 2.0},
+        ),
+    ],
+)
+def test_charged_defect_correction(line: str, expected: dict):
+    """The forms JDFTx accepts (and echoes unchanged) are read, written and read back."""
+    tag = "charged-defect-correction"
+    jif = JDFTXInfile.from_str(f"{tag} {line}\n", dont_require_structure=True)
+    assert jif[tag] == expected
+    assert str(jif).split() == [tag, *line.replace(" 1 2", " 1.0 2.0").split()]
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
+    # Set from a dict
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    jif[tag] = expected
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Slab Dtot slabEps 1 2",  # JDFTx requires <dir> after Slab
+        "Slab 011 Dtot slabEps 1 2",
+        "Dtot 2.5 1",
+        "Dtot 2.5 1 2 3",
+    ],
+)
+def test_charged_defect_correction_invalid(line: str):
+    with pytest.raises(ValueError, match="No valid read format"):
+        JDFTXInfile.from_str(f"charged-defect-correction {line}\n", dont_require_structure=True)
+
+
+def test_charged_defect_correction_slab_needs_eps_file():
+    # With the Slab override, Eps is a slab-epsilon file, not a dielectric constant
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    value = {"Slab": {"dir": "001"}, "DtotFile": "Dtot", "Eps": 2.5, "rMin": 1.0, "rSigma": 2.0}
+    with pytest.raises(ValueError, match="could not be determined"):
+        jif["charged-defect-correction"] = value
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""
