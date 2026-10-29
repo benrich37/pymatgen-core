@@ -21,6 +21,7 @@ from pymatgen.io.jdftx.generic_tags import (
     FloatTag,
     IntTag,
     MultiformatTag,
+    StrListTag,
     StrTag,
     TagContainer,
 )
@@ -1438,7 +1439,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "potential-subtraction": BoolTag(),
     },
     "misc": {
-        "debug": StrTag(
+        # debug <option> <option> ...: JDFTx echoes all options merged into the first debug line, and the others bare
+        "debug": StrListTag(
             options=[
                 "Ecomponents",
                 "EigsFillings",

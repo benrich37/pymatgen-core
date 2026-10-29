@@ -478,6 +478,40 @@ class StrTag(AbstractTag):
 
 
 @dataclass
+class StrListTag(StrTag):
+    """Tag for repeatable commands that take one or more options per line in JDFTx input files (e.g. debug).
+
+    Each option is stored as its own entry of the tag's list, so reading "debug A B" is the same as reading "debug A"
+    and "debug B". A tag without options reads as no entries.
+    """
+
+    def read(self, tag: str, value: str) -> list[str]:  # type: ignore[override]
+        """Read the value string for this tag.
+
+        Args:
+            tag (str): The tag to read the value string for.
+            value (str): The value string to read.
+
+        Returns:
+            list[str]: The parsed options.
+        """
+        self._general_read_validate(tag, value)
+        return [StrTag.read(self, tag, option) for token in value.split() for option in self._split(token)]
+
+    def _split(self, token: str) -> list[str]:
+        """Split a token made of two options run together.
+
+        JDFTx echoes "debug ... Symmetries" that way, as commands/debug.cpp prints "Symmetries" without a leading space.
+        """
+        options = [x.lower() for x in self.options or []]
+        if token.lower() not in options:
+            for option in options:
+                if token.lower().endswith(option) and token[: -len(option)].lower() in options:
+                    return [token[: -len(option)], token[-len(option) :]]
+        return [token]
+
+
+@dataclass
 class AbstractNumericTag(AbstractTag):
     """Abstract base class for numeric tags."""
 

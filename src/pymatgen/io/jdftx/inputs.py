@@ -36,7 +36,14 @@ from pymatgen.core import Lattice, Structure
 from pymatgen.core import constants as const
 from pymatgen.core.periodic_table import Element
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
-from pymatgen.io.jdftx.generic_tags import AbstractTag, BoolTagContainer, DumpTagContainer, MultiformatTag, TagContainer
+from pymatgen.io.jdftx.generic_tags import (
+    AbstractTag,
+    BoolTagContainer,
+    DumpTagContainer,
+    MultiformatTag,
+    StrListTag,
+    TagContainer,
+)
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
 from pymatgen.io.jdftx.jdftxinfile_master_format import (
     __PHONON_TAGS__,
@@ -930,7 +937,10 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             dict: Updated dictionary with the stored value.
         """
-        if tag_object.can_repeat:  # store tags that can repeat in a list
+        if isinstance(tag_object, StrListTag) and isinstance(value, list):  # one entry per option read
+            if value:
+                params.setdefault(tag, []).extend(value)
+        elif tag_object.can_repeat:  # store tags that can repeat in a list
             params.setdefault(tag, []).append(value)
         elif tag in params:
             raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")

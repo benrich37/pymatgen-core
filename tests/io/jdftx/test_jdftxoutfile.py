@@ -17,6 +17,7 @@ from pymatgen.io.jdftx.outputs import JDFTXOutfile, _jof_atr_from_last_slice
 
 from .inputs_test_utils import aimd_infile_fname
 from .outputs_test_utils import (
+    debug_outfile_path,
     eopt_elecmin_outfile_path,
     eopt_scf_ionmin_outfile_path,
     eopt_scf_outfile_path,
@@ -478,6 +479,12 @@ def test_to_jdftxinfile_keeps_vexternal():
     expected = {"filenameUp": "../../rhoext/n", "filenameDn": "../../rhoext/n"}
     assert outfile.infile["Vexternal"] == expected
     assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["Vexternal"] == expected
+
+
+def test_to_jdftxinfile_keeps_debug():
+    outfile = JDFTXOutfile.from_file(debug_outfile_path)
+    assert outfile.infile["debug"] == ["KpointsBasis", "Symmetries"]
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["debug"] == ["KpointsBasis", "Symmetries"]
 
 
 def test_to_jdftxinfile_keeps_d2_dispersion():

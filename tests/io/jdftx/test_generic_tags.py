@@ -11,6 +11,7 @@ from pymatgen.io.jdftx.generic_tags import (
     FloatTag,
     IntTag,
     MultiformatTag,
+    StrListTag,
     StrTag,
     TagContainer,
 )
@@ -155,6 +156,17 @@ def test_float_tag():
         float_tag.read("barbie", "")
     assert FloatTag(value_if_bare=0.0).read("barbie", "") == 0.0
     assert FloatTag(value_if_bare=0.0).read("barbie", "1.5") == 1.5
+
+
+def test_str_list_tag():
+    tag = StrListTag(options=["A", "BC"], can_repeat=True)
+    assert tag.read("barbie", "A BC") == ["A", "BC"]
+    assert tag.read("barbie", "") == []
+    # Two options run together are split, but only into options
+    assert tag.read("barbie", "ABC") == ["A", "BC"]
+    with pytest.raises(ValueError, match="must be one of"):
+        tag.read("barbie", "AB")
+    assert StrListTag().read("barbie", "ken allan") == ["ken", "allan"]
 
 
 def test_read_from_tokens_consumes_one_token_for_single_value_tags():

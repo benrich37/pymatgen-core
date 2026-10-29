@@ -643,6 +643,39 @@ def test_vexternal(line: str, expected: dict):
     assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["Vexternal"] == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("debug Ecomponents", ["Ecomponents"]),
+        ("debug Ecomponents\ndebug Forces", ["Ecomponents", "Forces"]),
+        # Several options per line, as JDFTx allows
+        ("debug Ecomponents Forces", ["Ecomponents", "Forces"]),
+        # JDFTx echoes all options merged into the first debug line and the others bare, and runs "Symmetries" into
+        # the option before it
+        ("debug  Ecomponents ForcesSymmetries\ndebug ", ["Ecomponents", "Forces", "Symmetries"]),
+        ("debug Symmetries", ["Symmetries"]),
+    ],
+)
+def test_debug(text: str, expected: list[str]):
+    jif = JDFTXInfile.from_str(f"{text}\n", dont_require_structure=True)
+    assert jif["debug"] == expected
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["debug"] == expected
+
+
+def test_debug_setting():
+    # A bare debug line has no options
+    assert "debug" not in JDFTXInfile.from_str("debug\n", dont_require_structure=True)
+    with pytest.raises(ValueError, match="must be one of"):
+        JDFTXInfile.from_str("debug Ecomponents Barbie\n", dont_require_structure=True)
+    jif = JDFTXInfile.from_str("debug Ecomponents\n", dont_require_structure=True)
+    jif["debug"] = "MuSearch Fluid"
+    assert jif["debug"] == ["MuSearch", "Fluid"]
+    jif["debug"] = ["Forces", "Ecomponents KpointsBasis"]
+    assert jif["debug"] == ["Forces", "Ecomponents", "KpointsBasis"]
+    jif.append_tag("debug", "EigsFillings Symmetries")
+    assert jif["debug"] == ["Forces", "Ecomponents", "KpointsBasis", "EigsFillings", "Symmetries"]
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""
