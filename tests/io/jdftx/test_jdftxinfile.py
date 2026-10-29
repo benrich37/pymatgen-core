@@ -689,6 +689,22 @@ def test_multiformat_tag_bounds(concentration: str):
     JDFTXInfile.from_str(line.replace("0.5", "nan"), dont_require_structure=True)
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("perturb-incommensurate-wavefunctions wfns", {"filename": "wfns"}),
+        # EcutOld is a double in JDFTx (echoed with %g)
+        ("perturb-incommensurate-wavefunctions wfns 20.5", {"filename": "wfns", "EcutOld": 20.5}),
+        ("perturb-incommensurate-wavefunctions wfns 20", {"filename": "wfns", "EcutOld": 20.0}),
+    ],
+)
+def test_perturb_incommensurate_wavefunctions(line: str, expected: dict):
+    tag = "perturb-incommensurate-wavefunctions"
+    jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert jif[tag] == expected
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

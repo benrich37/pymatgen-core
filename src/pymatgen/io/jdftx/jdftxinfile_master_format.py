@@ -813,7 +813,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "perturb-incommensurate-wavefunctions": TagContainer(
             subtags={
                 "filename": StrTag(write_tagname=False, optional=False),
-                "EcutOld": IntTag(write_tagname=False),
+                "EcutOld": FloatTag(write_tagname=False),
             }
         ),
         "perturb-rhoExternal": StrTag(),
