@@ -169,6 +169,31 @@ def test_str_list_tag():
     assert StrListTag().read("barbie", "ken allan") == ["ken", "allan"]
 
 
+def test_multiformat_tag_validate_value_bounds():
+    """Bounds are checked with the format option the value matches."""
+    tag = MultiformatTag(format_options=[StrTag(options=["D3"]), FloatTag(lb=0.0)])
+    assert tag.validate_value_bounds("barbie", 0.5) == (True, "")
+    assert tag.validate_value_bounds("barbie", "D3") == (True, "")
+    is_valid, err = tag.validate_value_bounds("barbie", -0.5)
+    assert not is_valid
+    assert "not within bounds" in err
+    # A nan is an unset value, not an out-of-bounds one
+    assert tag.validate_value_bounds("barbie", float("nan")) == (True, "")
+    # Each entry of a repeated tag is checked with its own format option
+    tag = MultiformatTag(
+        can_repeat=True,
+        format_options=[
+            TagContainer(can_repeat=True, subtags={"a": FloatTag(write_tagname=False, lb=0.0)}),
+            TagContainer(can_repeat=True, subtags={"b": IntTag(write_tagname=False, ub=1)}),
+        ],
+    )
+    assert tag.validate_value_bounds("barbie", [{"a": 1.0}, {"b": 0}]) == (True, "")
+    with pytest.warns(UserWarning, match="Invalid value"):
+        is_valid, err = tag.validate_value_bounds("barbie", [{"a": 1.0}, {"b": 2}])
+    assert not is_valid
+    assert "'b'" in err
+
+
 def test_read_from_tokens_consumes_one_token_for_single_value_tags():
     assert StrTag().read_from_tokens("tag", ["a", "b"]) == ("a", 1)
     assert FloatTag().read_from_tokens("tag", ["1.5", "b"]) == (1.5, 1)

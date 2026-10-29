@@ -563,6 +563,9 @@ class AbstractNumericTag(AbstractTag):
         tag: str,
         value: Any,
     ) -> tuple[bool, str]:
+        # A nan marks an unset value (which JDFTx out files can dump), to be stripped before writing
+        if isinstance(value, float | np.floating) and np.isnan(value):
+            return True, ""
         if not self.val_is_within_bounds(value):
             return False, self.get_invalid_value_error_str(tag, value)
         return True, ""
@@ -1292,6 +1295,26 @@ class MultiformatTag(AbstractTag):
         format_index, value = self._determine_format_option(tag, value, try_auto_type_fix=try_auto_type_fix)
         is_valid = format_index is not None
         return tag, is_valid, value
+
+    def validate_value_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        """Validate the bounds of the value with the format option it matches.
+
+        Args:
+            tag (str): The tag to validate the bounds of the value for.
+            value (Any): The value to validate the bounds of.
+
+        Returns:
+            tuple[bool, str]: Whether the value is within bounds, and the error string if it is not.
+        """
+        if self.can_repeat and isinstance(value, list) and all(option.can_repeat for option in self.format_options):
+            # Entries of a repeated tag can each use a different format (e.g. ion tags with different constraints)
+            results = [self._validate_format_option_bounds(tag, [entry]) for entry in value]
+            return all(is_valid for is_valid, _ in results), "\n".join(err for is_valid, err in results if not is_valid)
+        return self._validate_format_option_bounds(tag, value)
+
+    def _validate_format_option_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        format_index, value = self._determine_format_option(tag, value)
+        return self.format_options[format_index].validate_value_bounds(tag, value)
 
     def read(self, tag: str, value: str) -> None:
         """Read the value string for this tag.

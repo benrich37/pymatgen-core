@@ -676,6 +676,19 @@ def test_debug_setting():
     assert jif["debug"] == ["Forces", "Ecomponents", "KpointsBasis", "EigsFillings", "Symmetries"]
 
 
+@pytest.mark.parametrize("concentration", ["55.338", "bulk"], ids=["concentration", "bulk"])
+def test_multiformat_tag_bounds(concentration: str):
+    """Bounds on the subtags of a multiformat tag (here both fluid-solvent formats) are checked, as JDFTx does."""
+    line = f"fluid-solvent H2O {concentration} ScalarEOS epsInf 0.5\n"  # JDFTx: "epsInf must be >= 1"
+    with pytest.raises(ValueError, match=re.escape("Value '0.5' for tag 'epsInf' is not within bounds")):
+        JDFTXInfile.from_str(line, dont_require_structure=True)
+    jif = JDFTXInfile.from_str(line, dont_require_structure=True, validate_value_boundaries=False)
+    assert jif["fluid-solvent"][0]["epsInf"] == 0.5
+    JDFTXInfile.from_str(line.replace("0.5", "1.77"), dont_require_structure=True)
+    # A nan (unset value) is not a bounds error
+    JDFTXInfile.from_str(line.replace("0.5", "nan"), dont_require_structure=True)
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""
