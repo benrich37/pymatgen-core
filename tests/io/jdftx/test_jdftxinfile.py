@@ -758,6 +758,83 @@ def test_charged_defect_correction_slab_needs_eps_file():
         jif["charged-defect-correction"] = value
 
 
+# JDFTx's echo of "density-of-states Total Occupied Total Orbital H 1 s Complete Orbital H 2 s Etol 1e-5 Total"
+dos_echo = """density-of-states Etol 1.000000e-05 Esigma 0.000000e+00 \\
+		Complete \\
+	Total \\
+		Occupied \\
+	Total \\
+	Orbital H 1   s \\
+		Complete \\
+	Orbital H 2   s \\
+	Total
+"""
+dos_echo_known = [
+    {"Etol": 1e-5},
+    {"Esigma": 0.0},
+    {"Complete": True},
+    {"Total": True},
+    {"Occupied": True},
+    {"Total": True},
+    {"Orbital": {"species": "H", "atomIndex": 1, "orbDesc": "s"}},
+    {"Complete": True},
+    {"Orbital": {"species": "H", "atomIndex": 2, "orbDesc": "s"}},
+    {"Total": True},
+]
+
+
+def test_density_of_states_keeps_order():
+    """Occupied/Complete apply to the weights after them, and weights can repeat, so the order must survive."""
+    tag = "density-of-states"
+    jif = JDFTXInfile.from_str(dos_echo, dont_require_structure=True)
+    assert_same_value(jif[tag], dos_echo_known)
+    keywords = [next(iter(entry)) for entry in dos_echo_known]
+    assert [line.split()[0] for line in str(jif).splitlines()[1:] if line] == keywords
+    for jif2 in (JDFTXInfile.from_str(str(jif), dont_require_structure=True), jif.copy()):
+        assert_same_value(jif2[tag], dos_echo_known)
+        assert not jif.get_differing_tags(jif2)
+    # The same subcommands in another order are a different input
+    jif2 = jif.copy()
+    jif2[tag] = [*dos_echo_known[:2], *dos_echo_known[4:6], *dos_echo_known[2:4], *dos_echo_known[6:]]
+    assert jif.get_differing_tags(jif2) == [tag]
+    # A bare density-of-states (total DOS only) is kept
+    jif = JDFTXInfile.from_str(f"{tag}\n", dont_require_structure=True)
+    assert jif[tag] == []
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == []
+
+
+def test_density_of_states_dict_form():
+    """A dict of subcommands (the representation before order was kept) is read in the dict's order."""
+    tag = "density-of-states"
+    known = [
+        {"Esigma": 0.001},
+        {"Occupied": True},
+        {"Total": True},
+        {"OrthoOrbital": {"species": "Si", "atomIndex": 1, "orbDesc": "s"}},
+        {"OrthoOrbital": {"species": "Si", "atomIndex": 2, "orbDesc": "p"}},
+    ]
+    value = {"Esigma": 0.001, "Occupied": True, "Total": True, "OrthoOrbital": [["Si", 1, "s"], ["Si", 2, "p"]]}
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    jif[tag] = value
+    assert_same_value(jif[tag], known)
+    # Also when the value is never validated (the constructor skips __setitem__)
+    jif = JDFTXInfile({tag: {**value, "OrthoOrbital": [{"species": "Si", "atomIndex": 1, "orbDesc": "s"}]}})
+    assert_same_value(JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag], known[:4])
+
+
+@pytest.mark.parametrize(
+    ("line", "error_match"),
+    [
+        ("Barbie", "'Barbie' is not a valid subcommand"),
+        ("Total 5", "'5' is not a valid subcommand"),
+        ("Total Orbital H 1", "Subcommand 'Orbital' of 'density-of-states' is missing values"),
+    ],
+)
+def test_density_of_states_read_errors(line: str, error_match: str):
+    with pytest.raises(ValueError, match=error_match):
+        JDFTXInfile.from_str(f"density-of-states {line}\n", dont_require_structure=True)
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

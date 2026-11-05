@@ -13,6 +13,7 @@ from pymatgen.io.jdftx.generic_tags import (
     MultiformatTag,
     StrListTag,
     StrTag,
+    SubcommandTagContainer,
     TagContainer,
 )
 from pymatgen.io.jdftx.jdftxinfile_master_format import get_dump_tag_container, get_tag_object
@@ -590,6 +591,42 @@ def test_booltagcontainer():
         ),
     ):
         btc.read(tag, value)
+
+
+def test_subcommandtagcontainer():
+    stc = SubcommandTagContainer(
+        subtags={
+            "ken": BoolTag(write_value=False),
+            "allan": FloatTag(lb=0.0),
+            "alan": TagContainer(subtags={"a": IntTag(write_tagname=False, optional=False)}),
+        }
+    )
+    value = [{"allan": 1.0}, {"ken": True}, {"alan": {"a": 1}}, {"ken": True}, {"alan": {"a": 2}}]
+    assert stc.read("barbie", "allan 1 ken alan 1 ken alan 2") == value
+    assert stc.write("barbie", value).split() == "barbie \\ allan 1.0 \\ ken \\ alan 1 \\ ken \\ alan 2".split()
+    # Types are fixed per subcommand, and a dict of subcommands becomes entries in the dict's order
+    assert stc.validate_value_type("barbie", [{"allan": "1"}, {"alan": ["2"]}], try_auto_type_fix=True)[1:] == (
+        True,
+        [{"allan": 1.0}, {"alan": {"a": 2}}],
+    )
+    assert stc.validate_value_type("barbie", {"ken": True, "alan": [{"a": 1}, {"a": 2}]})[2] == [
+        {"ken": True},
+        {"alan": {"a": 1}},
+        {"alan": {"a": 2}},
+    ]
+    assert stc.validate_value_bounds("barbie", value) == (True, "barbie: ")
+    is_valid, err = stc.validate_value_bounds("barbie", [{"allan": -1.0}])
+    assert not is_valid
+    assert "not within bounds" in err
+    # Order matters for comparison
+    assert stc.is_equal_to(value, stc, [{"allan": 1.0 + 1e-9}, *value[1:]])
+    assert not stc.is_equal_to(value, stc, [value[0], value[2], value[1], *value[3:]])
+    assert not stc.is_equal_to(value, stc, value[:-1])
+    assert not stc.is_equal_to(value, TagContainer(subtags=stc.subtags), value)
+    with pytest.raises(TypeError, match="must be a list of single-key dicts"):
+        stc.write("barbie", [{"ken": True, "allan": 1.0}])
+    with pytest.raises(ValueError, match="'barbie' is not a valid subcommand of 'ken'!"):
+        stc.validate_value_type("ken", [{"barbie": True}])
 
 
 def test_multiformattagcontainer():

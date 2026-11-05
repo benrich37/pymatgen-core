@@ -1545,6 +1545,179 @@ class DumpTagContainer(TagContainer):
         return tag_out, is_valid_out, updated_value
 
 
+@dataclass
+class SubcommandTagContainer(TagContainer):
+    """TagContainer for a command made of keyword subcommands whose order matters (e.g. density-of-states).
+
+    JDFTx reads such a command one subcommand at a time, and a subcommand can depend on the ones before it: in
+    density-of-states, the Occupied/Complete flags set the mode of the weight functions that follow them. Any subcommand
+    can appear any number of times. The value is therefore a list of entries in order, each a single-key dict
+    mapping a subcommand to its value, e.g. [{"Total": True}, {"Occupied": True}, {"Total": True}].
+
+    A dict of subcommands (the representation used before, e.g. {"Esigma": 0.001, "Total": True, "Orbital": [...]})
+    is still accepted wherever a value is expected, and is read as entries in the dict's order, with a list of
+    several values for a subcommand giving one entry each. Validation with try_auto_type_fix stores the list form.
+
+    Only usable as a top-level tag.
+    """
+
+    def _get_entries(self, tag: str, value: Any) -> list[dict[str, Any]]:
+        """Get the value as a list of single-key dicts, converting it from a dict of subcommands if needed.
+
+        Args:
+            tag (str): The tag the value is for.
+            value (Any): The value, as a list of entries or a dict of subcommands.
+
+        Returns:
+            list[dict[str, Any]]: The entries in order.
+        """
+        if isinstance(value, dict):
+            entries = []
+            for subtag, subvalue in value.items():
+                subtag_type = self.subtags.get(subtag)
+                is_entry_list = (
+                    subtag_type is not None
+                    and subtag_type.is_tag_container
+                    and isinstance(subvalue, list)
+                    and all(isinstance(x, dict | list) for x in subvalue)
+                )
+                entries += [{subtag: x} for x in subvalue] if is_entry_list else [{subtag: subvalue}]
+            value = entries
+        if not isinstance(value, list) or any(not isinstance(entry, dict) or len(entry) != 1 for entry in value):
+            raise TypeError(
+                f"The value '{value}' for tag '{tag}' must be a list of single-key dicts (one per subcommand) or a "
+                "dict of subcommands!"
+            )
+        for entry in value:
+            subtag = next(iter(entry))
+            if subtag not in self.subtags:
+                raise ValueError(f"'{subtag}' is not a valid subcommand of '{tag}'!")
+        return value
+
+    def read(self, tag: str, value: str) -> list[dict[str, Any]]:  # type: ignore[override]
+        """Read the value string for this tag.
+
+        Args:
+            tag (str): The tag to read the value string for.
+            value (str): The value string to read.
+
+        Returns:
+            list[dict[str, Any]]: The subcommands in the order they appear.
+        """
+        self._general_read_validate(tag, value)
+        tokens = value.split()
+        entries, n_read = self.read_from_tokens(tag, tokens)
+        if n_read < len(tokens):
+            raise ValueError(f"'{tokens[n_read]}' is not a valid subcommand of '{tag}'!")
+        return entries
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[list[dict[str, Any]], int]:  # type: ignore[override]
+        """Read subcommands from the front of a list of value tokens, until a token is not a subcommand keyword.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[list[dict[str, Any]], int]: The subcommands in order and the number of tokens consumed.
+        """
+        entries = []
+        n_total = 0
+        while n_total < len(tokens) and tokens[n_total] in self.subtags:
+            subtag = tokens[n_total]
+            subtag_type = self.subtags[subtag]
+            n_read = subtag_type.get_token_len()  # includes the keyword
+            if n_total + n_read > len(tokens):
+                raise ValueError(f"Subcommand '{subtag}' of '{tag}' is missing values: {tokens[n_total:]}")
+            subtag_value = " ".join(tokens[n_total + 1 : n_total + n_read])
+            entries.append({subtag: subtag_type.read(subtag, subtag_value)})
+            n_total += n_read
+        return entries, n_total
+
+    def write(self, tag: str, value: Any) -> str:
+        """Write the tag and its value as a string, one subcommand per line.
+
+        Args:
+            tag (str): The tag to write.
+            value (Any): The value to write.
+
+        Returns:
+            str: The tag and its value as a string.
+        """
+        lines = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            lines.append(f"    {self.subtags[subtag].write(subtag, subvalue).strip()}")
+        if len(lines) == 0:
+            return self._write(tag, "")
+        return self._write(tag, " \\\n".join(lines), multiline_override=True, strip_override=True)
+
+    def validate_value_type(
+        self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
+    ) -> tuple[str, bool, Any]:
+        """Validate the type of the value for this tag.
+
+        Args:
+            tag (str): The tag to validate the type of the value for.
+            value (Any): The value to validate the type of.
+            try_auto_type_fix (bool, optional): Whether to try to automatically fix the type of the value, by default
+                False.
+
+        Returns:
+            tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the value as a list of
+                entries (with fixed types if try_auto_type_fix).
+        """
+        tags_checked: list[str] = []
+        is_valids: list[bool] = []
+        updated_value: list[dict[str, Any]] = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            checked_tag, is_valid, fixed_subvalue = self.subtags[subtag].validate_value_type(
+                subtag, subvalue, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user
+            )
+            tags_checked.append(checked_tag)
+            is_valids.append(is_valid)
+            updated_value.append({subtag: fixed_subvalue if try_auto_type_fix else subvalue})
+        is_valid_out = all(is_valids)
+        if not is_valid_out:
+            invalid = [checked for checked, is_valid in zip(tags_checked, is_valids, strict=True) if not is_valid]
+            warnings.warn(f"Invalid value(s) found for: {' '.join(invalid)}", stacklevel=2)
+        return ",".join(tags_checked), is_valid_out, updated_value
+
+    def validate_value_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        """Check that the value of each subcommand is within its bounds.
+
+        Args:
+            tag (str): The tag the value is for.
+            value (Any): The value to check.
+
+        Returns:
+            tuple[bool, str]: Whether all values are within bounds, and the errors found.
+        """
+        errors = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            is_valid, err_str = self.subtags[subtag].validate_value_bounds(subtag, subvalue)
+            if not is_valid:
+                errors.append(err_str)
+        return len(errors) == 0, f"{tag}: {','.join(errors)}"
+
+    def _is_equal_to(self, val1: Any, obj2: AbstractTag, val2: Any) -> bool:
+        """Check if the two values are equal: the same subcommands with equal values, in the same order."""
+        if not isinstance(obj2, SubcommandTagContainer):
+            return False
+        entries1 = self._get_entries("", val1)
+        entries2 = obj2._get_entries("", val2)
+        if len(entries1) != len(entries2):
+            return False
+        for entry1, entry2 in zip(entries1, entries2, strict=True):
+            ((subtag1, subvalue1),) = entry1.items()
+            ((subtag2, subvalue2),) = entry2.items()
+            if subtag1 != subtag2 or not self.subtags[subtag1].is_equal_to(subvalue1, obj2.subtags[subtag2], subvalue2):
+                return False
+        return True
+
+
 def _int_to_float(value: Any) -> Any:
     """Convert an integer (but not a bool) to a float, leaving any other value unchanged.
 

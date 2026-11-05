@@ -23,6 +23,7 @@ from pymatgen.io.jdftx.generic_tags import (
     MultiformatTag,
     StrListTag,
     StrTag,
+    SubcommandTagContainer,
     TagContainer,
 )
 from pymatgen.io.jdftx.jdftxinfile_ref_options import (
@@ -1313,12 +1314,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "norm": BoolTag(write_tagname=False, optional=False),
             }
         ),
-        "density-of-states": TagContainer(
-            linebreak_nth_entry=1,
+        "density-of-states": SubcommandTagContainer(
             subtags={
                 "Total": BoolTag(write_value=False),
                 "Slice": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "c0": FloatTag(write_tagname=False, optional=False),
                         "c1": FloatTag(write_tagname=False, optional=False),
@@ -1330,7 +1329,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     },
                 ),
                 "Sphere": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "c0": FloatTag(write_tagname=False, optional=False),
                         "c1": FloatTag(write_tagname=False, optional=False),
@@ -1339,7 +1337,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     },
                 ),
                 "AtomSlice": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "species": StrTag(write_tagname=False, optional=False),
                         "atomIndex": IntTag(write_tagname=False, optional=False),
@@ -1350,7 +1347,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     },
                 ),
                 "AtomSphere": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "species": StrTag(write_tagname=False, optional=False),
                         "atomIndex": IntTag(write_tagname=False, optional=False),
@@ -1359,7 +1355,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 ),
                 "File": StrTag(),
                 "Orbital": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "species": StrTag(write_tagname=False, optional=False),
                         "atomIndex": IntTag(write_tagname=False, optional=False),
@@ -1367,7 +1362,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     },
                 ),
                 "OrthoOrbital": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "species": StrTag(write_tagname=False, optional=False),
                         "atomIndex": IntTag(write_tagname=False, optional=False),
@@ -1380,7 +1374,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "Occupied": BoolTag(write_value=False),
                 "Complete": BoolTag(write_value=False),
                 "SpinProjected": TagContainer(
-                    can_repeat=True,
                     subtags={
                         "theta": FloatTag(write_tagname=False, optional=False),
                         "phi": FloatTag(write_tagname=False, optional=False),
