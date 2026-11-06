@@ -303,6 +303,14 @@ def test_tag_container_write_leaves_out_unwritten_subtags():
     assert tagcontainer.write("barbie", {"ken": 2.0, "allan": 1.0}) == "barbie \\\n    ken  2.0 \\\n    allan  1.0 "
 
 
+def test_tag_container_subtag_aliases():
+    # A name JDFTx's echo uses for a subtag is read as that subtag, and written under the subtag's own name
+    tagcontainer = TagContainer(subtags={"ken": StrTag(), "allan": FloatTag()}, subtag_aliases={"kenneth": "ken"})
+    assert tagcontainer.read("barbie", "kenneth x allan 1") == {"ken": "x", "allan": 1.0}
+    assert tagcontainer.read_from_tokens("barbie", ["kenneth", "x", "next"]) == ({"ken": "x"}, 2)
+    assert tagcontainer.write("barbie", {"ken": "x"}) == "barbie ken  x "
+
+
 def test_tag_container_write_follows_subtag_order():
     tagcontainer = TagContainer(
         subtags={"ken": FloatTag(write_tagname=False), "allan": FloatTag(write_tagname=False), "barbie": FloatTag()}

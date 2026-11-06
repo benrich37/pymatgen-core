@@ -993,6 +993,58 @@ def test_fluid_site_params_bare_line_is_not_stored():
     assert "fluid-site-params" not in JDFTXInfile.from_str("fluid-site-params\n", dont_require_structure=True)
 
 
+@pytest.mark.parametrize(
+    ("echo", "expected_extra"),
+    [
+        # LinearPCM (from GC_ion.out)
+        (
+            (
+                "fluid-anion F- 0.5 MeanFieldLJ \\\n\tepsBulk 1 \\\n\tpMol 0 \\\n\tepsInf 1 \\\n\tPvap 0 \\\n"
+                "\tsigmaBulk 0 \\\n\tRvdw 2.24877 \\\n\tRes 0 \\\n\ttauNuc 343133\n"
+            ),
+            {},
+        ),
+        # ClassicalDFT, which also echoes the "translation" key as "translationMode"
+        (
+            (
+                "fluid-cation Na+ 0.5 MeanFieldLJ \\\n\tepsBulk 1 \\\n\tpMol 0 \\\n\tepsInf 1 \\\n\tPvap 0 \\\n"
+                "\tsigmaBulk 0 \\\n\tRvdw 2.19208 \\\n\tRes 0 \\\n\ttauNuc 343133 \\\n\tepsLJ 0 \\\n"
+                "\trepresentation MuEps \\\n\ts2quadType 7design24 \\\n\tquad_nBeta 0 \\\n\tquad_nAlpha 0 \\\n"
+                "\tquad_nGamma 0 \\\n\ttranslationMode LinearSpline \\\n\tNnorm 0\n"
+            ),
+            {
+                "Nnorm": 0.0,
+                "quad_nAlpha": 0,
+                "quad_nGamma": 0,
+                "representation": "MuEps",
+                "s2quadType": "7design24",
+                "translation": "LinearSpline",
+            },
+        ),
+    ],
+)
+def test_fluid_ion_echo_is_read_and_written_back(echo: str, expected_extra: dict[str, Any]):
+    """JDFTx echoes unset ion parameters with values it refuses as input (epsBulk 1, Pvap 0, ...)."""
+    tag = echo.split(maxsplit=1)[0]
+    jif = JDFTXInfile.from_str(echo, dont_require_structure=True, validate_value_boundaries=False)
+    # Written back as valid JDFTx input (checked with JDFTx: it echoes the same line)
+    written = str(jif)
+    tokens = written.split()
+    assert not any(key in tokens for key in ("epsBulk", "Pvap", "sigmaBulk", "Res", "epsLJ", "quad_nBeta"))
+    assert "translationMode" not in tokens
+    expected = {
+        "name": tokens[1],
+        "concentration": 0.5,
+        "functional": "MeanFieldLJ",
+        "epsInf": 1.0,
+        "pMol": 0.0,
+        "Rvdw": jif[tag]["Rvdw"],
+        "tauNuc": 343133.0,
+        **expected_extra,
+    }
+    assert JDFTXInfile.from_str(written, dont_require_structure=True)[tag] == expected
+
+
 def test_dict_values_are_written_in_jdftx_order():
     # Positional values must be written in the order JDFTx reads them, whatever the order of the dict's keys
     jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)

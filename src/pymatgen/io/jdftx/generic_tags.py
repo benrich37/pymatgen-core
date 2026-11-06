@@ -764,6 +764,9 @@ class TagContainer(AbstractTag):
     # For a repeatable tag that JDFTx reads as doing nothing when bare: a bare line (read as {}) isn't stored. JDFTx's
     # echo of fluid-site-params has one for each input line after the first, so storing them would add one per restart
     bare_is_noop: bool = False
+    # Other names for subtag keywords, mapped to the subtag, for names JDFTx's echo uses but its input doesn't accept
+    # (e.g. translationMode for translation in fluid-solvent). They are read as the subtag, and never written.
+    subtag_aliases: dict[str, str] = field(default_factory=dict)
 
     def _validate_single_entry(
         self, value: dict | list[dict], try_auto_type_fix: bool = False, warn_user: bool = True
@@ -887,7 +890,7 @@ class TagContainer(AbstractTag):
             dict: The parsed value.
         """
         self._general_read_validate(tag, value)
-        value_list = value.split()
+        value_list = [self.subtag_aliases.get(token, token) for token in value.split()]
 
         tempdict = {}  # temporarily store read tags out of order they are processed
         keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
@@ -966,6 +969,7 @@ class TagContainer(AbstractTag):
         Returns:
             tuple[dict, int]: The parsed value and the number of tokens consumed.
         """
+        tokens = [self.subtag_aliases.get(token, token) for token in tokens]
         keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
         subdict = {}
         n_total = 0

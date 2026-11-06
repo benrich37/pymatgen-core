@@ -807,11 +807,13 @@ jdftxminimize_subtagdict = {
     "wolfeEnergy": FloatTag(),
     "wolfeGradient": FloatTag(),
 }
+# Bounds are JDFTx's checks (fluid.cpp). JDFTx echoes unset values that fail them (e.g. epsBulk 1 for ions, Res 0),
+# and values out of bounds are left out when writing, so a restart from an out file stays valid.
 jdftxfluid_subtagdict = {
-    "epsBulk": FloatTag(lb=0.0, lb_incl=False),
+    "epsBulk": FloatTag(lb=1.0, lb_incl=False),
     "epsInf": FloatTag(lb=1.0, lb_incl=True),
-    "epsLJ": FloatTag(),
-    "Nnorm": FloatTag(),
+    "epsLJ": FloatTag(lb=0.0, lb_incl=False),  # echoed (only for ClassicalDFT) as 0 when unset
+    "Nnorm": FloatTag(lb=0.0),
     "pMol": FloatTag(lb=0.0, lb_incl=True),
     "poleEl": TagContainer(
         can_repeat=True,
@@ -857,3 +859,5 @@ jdftxfluid_subtagdict = {
     "tauNuc": FloatTag(lb=0.0, lb_incl=False),
     "translation": StrTag(options=["ConstantSpline", "Fourier", "LinearSpline"]),
 }
+# For ClassicalDFT, JDFTx echoes the translation key as translationMode, which its input doesn't accept
+jdftxfluid_subtag_aliases = {"translationMode": "translation"}

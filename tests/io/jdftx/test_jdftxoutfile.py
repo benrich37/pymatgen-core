@@ -519,8 +519,6 @@ def test_to_jdftxinfile_keeps_fluid_site_params():
     # JDFTx's fluid-site-params echo used to be unreadable, so the restart silently ran with the default site parameters
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        # JDFTx echoes fluid-solvent's "translation" key as "translationMode", which neither JDFTx nor pymatgen reads
-        warnings.filterwarnings("ignore", message="Skipping invalid tag line: 'fluid-solvent ")
         outfile = JDFTXOutfile.from_file(fluid_site_params_outfile_path)
         restart = outfile.to_jdftxinfile()
     # JDFTx echoes every site, and a bare line for the second input line, which isn't stored
@@ -533,6 +531,27 @@ def test_to_jdftxinfile_keeps_fluid_site_params():
     assert [line[:3] for line in lines] == [["fluid-site-params", "H2O", "O"], ["fluid-site-params", "H2O", "H"]]
     assert "Rhs" in lines[0]
     assert "Rhs" not in lines[1]
+
+
+def test_to_jdftxinfile_keeps_classical_dft_fluid_solvent():
+    # For ClassicalDFT, JDFTx echoes the "translation" key as "translationMode", which its input doesn't accept. The
+    # line used to be skipped, so the restart silently ran JDFTx's default solvent (water with default parameters).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        outfile = JDFTXOutfile.from_file(fluid_site_params_outfile_path)
+        restart = outfile.to_jdftxinfile()
+    solvent = outfile.infile["fluid-solvent"][0]
+    assert (solvent["name"], solvent["translation"], solvent["epsLJ"], solvent["quad_nBeta"]) == (
+        "H2O",
+        "LinearSpline",
+        0.0,
+        0,
+    )
+    # The restart (checked with JDFTx: it echoes the same fluid-solvent) leaves out the zeros JDFTx refuses as input
+    (line,) = [line.split() for line in str(restart).splitlines() if line.startswith("fluid-solvent")]
+    assert line[:4] == ["fluid-solvent", "H2O", "55.338", "ScalarEOS"]
+    assert "translation" in line
+    assert not any(key in line for key in ("translationMode", "epsLJ", "quad_nBeta"))
 
 
 def test_to_jdftxinfile_keeps_pcm_params():

@@ -35,6 +35,7 @@ from pymatgen.io.jdftx.jdftxinfile_ref_options import (
     func_xc_options,
     jdftxdumpfreqoptions,
     jdftxdumpvaroptions,
+    jdftxfluid_subtag_aliases,
     jdftxfluid_subtagdict,
     jdftxminimize_subtagdict,
     kinetic_functionals,
@@ -987,6 +988,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                         ),
                         **deepcopy(jdftxfluid_subtagdict),
                     },
+                    subtag_aliases=deepcopy(jdftxfluid_subtag_aliases),
                 ),
                 TagContainer(
                     can_repeat=True,
@@ -1007,6 +1009,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                         ),
                         **deepcopy(jdftxfluid_subtagdict),
                     },
+                    subtag_aliases=deepcopy(jdftxfluid_subtag_aliases),
                 ),
             ],
         ),
@@ -1024,7 +1027,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     write_tagname=False,
                 ),
                 **deepcopy(jdftxfluid_subtagdict),
-            }
+            },
+            subtag_aliases=deepcopy(jdftxfluid_subtag_aliases),
         ),
         "fluid-cation": TagContainer(
             subtags={
@@ -1040,7 +1044,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     write_tagname=False,
                 ),
                 **deepcopy(jdftxfluid_subtagdict),
-            }
+            },
+            subtag_aliases=deepcopy(jdftxfluid_subtag_aliases),
         ),
         "fluid-dielectric-constant": TagContainer(
             subtags={
