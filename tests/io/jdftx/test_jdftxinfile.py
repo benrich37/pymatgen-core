@@ -913,6 +913,47 @@ def test_pcm_params_read(line: str, expected: dict[str, Any]):
     assert JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)["pcm-params"] == expected
 
 
+@pytest.mark.parametrize(
+    ("line", "old_written", "written"),
+    [
+        (
+            "fluid-solvent H2O 55.338 ScalarEOS quad_nBeta 4 quad_nAlpha 2 quad_nGamma 2",
+            "fluid-solvent H2O 55.338 ScalarEOS quad_nAlpha 2.0 quad_nBeta 4.0 quad_nGamma 2.0",
+            "fluid-solvent H2O 55.338 ScalarEOS quad_nAlpha 2 quad_nBeta 4 quad_nGamma 2",
+        ),
+        (
+            "electron-scattering eta 0.01 computeRange 1 10",
+            "electron-scattering eta 0.01 computeRange 1.0 10.0",
+            "electron-scattering \\ eta 0.01 \\ computeRange 1 10",
+        ),
+        (
+            "density-of-states Slice 0 0 0 2 0 0 1",
+            "density-of-states Slice 0.0 0.0 0.0 2.0 0.0 0.0 1.0",
+            "density-of-states \\ Slice 0.0 0.0 0.0 2.0 0 0 1",
+        ),
+        (
+            "density-of-states AtomSlice H 1 2 1 -1 0",
+            "density-of-states AtomSlice H 1 2.0 1.0 -1.0 0.0",
+            "density-of-states \\ AtomSlice H 1 2.0 1 -1 0",
+        ),
+    ],
+)
+def test_integer_parameters_are_written_as_integers(line: str, old_written: str, written: str):
+    """JDFTx reads these as integers and rejects the old "4.0" form (checked with JDFTx), which still reads the same."""
+    for text in (line, old_written):
+        jif = JDFTXInfile.from_str(f"{text}\n", dont_require_structure=True)
+        assert " ".join(str(jif).split()) == written
+
+
+def test_quad_nbeta_zero_is_left_out():
+    # JDFTx echoes an unset quad_nBeta as 0 (for ClassicalDFT), but refuses 0 as input
+    line = "fluid-solvent H2O 55.338 ScalarEOS quad_nBeta 0 quad_nAlpha 0\n"
+    with pytest.raises(ValueError, match="'quad_nBeta' is not within bounds x > 0"):
+        JDFTXInfile.from_str(line, dont_require_structure=True)
+    jif = JDFTXInfile.from_str(line, dont_require_structure=True, validate_value_boundaries=False)
+    assert " ".join(str(jif).split()) == "fluid-solvent H2O 55.338 ScalarEOS quad_nAlpha 0"
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

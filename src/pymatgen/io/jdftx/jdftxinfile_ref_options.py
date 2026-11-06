@@ -823,9 +823,10 @@ jdftxfluid_subtagdict = {
         },
     ),
     "Pvap": FloatTag(lb=0.0, lb_incl=False),
-    "quad_nAlpha": FloatTag(),
-    "quad_nBeta": FloatTag(),
-    "quad_nGamma": FloatTag(),
+    # Unsigned in JDFTx, which echoes them (only for ClassicalDFT) as 0 when unset; quad_nBeta 0 is refused as input
+    "quad_nAlpha": IntTag(lb=0),
+    "quad_nBeta": IntTag(lb=0, lb_incl=False),
+    "quad_nGamma": IntTag(lb=0),
     "representation": StrTag(options=["MuEps", "Pomega", "PsiAlpha"]),
     "Res": FloatTag(lb=0.0, lb_incl=False),
     "Rvdw": FloatTag(lb=0.0, lb_incl=False),

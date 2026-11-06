@@ -718,8 +718,9 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "EcutTransverse": FloatTag(),
                 "computeRange": TagContainer(
                     subtags={
-                        "iqStart": FloatTag(write_tagname=False, optional=False),
-                        "iqStop": FloatTag(write_tagname=False, optional=False),
+                        # 1-based momentum transfer indices; JDFTx also needs iqStop >= iqStart
+                        "iqStart": IntTag(write_tagname=False, optional=False, lb=1),
+                        "iqStop": IntTag(write_tagname=False, optional=False, lb=1),
                     }
                 ),
             },
@@ -1325,9 +1326,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                         "c1": FloatTag(write_tagname=False, optional=False),
                         "c2": FloatTag(write_tagname=False, optional=False),
                         "r": FloatTag(write_tagname=False, optional=False),
-                        "i0": FloatTag(write_tagname=False, optional=False),
-                        "i1": FloatTag(write_tagname=False, optional=False),
-                        "i2": FloatTag(write_tagname=False, optional=False),
+                        # Miller indices of the plane
+                        "i0": IntTag(write_tagname=False, optional=False),
+                        "i1": IntTag(write_tagname=False, optional=False),
+                        "i2": IntTag(write_tagname=False, optional=False),
                     },
                 ),
                 "Sphere": TagContainer(
@@ -1343,9 +1345,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                         "species": StrTag(write_tagname=False, optional=False),
                         "atomIndex": IntTag(write_tagname=False, optional=False),
                         "r": FloatTag(write_tagname=False, optional=False),
-                        "i0": FloatTag(write_tagname=False, optional=False),
-                        "i1": FloatTag(write_tagname=False, optional=False),
-                        "i2": FloatTag(write_tagname=False, optional=False),
+                        # Miller indices of the plane
+                        "i0": IntTag(write_tagname=False, optional=False),
+                        "i1": IntTag(write_tagname=False, optional=False),
+                        "i2": IntTag(write_tagname=False, optional=False),
                     },
                 ),
                 "AtomSphere": TagContainer(
