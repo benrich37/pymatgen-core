@@ -932,7 +932,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             linebreak_nth_entry=1,
             multiline_tag=False,
             subtags={
-                "algorithm": StrTag(options=["MINRES", "CGIMINRES"]),
+                "algorithm": StrTag(options=["CG", "MINRES"]),
                 "CGBypass": BoolTag(),
                 "nIterations": IntTag(),
                 "recomputeResidual": BoolTag(),

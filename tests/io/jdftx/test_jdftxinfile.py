@@ -1045,6 +1045,20 @@ def test_fluid_ion_echo_is_read_and_written_back(echo: str, expected_extra: dict
     assert JDFTXInfile.from_str(written, dont_require_structure=True)[tag] == expected
 
 
+@pytest.mark.parametrize("algorithm", ["CG", "MINRES"])
+def test_perturb_minimize_algorithm(algorithm: str):
+    # JDFTx's options are CG|MINRES (checked with JDFTx)
+    jif = JDFTXInfile.from_str(f"perturb-minimize algorithm {algorithm} nIterations 10\n", dont_require_structure=True)
+    assert jif["perturb-minimize"] == {"algorithm": algorithm, "nIterations": 10}
+    assert " ".join(str(jif).split()) == f"perturb-minimize \\ algorithm {algorithm} \\ nIterations 10"
+
+
+def test_perturb_minimize_algorithm_rejects_cgiminres():
+    # pymatgen used to accept CGIMINRES, which JDFTx never had
+    with pytest.raises(ValueError, match="must be one of"):
+        JDFTXInfile.from_str("perturb-minimize algorithm CGIMINRES\n", dont_require_structure=True)
+
+
 def test_dict_values_are_written_in_jdftx_order():
     # Positional values must be written in the order JDFTx reads them, whatever the order of the dict's keys
     jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
