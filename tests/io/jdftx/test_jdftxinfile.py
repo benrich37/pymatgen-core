@@ -11,7 +11,7 @@ import pytest
 from pymatgen.core import DummySpecies, Lattice, Species
 from pymatgen.core.structure import Site, Structure
 from pymatgen.core.units import bohr_to_ang
-from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning, MultiformatTag
 from pymatgen.io.jdftx.inputs import (
     JDFTXInfile,
     JDFTXStructure,
@@ -25,7 +25,7 @@ from pymatgen.io.jdftx.inputs import (
     selective_dynamics_site_prop_to_jdftx_interpretable,
 )
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import antoinePvap, default_inputs
-from pymatgen.io.jdftx.jdftxinfile_master_format import get_tag_object
+from pymatgen.io.jdftx.jdftxinfile_master_format import MASTER_TAG_LIST, get_tag_object
 
 from .inputs_test_utils import (
     assert_equiv_jdftxstructure,
@@ -41,7 +41,7 @@ from .shared_test_utils import assert_same_value
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from pymatgen.io.jdftx.generic_tags import MultiformatTag, TagContainer
+    from pymatgen.io.jdftx.generic_tags import TagContainer
     from pymatgen.util.typing import PathLike
 
 
@@ -842,10 +842,10 @@ def test_density_of_states_read_errors(line: str, error_match: str):
     [
         ("elec-ex-corr hyb-HSE06", "hyb-HSE06"),
         ("elec-ex-corr hyb-hse06", "hyb-hse06"),  # JDFTx's names are case-insensitive
-        ("elec-ex-corr-compare hyb-HSE06", "hyb-HSE06"),
+        ("elec-ex-corr-compare hyb-HSE06", ["hyb-HSE06"]),  # repeatable, so stored as a list
     ],
 )
-def test_hse06_is_accepted_with_a_warning(line: str, expected: str):
+def test_hse06_is_accepted_with_a_warning(line: str, expected: str | list[str]):
     """JDFTx's built-in hyb-HSE06 is read and written back, warning once that it differs from LibXC's HSE06."""
     tag = line.split(maxsplit=1)[0]
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06") as record:
@@ -1038,11 +1038,11 @@ def test_fluid_ion_echo_is_read_and_written_back(echo: str, expected_extra: dict
         "functional": "MeanFieldLJ",
         "epsInf": 1.0,
         "pMol": 0.0,
-        "Rvdw": jif[tag]["Rvdw"],
+        "Rvdw": jif[tag][0]["Rvdw"],
         "tauNuc": 343133.0,
         **expected_extra,
     }
-    assert JDFTXInfile.from_str(written, dont_require_structure=True)[tag] == expected
+    assert JDFTXInfile.from_str(written, dont_require_structure=True)[tag] == [expected]
 
 
 @pytest.mark.parametrize("algorithm", ["CG", "MINRES"])
@@ -1057,6 +1057,122 @@ def test_perturb_minimize_algorithm_rejects_cgiminres():
     # pymatgen used to accept CGIMINRES, which JDFTx never had
     with pytest.raises(ValueError, match="must be one of"):
         JDFTXInfile.from_str("perturb-minimize algorithm CGIMINRES\n", dont_require_structure=True)
+
+
+# The commands JDFTx reads more than once (allowMultiple in jdftx/commands, main-fork master b3c54e1d) that pymatgen
+# has, plus include, which JDFTx's parser handles itself
+JDFTX_REPEATABLE_TAGS = {
+    "box-potential",
+    "charged-defect",
+    "debug",
+    "dump",
+    "dump-Eresolved-density",
+    "dump-fermi-density",
+    "dump-interval",
+    "elec-ex-corr-compare",
+    "fluid-anion",
+    "fluid-cation",
+    "fluid-mixing-functional",
+    "fluid-site-params",
+    "fluid-solvent",
+    "include",
+    "ion",
+    "ion-species",
+    "ionic-gaussian-potential",
+    "kpoint",
+    "symmetry-matrix",
+    "tau-core",
+}
+
+
+def test_repeatable_tags_match_jdftx():
+    repeatable = set()
+    for tag_group in MASTER_TAG_LIST.values():
+        for tag, tag_object in tag_group.items():
+            if isinstance(tag_object, MultiformatTag):
+                # A line is stored by the format it's read with, so each format must repeat if the tag does
+                assert all(option.can_repeat == tag_object.can_repeat for option in tag_object.format_options), tag
+            if tag_object.can_repeat:
+                repeatable.add(tag)
+    assert repeatable == JDFTX_REPEATABLE_TAGS
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (
+            ["tau-core O 1.0 no", "tau-core H 0.5"],
+            [{"species-id": "O", "rCut": 1.0, "plot": False}, {"species-id": "H", "rCut": 0.5}],
+        ),
+        (
+            ["fluid-cation Na+ 0.5", "fluid-cation K+ 0.2 MeanFieldLJ"],
+            [{"name": "Na+", "concentration": 0.5}, {"name": "K+", "concentration": 0.2, "functional": "MeanFieldLJ"}],
+        ),
+        (
+            ["fluid-anion Cl- 0.5", "fluid-anion F- 0.2"],
+            [{"name": "Cl-", "concentration": 0.5}, {"name": "F-", "concentration": 0.2}],
+        ),
+        (
+            ["dump-Eresolved-density -0.5 -0.2", "dump-Eresolved-density -0.2 0.1"],
+            [{"Emin": -0.5, "Emax": -0.2}, {"Emin": -0.2, "Emax": 0.1}],
+        ),
+        # Each line can use a different format
+        (
+            ["elec-ex-corr-compare gga-PBE", "elec-ex-corr-compare gga-x-pbe gga-c-pbe"],
+            ["gga-PBE", {"funcX": "gga-x-pbe", "funcC": "gga-c-pbe"}],
+        ),
+        (["dump-fermi-density", "dump-fermi-density -0.1"], [True, -0.1]),
+    ],
+)
+def test_repeatable_commands(lines: list[str], expected: list):
+    """JDFTx reads each of these commands any number of times (checked with JDFTx), so they're stored as lists."""
+    tag = lines[0].split()[0]
+    jif = JDFTXInfile.from_str("\n".join(lines) + "\n", dont_require_structure=True)
+    assert jif[tag] == expected
+    assert [" ".join(line.split()) for line in str(jif).splitlines() if line] == lines
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
+    assert JDFTXInfile.from_str(f"{lines[0]}\n", dont_require_structure=True)[tag] == expected[:1]
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    jif[tag] = expected[0]  # one value can still be set as it is
+    jif.append_tag(tag, expected[1])
+    assert jif[tag] == expected
+
+
+def test_repeated_commands_in_jdftx_echo_are_all_read():
+    """Out files used to keep only the first of each of these lines (with a warning), so restarts lost the rest."""
+    # JDFTx's echo of the commands, each given twice (LinearPCM water)
+    ion_keys = (
+        " \\\n\tepsBulk 1 \\\n\tpMol 0 \\\n\tepsInf 1 \\\n\tPvap 0 \\\n\tsigmaBulk 0 \\\n\tRvdw {} \\\n\tRes 0 \\\n"
+    )
+    echo = (
+        "dump-Eresolved-density -0.5 -0.2\ndump-Eresolved-density -0.2 0.1\n"
+        "dump-fermi-density nan\ndump-fermi-density -0.1\n"
+        "elec-ex-corr-compare gga-PBE\nelec-ex-corr-compare lda-PZ\n"
+        f"fluid-anion Cl- 0.5 MeanFieldLJ{ion_keys.format(3.15584)}\ttauNuc 343133\n"
+        f"fluid-anion F- 0.2 MeanFieldLJ{ion_keys.format(2.24877)}\ttauNuc 343133\n"
+        f"fluid-cation Na+ 0.5 MeanFieldLJ{ion_keys.format(2.19208)}\ttauNuc 343133\n"
+        f"fluid-cation K+ 0.2 MeanFieldLJ{ion_keys.format(2.85349)}\ttauNuc 343133\n"
+        "tau-core O 0 no\ntau-core H 0 no\n"
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # nothing skipped
+        jif = JDFTXInfile.from_str(echo, dont_require_structure=True, validate_value_boundaries=False)
+    assert [entry["Emin"] for entry in jif["dump-Eresolved-density"]] == [-0.5, -0.2]
+    assert np.isnan(jif["dump-fermi-density"][0])
+    assert jif["dump-fermi-density"][1] == -0.1
+    assert jif["elec-ex-corr-compare"] == ["gga-PBE", "lda-PZ"]
+    assert [(entry["name"], entry["Rvdw"]) for entry in jif["fluid-anion"]] == [("Cl-", 3.15584), ("F-", 2.24877)]
+    assert [(entry["name"], entry["Rvdw"]) for entry in jif["fluid-cation"]] == [("Na+", 2.19208), ("K+", 2.85349)]
+    assert [entry["species-id"] for entry in jif["tau-core"]] == ["O", "H"]
+
+
+def test_adding_infiles_appends_repeatable_commands():
+    jif1 = JDFTXInfile.from_str("fluid-cation Na+ 0.5\nelec-ex-corr-compare gga-PBE\n", dont_require_structure=True)
+    jif2 = JDFTXInfile.from_str("fluid-cation K+ 0.2\nelec-ex-corr-compare lda-PZ\n", dont_require_structure=True)
+    jif = jif1 + jif2
+    assert [entry["name"] for entry in jif["fluid-cation"]] == ["Na+", "K+"]
+    assert jif["elec-ex-corr-compare"] == ["gga-PBE", "lda-PZ"]  # used to raise AttributeError
+    assert (jif1 + jif1)["fluid-cation"] == jif1["fluid-cation"]  # entries already there aren't added again
 
 
 def test_dict_values_are_written_in_jdftx_order():

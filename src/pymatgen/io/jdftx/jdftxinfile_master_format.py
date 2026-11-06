@@ -411,13 +411,15 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         ),
         "elec-ex-corr-compare": MultiformatTag(
             can_repeat=True,
-            format_options=[
+            format_options=[  # each line is read with its own format
                 StrTag(
+                    can_repeat=True,
                     write_tagname=True,
                     options=func_options,
                     option_warnings=deepcopy(func_option_warnings),
                 ),
                 TagContainer(
+                    can_repeat=True,
                     subtags={
                         "funcX": StrTag(
                             write_tagname=False,
@@ -429,16 +431,17 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                             optional=False,
                             options=deepcopy(func_c_options),
                         ),
-                    }
+                    },
                 ),
                 TagContainer(
+                    can_repeat=True,
                     subtags={
                         "funcXC": StrTag(
                             write_tagname=False,
                             optional=False,
                             options=deepcopy(func_xc_options),
                         )
-                    }
+                    },
                 ),
             ],
         ),
@@ -468,11 +471,12 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             ]
         ),
         "tau-core": TagContainer(
+            can_repeat=True,
             subtags={
                 "species-id": StrTag(write_tagname=False, optional=False),
                 "rCut": FloatTag(write_tagname=False),
                 "plot": BoolTag(write_tagname=False),
-            }
+            },
         ),
         "lj-override": FloatTag(),
         # van-der-waals [<scaleOverride>=0] | D3 | D3BJ: a bare van-der-waals (which is how JDFTx echoes a scale of 0)
@@ -992,6 +996,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             ],
         ),
         "fluid-anion": TagContainer(
+            can_repeat=True,
             subtags={
                 "name": StrTag(options=["Cl-", "ClO4-", "F-"], write_tagname=False, optional=False),
                 "concentration": FloatTag(write_tagname=False, optional=False),
@@ -1009,6 +1014,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             subtag_aliases=deepcopy(jdftxfluid_subtag_aliases),
         ),
         "fluid-cation": TagContainer(
+            can_repeat=True,
             subtags={
                 "name": StrTag(options=["K+", "Na+"], write_tagname=False, optional=False),
                 "concentration": FloatTag(write_tagname=False, optional=False),
@@ -1385,16 +1391,17 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             },
         ),
         "dump-Eresolved-density": TagContainer(
+            can_repeat=True,
             subtags={
                 "Emin": FloatTag(write_tagname=False, optional=False),
                 "Emax": FloatTag(write_tagname=False, optional=False),
-            }
+            },
         ),
         "dump-fermi-density": MultiformatTag(
             can_repeat=True,
-            format_options=[
-                BoolTag(write_value=False),
-                FloatTag(),
+            format_options=[  # each line is read with its own format
+                BoolTag(write_value=False, can_repeat=True),
+                FloatTag(can_repeat=True),
             ],
         ),
         "bgw-params": TagContainer(
