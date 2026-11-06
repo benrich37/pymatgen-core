@@ -411,6 +411,9 @@ class StrTag(AbstractTag):
     options: list | None = None
     # Options JDFTx accepts but that are known to be unreliable, mapped to a warning issued when one is read
     option_warnings: dict[str, str] = field(default_factory=dict)
+    # For a keyword subtag of a TagContainer that JDFTx echoes with an empty value when unset (e.g. "cavityFile " in
+    # pcm-params): the keyword followed by another keyword of the TagContainer, or by nothing, is read as unset
+    empty_means_unset: bool = False
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -884,6 +887,7 @@ class TagContainer(AbstractTag):
         value_list = value.split()
 
         tempdict = {}  # temporarily store read tags out of order they are processed
+        keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
 
         for subtag, subtag_type in (
             (subtag, subtag_type) for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname
@@ -898,6 +902,9 @@ class TagContainer(AbstractTag):
                             f"Subtag '{subtag}' for tag '{tag}' is not allowed to repeat but repeats value {value}"
                         )
                     idx_start = value_list.index(subtag)
+                    if self._is_empty_value(subtag_type, value_list[idx_start + 1 :], keywords):
+                        del value_list[idx_start]
+                        continue
                     token_len = subtag_type.get_token_len()
                     idx_end = idx_start + token_len
                     subtag_value = " ".join(
@@ -963,6 +970,13 @@ class TagContainer(AbstractTag):
             if n_total == len(tokens):
                 break
             remaining = tokens[n_total:]
+            if (
+                subtag_type.write_tagname
+                and remaining[0] == subtag
+                and self._is_empty_value(subtag_type, remaining[1:], keywords)
+            ):
+                n_total += 1
+                continue
             if subtag_type.write_tagname:
                 subtag_value, n_read = self._read_keyword_subtag(subtag, subtag_type, remaining)
             else:
@@ -977,6 +991,22 @@ class TagContainer(AbstractTag):
             n_total += n_read
         self._check_nonoptional_subtags(tag, subdict, self.subtags)
         return subdict, n_total
+
+    @staticmethod
+    def _is_empty_value(subtag_type: AbstractTag, tokens_after: list[str], keywords: set[str]) -> bool:
+        """Check whether a keyword subtag with StrTag.empty_means_unset was given without a value.
+
+        Args:
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens_after (list[str]): The value tokens after the subtag's keyword.
+            keywords (set[str]): The keywords of this TagContainer.
+
+        Returns:
+            bool: True if the keyword is followed by nothing or by another keyword, so its value is empty.
+        """
+        if not (isinstance(subtag_type, StrTag) and subtag_type.empty_means_unset):
+            return False
+        return len(tokens_after) == 0 or tokens_after[0] in keywords
 
     @staticmethod
     def _read_keyword_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
@@ -1061,6 +1091,8 @@ class TagContainer(AbstractTag):
                 print_str_list += [self.subtags[subtag].write(subtag, entry).strip() + " " for entry in subvalue]
             else:
                 print_str_list.append(self.subtags[subtag].write(subtag.strip() + " ", subvalue))
+        # Leave out subtags that write nothing (e.g. out of bounds values), so they don't leave empty lines
+        print_str_list = [print_str for print_str in print_str_list if print_str.strip()]
         # Concatenate all subtag print values into a single string, with line breaks at appropriate
         # locations if needed
         for count, print_str in enumerate(print_str_list):

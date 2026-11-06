@@ -867,6 +867,52 @@ def test_other_functionals_do_not_warn(functional: str):
         jif["elec-ex-corr"] = functional
 
 
+# JDFTx's echo of "pcm-params lMax 3 sigma 0.7 cavityTension 5e-06" (fluid LinearPCM, fluid-solvent H2O)
+PCM_PARAMS_ECHO = (
+    "pcm-params  \\\n\tlMax 3 \\\n\tnc 0.00037 \\\n\tsigma 0.7 \\\n\tcavityTension 5e-06 \\\n\tcavityPressure 0 \\\n"
+    "\tcavityScale 1 \\\n\tionSpacing 0 \\\n\tcavityFile  \\\n\tzMask0 0 \\\n\tzMaskH 0 \\\n\tzMaskIonH 0 \\\n"
+    "\tzMaskSigma 0.5 \\\n\trhoMin 0 \\\n\trhoMax 0 \\\n\trhoDelta 0 \\\n\teta_wDiel 0 \\\n\tsqrtC6eff 0 \\\n"
+    "\tpCavity 0 \\\n\tZtot 0 \\\n\tphiCavity 0 \\\n\tscreenOverride 0\n"
+)
+
+
+def test_pcm_params_echo_is_read_and_written_back():
+    """JDFTx's echo prints every key: an empty cavityFile, and zeros for unset keys that JDFTx refuses as input."""
+    unset = ["rhoMin", "rhoMax", "rhoDelta", "Ztot", "screenOverride"]
+    with pytest.raises(ValueError, match="boundary errors"):
+        JDFTXInfile.from_str(PCM_PARAMS_ECHO, dont_require_structure=True)
+    jif = JDFTXInfile.from_str(PCM_PARAMS_ECHO, dont_require_structure=True, validate_value_boundaries=False)
+    params = jif["pcm-params"]
+    assert "cavityFile" not in params
+    assert params["lMax"] == 3
+    assert isinstance(params["lMax"], int)
+    assert params["sigma"] == pytest.approx(0.7)
+    assert params["phiCavity"] == 0.0
+    assert all(params[key] == 0.0 for key in unset)
+    # Written back, the line is valid JDFTx input: no empty cavityFile, no refused zeros, and lMax written as "3"
+    written = str(jif)
+    tokens = written.split()
+    assert "cavityFile" not in tokens
+    assert not any(key in tokens for key in unset)
+    assert tokens[tokens.index("lMax") + 1] == "3"
+    assert JDFTXInfile.from_str(written, dont_require_structure=True)["pcm-params"] == {
+        key: value for key, value in params.items() if key not in unset
+    }
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("pcm-params cavityFile cavity.bin nc 0.001", {"cavityFile": "cavity.bin", "nc": 0.001}),
+        ("pcm-params cavityFile", {}),
+        # JDFTx master builds from 2024-02 to 2026-08 have Zcenter, which phiCavity replaced
+        ("pcm-params Zcenter 0.5 nc 0.001", {"nc": 0.001, "Zcenter": 0.5}),
+    ],
+)
+def test_pcm_params_read(line: str, expected: dict[str, Any]):
+    assert JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)["pcm-params"] == expected
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

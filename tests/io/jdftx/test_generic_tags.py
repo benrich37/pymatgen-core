@@ -279,6 +279,30 @@ def test_species_values_tag_read_errors(value: str, error_match: str):
         get_tag_object(tag).read(tag, value)
 
 
+def test_empty_means_unset_keyword_subtag():
+    # JDFTx echoes an unset file name as the bare keyword, e.g. "cavityFile " in pcm-params
+    tagcontainer = TagContainer(
+        subtags={"file": StrTag(empty_means_unset=True), "ken": FloatTag(), "allan": FloatTag()}
+    )
+    assert tagcontainer.read("barbie", "ken 1 file allan 2") == {"ken": 1.0, "allan": 2.0}
+    assert tagcontainer.read("barbie", "ken 1 file") == {"ken": 1.0}
+    assert tagcontainer.read("barbie", "file f.bin ken 1") == {"file": "f.bin", "ken": 1.0}
+    assert tagcontainer.read_from_tokens("barbie", ["file", "ken", "1", "next"]) == ({"ken": 1.0}, 3)
+    assert tagcontainer.read_from_tokens("barbie", ["file", "f.bin", "next"]) == ({"file": "f.bin"}, 2)
+    # Without it, the next keyword is taken as the value
+    with pytest.raises(ValueError, match=re.escape("were not processed: ['1']")):
+        TagContainer(subtags={"file": StrTag(), "ken": FloatTag()}).read("barbie", "file ken 1")
+
+
+def test_tag_container_write_leaves_out_unwritten_subtags():
+    # An out of bounds value writes nothing, and leaves no empty line behind
+    tagcontainer = TagContainer(
+        linebreak_nth_entry=1, subtags={"ken": FloatTag(lb=0.0, lb_incl=False), "allan": FloatTag()}
+    )
+    assert tagcontainer.write("barbie", {"ken": 0.0, "allan": 1.0}) == "barbie \\\n    allan  1.0 "
+    assert tagcontainer.write("barbie", {"ken": 2.0, "allan": 1.0}) == "barbie \\\n    ken  2.0 \\\n    allan  1.0 "
+
+
 def test_read_from_tokens_requires_a_token():
     with pytest.raises(ValueError, match="No value given for 'tag'"):
         StrTag().read_from_tokens("tag", [])

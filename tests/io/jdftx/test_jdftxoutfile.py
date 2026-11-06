@@ -56,6 +56,7 @@ from .outputs_test_utils import (
     nolowdin_md_outfile_path,
     partial_lattice_init_outfile_known_lattice,
     partial_lattice_init_outfile_path,
+    pcm_params_outfile_path,
     problem2_outfile_known_simple,
     problem2_outfile_path,
     problem3_outfile_path,
@@ -511,6 +512,22 @@ def test_to_jdftxinfile_keeps_hse06():
     # Reading the restart as an input does warn
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
+
+
+def test_to_jdftxinfile_keeps_pcm_params():
+    # JDFTx's pcm-params echo used to be unreadable, so the restart silently ran with the default PCM parameters
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        outfile = JDFTXOutfile.from_file(pcm_params_outfile_path)
+    params = outfile.infile["pcm-params"]
+    assert params["lMax"] == 3
+    assert params["sigma"] == pytest.approx(0.7)
+    assert params["cavityTension"] == pytest.approx(5e-06)
+    # The restart is valid input (checked with JDFTx: it echoes the same pcm-params as the run did). It leaves out the
+    # zeros JDFTx echoes for unset keys but refuses as input.
+    unset = ["rhoMin", "rhoMax", "rhoDelta", "Ztot", "screenOverride"]
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    assert restart["pcm-params"] == {key: value for key, value in params.items() if key not in unset}
 
 
 @pytest.mark.parametrize("latt_scale", ["2 2 1", "1.5 0.75 2"])

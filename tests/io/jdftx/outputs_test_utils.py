@@ -340,6 +340,8 @@ vexternal_spin_outfile_path = ex_out_files_dir / Path("vexternal_spin.out")
 debug_outfile_path = ex_out_files_dir / Path("debug.out")
 # Natively generated H2 single point with "elec-ex-corr hyb-HSE06" (SG15 pseudopotentials, as hybrids need)
 hse06_outfile_path = ex_out_files_dir / Path("hse06.out")
+# Natively generated H2 single point in LinearPCM water with "pcm-params lMax 3 sigma 0.7 cavityTension 5e-06"
+pcm_params_outfile_path = ex_out_files_dir / Path("pcm_params.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {
