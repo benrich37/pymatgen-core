@@ -17,6 +17,7 @@ from pymatgen.io.jdftx.generic_tags import (
     StrTag,
     SubcommandTagContainer,
     TagContainer,
+    element_from_species_name,
 )
 from pymatgen.io.jdftx.jdftxinfile_master_format import get_dump_tag_container, get_tag_object
 
@@ -159,6 +160,43 @@ def test_float_tag():
         float_tag.read("barbie", "")
     assert FloatTag(value_if_bare=0.0).read("barbie", "") == 0.0
     assert FloatTag(value_if_bare=0.0).read("barbie", "1.5") == 1.5
+
+
+@pytest.mark.parametrize(
+    ("name", "element"),
+    [
+        ("Fe", "Fe"),
+        ("fe1", "Fe"),
+        ("FE1", "Fe"),
+        ("Co2", "Co"),  # The longest element symbol the name starts with, not C
+        ("Hx", "H"),
+        ("Hf", "Hf"),
+        ("O", "O"),
+        ("Xx9", None),
+        ("1H", None),
+        ("Fe_1", None),  # JDFTx's species names are letters and digits only
+        ("Fé", None),
+        ("", None),
+    ],
+)
+def test_element_from_species_name(name: str, element: str | None):
+    assert element_from_species_name(name) == element
+
+
+def test_str_tag_species_name():
+    tag = StrTag(species_name=True)
+    assert tag.read("barbie", "Fe1") == "Fe1"
+    with pytest.raises(ValueError, match="'Xx9' for tag 'barbie' is not a species name pymatgen can read"):
+        tag.read("barbie", "Xx9")
+
+
+def test_multiformat_tag_error_gives_each_format_reason():
+    # Formats failing for the same reason are listed together
+    tag = MultiformatTag(format_options=[StrTag(species_name=True), StrTag(species_name=True), FloatTag()])
+    with pytest.raises(ValueError, match="No valid read format") as err:
+        tag.get_format_index_for_str_value("barbie", "Xx9")
+    assert "Format 0, 1: 'Xx9' for tag 'barbie' is not a species name" in str(err.value)
+    assert "Format 2: Could not set value 'Xx9' to a float for tag 'barbie'!" in str(err.value)
 
 
 def test_str_tag_option_warnings():

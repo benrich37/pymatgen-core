@@ -43,6 +43,7 @@ from pymatgen.io.jdftx.generic_tags import (
     MultiformatTag,
     StrListTag,
     TagContainer,
+    element_from_species_name,
 )
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
 from pymatgen.io.jdftx.jdftxinfile_master_format import (
@@ -69,6 +70,37 @@ logger = logging.getLogger(__name__)
 
 # JDFTx's unit of time (the Hartree atomic unit of time, hbar / E_h) in fs, used to convert velocities to angstrom/fs
 JDFTX_TIME_UNIT_TO_FS = const.hbar / (Ha_to_eV * const.e) * 1e15
+
+# Site property holding each site's JDFTx species name, for structures whose species aren't all named after their
+# element (e.g. Fe1 and Fe2, from pseudopotential files Fe1.upf and Fe2.upf, to tell apart two Fe sublattices)
+JDFTX_SPECIES_SITE_PROPERTY = "jdftx_species"
+
+
+def get_species_elements(species_names: Sequence[str]) -> tuple[list[str], list[str] | None]:
+    """Get the elements of JDFTx species names, and the names to keep as the jdftx_species site property.
+
+    Args:
+        species_names (Sequence[str]): The species name of each ion.
+
+    Returns:
+        tuple[list[str], list[str] | None]: The element symbol of each ion (see element_from_species_name), and the
+            species names if any of them isn't its element symbol (ignoring case, as JDFTx does), otherwise None.
+
+    Raises:
+        ValueError: If the element of a species name can't be found.
+    """
+    elements = []
+    for name in species_names:
+        element = element_from_species_name(name)
+        if element is None:
+            raise ValueError(
+                f"Can't tell the element of species '{name}': pymatgen takes it from the element symbol the species "
+                "name starts with"
+            )
+        elements.append(element)
+    if all(name.lower() == element.lower() for name, element in zip(species_names, elements, strict=True)):
+        return elements, None
+    return elements, list(species_names)
 
 
 # TODO: Add check for whether all ions have or lack velocities.
@@ -250,6 +282,13 @@ class JDFTXInfile(dict, MSONable):
     ) -> JDFTXInfile:
         """Create a JDFTXInfile object from a pymatgen Structure.
 
+        Each ion is written with its element symbol, or with its species name from the "jdftx_species" site property
+        when it has one (set by pymatgen's JDFTx readers for species not named after their element, e.g. Fe1 and Fe2
+        from pseudopotential files Fe1.upf and Fe2.upf). A species name that isn't of the site's element (e.g. after
+        replace_species) is ignored with a warning. Site labels are not used as species names, as labels from other
+        sources (e.g. "Fe1" and "O2" from CIF files) usually aren't. Note that get_primitive_structure only keeps sites
+        of different species apart with use_site_props=True, and symmetry refinement drops site properties.
+
         Args:
             structure (Structure): Structure to convert.
             selective_dynamics (ArrayLike, optional): Selective dynamics attribute for each site if available.
@@ -274,15 +313,16 @@ class JDFTXInfile(dict, MSONable):
                 Defaults to False. If False, arguments selective_dynamics and velocities will changed from
                 values in site_properties if provided as None. If True, arguments selective_dynamics and velocities
                 will be left as provided, and the duplicated structure used for JDFTXStructure initialization will
-                have its site_properties cleared.
+                have its site_properties cleared, except for the species names ("jdftx_species").
 
         Returns:
             JDFTXInfile: The created JDFTXInfile object.
         """
         _structure = structure.copy()
         if ignore_site_properties:
-            _structure.clear_site_properties()
-            # _structure.site_properties = {}
+            for site_property in list(_structure.site_properties):
+                if site_property != JDFTX_SPECIES_SITE_PROPERTY:  # Kept, as they decide each ion's species
+                    _structure.remove_site_property(site_property)
         jdftxstructure = JDFTXStructure(
             _structure,
             selective_dynamics=selective_dynamics,
@@ -667,7 +707,8 @@ class JDFTXInfile(dict, MSONable):
             raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
         # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
         mult = 3 if self["spintype"] in ["spin-orbit", "vector-spin"] else 1
-        ion_species = [ion["species-id"] for ion in self["ion"]] if "ion" in self else None
+        # JDFTx's species names are case-insensitive
+        ion_species = [ion["species-id"].lower() for ion in self["ion"]] if "ion" in self else None
         for group in self[tag]["species-values"]:
             sp, n_values = group["species-id"], len(group["values"])
             if n_values % mult != 0:
@@ -677,7 +718,7 @@ class JDFTXInfile(dict, MSONable):
                 raise ValueError(error_msg)
             if ion_species is None:
                 continue
-            n_ions = ion_species.count(sp)
+            n_ions = ion_species.count(sp.lower())
             if n_ions == 0:
                 raise ValueError(f"Species {sp} in {tag} tag is not present in the ion tags!")
             if n_values != n_ions * mult:
@@ -1237,6 +1278,10 @@ def _remove_at_path(edit_infile: JDFTXInfile, removal_path: list[str | int]) -> 
 class JDFTXStructure(MSONable):
     """Object for representing the data in JDFTXStructure tags.
 
+    Species not named after their element (e.g. Fe1 and Fe2, from pseudopotential files Fe1.upf and Fe2.upf) are kept
+    as the structure's "jdftx_species" site property, and written back from it (see JDFTXInfile.from_structure). The
+    element of each species is the element symbol its name starts with (see element_from_species_name).
+
     Attributes:
         structure (Structure): Associated Structure.
         selective_dynamics (ArrayLike): Selective dynamics attribute for each site if available. Shape Nx1.
@@ -1362,7 +1407,8 @@ class JDFTXStructure(MSONable):
             sort_structure (bool, optional): Whether to sort the structure. Useful if species are not grouped properly
                 together as JDFTx output will have species sorted.
             fill_site_properties (bool, optional): Whether to fill in site properties for
-                `JDFTXStructure.structure: Structure` from the JDFTXInfile tags.
+                `JDFTXStructure.structure: Structure` from the JDFTXInfile tags. Species names that aren't their
+                element symbol (e.g. Fe1) are always kept, as the jdftx_species site property.
 
         Returns:
             JDFTXStructure: The created JDFTXStructure object.
@@ -1372,7 +1418,7 @@ class JDFTXStructure(MSONable):
                 "Structure sorting requested but is not currently implemented! Site ordering will not be changed."
             )
         lattice = _infile_to_pmg_lattice(jdftxinfile)
-        atomic_symbols = [x["species-id"] for x in jdftxinfile["ion"]]
+        elements, species_names = get_species_elements([x["species-id"] for x in jdftxinfile["ion"]])
         coords = np.array([[x["x0"], x["x1"], x["x2"]] for x in jdftxinfile["ion"]])
         selective_dynamics = np.array([x["moveScale"] for x in jdftxinfile["ion"]])
         # Gather optional tags
@@ -1415,12 +1461,14 @@ class JDFTXStructure(MSONable):
 
         struct: Structure = Structure(
             lattice,
-            atomic_symbols,
+            elements,
             coords,
             to_unit_cell=False,
             validate_proximity=False,
             coords_are_cartesian=coords_are_cartesian,
         )
+        if species_names is not None:  # Kept even without fill_site_properties, as they decide each ion's species
+            struct.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
         if fill_site_properties:
             site_properties: list[list] = [velocities, constraint_types, constraint_vectors, hyperplane_groups]
             for prop, val in zip(
@@ -1471,17 +1519,25 @@ class JDFTXStructure(MSONable):
             raise ValueError("Constraint vectors are present but constraint types are not!")
         if self.structure is None:
             return ""
+        species_names = self.structure.site_properties.get(JDFTX_SPECIES_SITE_PROPERTY)
+        mismatched_sites = []  # Sites whose species name isn't of their element
         for i, site in enumerate(self.structure):
             label = site.label
             coords = site.coords / bohr_to_ang if in_cart_coords else site.frac_coords
             sd = int(bool(cast("np.ndarray", self.selective_dynamics)[i])) if self.selective_dynamics is not None else 1
-            if label not in valid_labels:
-                # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
-                # (e.g. "Fe" for species "Fe2+")
-                fallbacks: tuple[str, ...] = (site.species_string, getattr(site.specie, "name", ""))
-                label = next((x for x in fallbacks if x in valid_labels), label)
+            name = species_names[i] if species_names is not None else None
+            if isinstance(name, str) and element_from_species_name(name) == getattr(site.specie, "symbol", None):
+                label = name  # The site's JDFTx species name (e.g. Fe1)
+            else:
+                if name is not None:
+                    mismatched_sites.append(i)
                 if label not in valid_labels:
-                    raise ValueError(f"Could not correct site label {label} for site (index {i})")
+                    # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
+                    # (e.g. "Fe" for species "Fe2+")
+                    fallbacks: tuple[str, ...] = (site.species_string, getattr(site.specie, "name", ""))
+                    label = next((x for x in fallbacks if x in valid_labels), label)
+                    if label not in valid_labels:
+                        raise ValueError(f"Could not correct site label {label} for site (index {i})")
             ion_dict_rep = {
                 "species-id": label,
                 "x0": coords[0],
@@ -1502,6 +1558,12 @@ class JDFTXStructure(MSONable):
             if self.constraint_types is not None and self.constraint_types[i] is not None:
                 ion_dict_rep.update(self._get_constraint_tags(i, sd, in_cart_coords))
             jdftx_tag_dict["ion"].append(ion_dict_rep)
+        if mismatched_sites:
+            warnings.warn(
+                f"The {JDFTX_SPECIES_SITE_PROPERTY} species names of sites {mismatched_sites} aren't of their elements "
+                "(e.g. after replace_species), so these sites are written with their element symbols instead",
+                stacklevel=2,
+            )
         return str(JDFTXInfile.from_dict(jdftx_tag_dict))
 
     def _get_constraint_tags(self, i: int, move_scale: int, in_cart_coords: bool) -> dict[str, Any]:

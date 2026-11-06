@@ -1332,6 +1332,10 @@ ION_LINES = "ion Mn 0.0 0.0 0.0 1\nion Mn 0.5 0.5 0.5 1\nion O 0.25 0.25 0.25 1\
         "spintype z-spin\ninitial-magnetic-moments Mn 3 -3\n",
         "spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0 3 180 0\n",
         "spintype spin-orbit\ninitial-magnetic-moments Mn 3 0 0 3 180 0 O 0 0 0\n" + ION_LINES,
+        # JDFTx's species names are case-insensitive
+        "spintype z-spin\ninitial-magnetic-moments mn 3 -3 o 0\n" + ION_LINES,
+        # Two Mn species (from pseudopotential files Mn1.upf and Mn2.upf), as for an antiferromagnet
+        "spintype z-spin\ninitial-magnetic-moments Mn1 3 Mn2 -3\nion Mn1 0 0 0 1\nion Mn2 0.5 0.5 0.5 1\n",
     ],
 )
 def test_validate_initial_magnetic_moments_valid(text: str):
@@ -1586,6 +1590,68 @@ def test_jdftxstructure_keeps_structure_species():
     struct = Structure(Lattice.cubic(5.0), ["Si", Species("Fe", 2), DummySpecies("X")], np.eye(3) / 2)
     species_before = struct.species
     assert JDFTXStructure(structure=struct).structure.species == species_before
+
+
+# Two Fe species (from pseudopotential files Fe1.upf and Fe2.upf, as for an antiferromagnet), and one named after O
+SPECIES_NAMES_TEXT = "lattice Cubic 10\nion Fe1 0 0 0 v 0.1 0 0 0\nion Fe2 0.5 0.5 0.5 1\nion O 0.25 0.25 0.25 1\n"
+
+
+def _written_species(jif: JDFTXInfile) -> list[str]:
+    return [ion["species-id"] for ion in jif["ion"]]
+
+
+def test_ion_species_names():
+    """Species named after their pseudopotential files get their element from the name, and are written back."""
+    jif = JDFTXInfile.from_str(SPECIES_NAMES_TEXT)
+    assert _written_species(jif) == ["Fe1", "Fe2", "O"]
+    structure = jif.structure
+    assert [site.specie.symbol for site in structure] == ["Fe", "Fe", "O"]
+    assert structure.site_properties["jdftx_species"] == ["Fe1", "Fe2", "O"]
+    assert _written_species(JDFTXInfile.from_structure(structure)) == ["Fe1", "Fe2", "O"]
+    # The names decide each ion's species, so they are kept without the other site properties too
+    assert jif.to_pmg_structure(jif, fill_site_properties=False).site_properties == {
+        "jdftx_species": ["Fe1", "Fe2", "O"]
+    }
+    without_properties = JDFTXInfile.from_structure(structure, ignore_site_properties=True)
+    assert _written_species(without_properties) == ["Fe1", "Fe2", "O"]
+    assert "v" not in without_properties["ion"][0]
+    assert without_properties["ion"][0]["moveScale"] == 1
+    assert "velocities" in structure.site_properties  # The given structure is left as it was
+
+
+@pytest.mark.parametrize(
+    ("species", "element"),
+    [("Fe", "Fe"), ("fe", "Fe"), ("FE", "Fe"), ("Fe1", "Fe"), ("Co2", "Co"), ("Hx", "H"), ("Hf", "Hf"), ("H", "H")],
+)
+def test_ion_species_element(species: str, element: str):
+    structure = JDFTXInfile.from_str(f"lattice Cubic 10\nion {species} 0 0 0 1\n").structure
+    assert structure[0].specie.symbol == element
+    # Only names that aren't their element symbol (ignoring case, as JDFTx does) are kept
+    if species.lower() == element.lower():
+        assert "jdftx_species" not in structure.site_properties
+    else:
+        assert structure.site_properties["jdftx_species"] == [species]
+
+
+@pytest.mark.parametrize("species", ["Xx9", "1H", "Fe_1"])
+def test_ion_species_name_must_give_an_element(species: str):
+    with pytest.raises(ValueError, match=f"'{species}' for tag 'species-id' is not a species name pymatgen can read"):
+        JDFTXInfile.from_str(f"lattice Cubic 10\nion {species} 0 0 0 1\n")
+
+
+def test_ion_species_name_not_of_the_site_element_is_not_written():
+    structure = JDFTXInfile.from_str(SPECIES_NAMES_TEXT).structure
+    structure.replace_species({"Fe": "Co"})  # Keeps the jdftx_species names
+    structure.append("O", [0.75, 0.75, 0.75])  # Has no name (None)
+    with pytest.warns(UserWarning, match=re.escape("species names of sites [0, 1] aren't of their elements")):
+        jif = JDFTXInfile.from_structure(structure)
+    assert _written_species(jif) == ["Co", "Co", "O", "O"]
+
+
+def test_site_labels_are_not_species_names():
+    # Labels from other sources (e.g. CIF files) usually aren't JDFTx species names, so elements are written
+    structure = Structure(Lattice.cubic(5.0), ["Fe", "O"], [[0, 0, 0], [0.5, 0.5, 0.5]], labels=["Fe1", "O2"])
+    assert _written_species(JDFTXInfile.from_structure(structure)) == ["Fe", "O"]
 
 
 # Non-orthogonal cell (lattice vectors are the columns, in bohr), so lattice and Cartesian constraint vectors differ

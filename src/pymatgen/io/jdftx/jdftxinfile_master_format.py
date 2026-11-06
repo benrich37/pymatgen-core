@@ -12,7 +12,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from pymatgen.core.periodic_table import Element
 from pymatgen.io.jdftx.generic_tags import (
     AbstractTag,
     BoolTag,
@@ -238,15 +237,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     allow_list_representation=False,
                     can_repeat=True,
                     subtags={
-                        "species-id": StrTag(
-                            write_tagname=False,
-                            optional=False,
-                            options=[
-                                value.symbol
-                                for key, value in Element.__dict__.items()
-                                if not key.startswith("_") and not callable(value)
-                            ],  # Required in case bad species names gets fed
-                        ),
+                        # e.g. Fe1 for a species read from Fe1.upf (see element_from_species_name)
+                        "species-id": StrTag(write_tagname=False, optional=False, species_name=True),
                         "x0": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x1": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x2": FloatTag(write_tagname=False, optional=False, prec=15),
@@ -265,15 +257,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     allow_list_representation=False,
                     can_repeat=True,
                     subtags={
-                        "species-id": StrTag(
-                            write_tagname=False,
-                            optional=False,
-                            options=[
-                                value.symbol
-                                for key, value in Element.__dict__.items()
-                                if not key.startswith("_") and not callable(value)
-                            ],  # Required in case bad species names gets fed
-                        ),
+                        # e.g. Fe1 for a species read from Fe1.upf (see element_from_species_name)
+                        "species-id": StrTag(write_tagname=False, optional=False, species_name=True),
                         "x0": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x1": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x2": FloatTag(write_tagname=False, optional=False, prec=15),
@@ -300,15 +285,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     allow_list_representation=False,
                     can_repeat=True,
                     subtags={
-                        "species-id": StrTag(
-                            write_tagname=False,
-                            optional=False,
-                            options=[
-                                value.symbol
-                                for key, value in Element.__dict__.items()
-                                if not key.startswith("_") and not callable(value)
-                            ],  # Required in case bad species names gets fed
-                        ),
+                        # e.g. Fe1 for a species read from Fe1.upf (see element_from_species_name)
+                        "species-id": StrTag(write_tagname=False, optional=False, species_name=True),
                         "x0": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x1": FloatTag(write_tagname=False, optional=False, prec=15),
                         "x2": FloatTag(write_tagname=False, optional=False, prec=15),

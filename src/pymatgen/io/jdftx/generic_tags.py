@@ -15,7 +15,36 @@ from typing import Any
 
 import numpy as np
 
+from pymatgen.core.periodic_table import Element
+
 __author__ = "Jacob Clary, Ben Rich"
+
+_ELEMENT_SYMBOLS = {element.symbol.lower(): element.symbol for element in Element}
+_MAX_SYMBOL_LENGTH = max(len(symbol) for symbol in _ELEMENT_SYMBOLS)
+
+
+def element_from_species_name(name: str) -> str | None:
+    """Get the element symbol of a JDFTx species name.
+
+    JDFTx names a species after its pseudopotential file: the file name up to its first character that is not a letter
+    or digit, with the first letter capitalized (e.g. species Fe1 for Fe1.upf, used to tell apart two Fe sublattices).
+    Its out files don't print the species' element, so the element is taken to be the longest element symbol the name
+    starts with, ignoring case (Fe1 -> Fe, Co2 -> Co, Hx -> H, Hf -> Hf).
+
+    Args:
+        name (str): The species name.
+
+    Returns:
+        str | None: The element symbol, or None if the name is not only letters and digits, or doesn't start with an
+            element symbol.
+    """
+    if not (name.isascii() and name.isalnum()):
+        return None
+    for length in range(min(_MAX_SYMBOL_LENGTH, len(name)), 0, -1):
+        symbol = _ELEMENT_SYMBOLS.get(name[:length].lower())
+        if symbol is not None:
+            return symbol
+    return None
 
 
 class JDFTXOptionWarning(UserWarning):
@@ -414,6 +443,8 @@ class StrTag(AbstractTag):
     # For a keyword subtag of a TagContainer that JDFTx echoes with an empty value when unset (e.g. "cavityFile " in
     # pcm-params): the keyword followed by another keyword of the TagContainer, or by nothing, is read as unset
     empty_means_unset: bool = False
+    # For a species name (the species-id of ion), which must be one element_from_species_name can get the element of
+    species_name: bool = False
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -459,6 +490,12 @@ class StrTag(AbstractTag):
             str: The parsed string value.
         """
         self._single_value_read_validate(tag, value)
+        if self.species_name and element_from_species_name(value.strip()) is None:
+            raise ValueError(
+                f"'{value}' for tag '{tag}' is not a species name pymatgen can read: JDFTx names species after their "
+                "pseudopotential files (letters and digits only), and pymatgen takes a species' element from the "
+                "element symbol its name starts with (e.g. Fe for Fe or Fe1)"
+            )
         compare_value = value.strip().lower()
         compare_options = [x.strip().lower() for x in self.options] if self.options is not None else None
         if compare_options is None or compare_value in compare_options:
@@ -1412,7 +1449,7 @@ class MultiformatTag(AbstractTag):
         Raises:
             ValueError: If no valid read format is found for the tag.
         """
-        problem_log = []
+        problems: dict[str, list[str]] = {}  # each format's reason for failing, with the formats failing for it
         for i, trial_format in enumerate(self.format_options):
             try:
                 with warnings.catch_warnings():  # the value is read again with the format found, warning then
@@ -1420,10 +1457,11 @@ class MultiformatTag(AbstractTag):
                     _ = trial_format.read(tag, value)
                 return i
             except (ValueError, TypeError) as e:
-                problem_log.append(f"Format {i}: {e}")
+                problems.setdefault(str(e), []).append(str(i))
+        reasons = "\n".join(f"Format {', '.join(formats)}: {reason}" for reason, formats in problems.items())
         raise ValueError(
             f"No valid read format for tag '{tag}' with value '{value}'\n"
-            "Add option to format_options or double-check the value string and retry!\n\n"
+            "Add option to format_options or double-check the value string and retry!\n\n" + reasons
         )
 
     def raise_invalid_format_option_error(self, tag: str, i: int) -> None:
