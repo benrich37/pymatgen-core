@@ -913,6 +913,101 @@ def test_pcm_params_read(line: str, expected: dict[str, Any]):
     assert JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)["pcm-params"] == expected
 
 
+# JDFTx's echo of "fluid-site-params H2O O sigmaNuc 0.5" and "fluid-site-params H2O H aPol 0.4" (fluid ClassicalDFT)
+FLUID_SITE_PARAMS_ECHO = (
+    "fluid-site-params H2O O \\\n\tZnuc 6 \\\n\tsigmaNuc 0.5 \\\n\tZelec 6.826 \\\n\taElec 0.36935 \\\n"
+    "\tsigmaElec 0.36823 \\\n\trcElec 0.51523 \\\n\talpha 3.73 \\\n\taPol 0.32 \\\n\tRhs 2.57003 \\\n"
+    "\telecFilename  \\\n\telecFilenameG \n"
+    "fluid-site-params H2O H \\\n\tZnuc 1 \\\n\tsigmaNuc 0.377945 \\\n\tZelec 0.587 \\\n\taElec 0.34641 \\\n"
+    "\tsigmaElec 0.390882 \\\n\trcElec 0 \\\n\talpha 3.3 \\\n\taPol 0.4 \\\n\tRhs 0 \\\n"
+    "\telecFilename  \\\n\telecFilenameG \n"
+    "fluid-site-params \n"
+)
+
+
+def test_fluid_site_params_echo_is_read_and_written_back():
+    """JDFTx echoes every site, with empty file names and zeros it refuses as input, then a bare line per extra line."""
+    with pytest.raises(ValueError, match="'Rhs' is not within bounds x > 0"):
+        JDFTXInfile.from_str(FLUID_SITE_PARAMS_ECHO, dont_require_structure=True)
+    jif = JDFTXInfile.from_str(FLUID_SITE_PARAMS_ECHO, dont_require_structure=True, validate_value_boundaries=False)
+    entries = jif["fluid-site-params"]
+    # The bare line isn't stored, so a restart doesn't gain one more each time
+    assert [(entry["component"], entry["siteName"]) for entry in entries] == [("H2O", "O"), ("H2O", "H")]
+    assert entries[0]["sigmaNuc"] == 0.5
+    assert entries[1]["aPol"] == 0.4
+    assert entries[1]["Rhs"] == 0.0
+    assert not any("elecFilename" in entry or "elecFilenameG" in entry for entry in entries)
+    # Written back as JDFTx reads it (checked with JDFTx: it echoes the same site parameters), without "Rhs 0"
+    lines = str(jif).splitlines()
+    assert [line.split()[:3] for line in lines if line] == [
+        ["fluid-site-params", "H2O", "O"],
+        ["fluid-site-params", "H2O", "H"],
+    ]
+    assert "Rhs" not in lines[1].split()
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["fluid-site-params"] == [
+        entries[0],
+        {key: value for key, value in entries[1].items() if key != "Rhs"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected", "written"),
+    [
+        (
+            "fluid-site-params H2O O sigmaNuc 0.5",
+            {"component": "H2O", "siteName": "O", "sigmaNuc": 0.5},
+            "fluid-site-params H2O O sigmaNuc 0.5",
+        ),
+        (
+            "fluid-site-params CustomSolvent C1 Znuc 4 elecFilename n.bin",
+            {"component": "CustomSolvent", "siteName": "C1", "elecFilename": "n.bin", "Znuc": 4.0},
+            "fluid-site-params CustomSolvent C1 elecFilename n.bin Znuc 4.0",
+        ),
+        # JDFTx defaults the site (to the first one) when nothing follows the component
+        ("fluid-site-params H2O", {"component": "H2O"}, "fluid-site-params H2O"),
+    ],
+)
+def test_fluid_site_params_read(line: str, expected: dict[str, Any], written: str):
+    jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert jif["fluid-site-params"] == [expected]
+    assert " ".join(str(jif).split()) == written
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # pymatgen used to read and write this form, which JDFTx rejects
+        "fluid-site-params component H2O siteName O sigmaNuc 0.5",
+        "fluid-site-params O sigmaNuc 0.5",  # JDFTx reads the first word as the component
+    ],
+)
+def test_fluid_site_params_needs_the_component_first(line: str):
+    with pytest.raises(ValueError, match="must be one of"):
+        JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+
+
+def test_fluid_site_params_bare_line_is_not_stored():
+    # JDFTx reads a bare line as changing nothing
+    jif = JDFTXInfile.from_str("fluid-site-params H2O O sigmaNuc 0.5\nfluid-site-params\n", dont_require_structure=True)
+    assert jif["fluid-site-params"] == [{"component": "H2O", "siteName": "O", "sigmaNuc": 0.5}]
+    assert "fluid-site-params" not in JDFTXInfile.from_str("fluid-site-params\n", dont_require_structure=True)
+
+
+def test_dict_values_are_written_in_jdftx_order():
+    # Positional values must be written in the order JDFTx reads them, whatever the order of the dict's keys
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    jif["elec-cutoff"] = {"EcutRho": 100.0, "Ecut": 20.0}
+    jif["elec-smearing"] = {"smearingWidth": 0.01, "smearingType": "Fermi"}
+    jif["fluid-site-params"] = {"sigmaNuc": 0.5, "component": "H2O", "siteName": "O"}
+    lines = [" ".join(line.split()) for line in str(jif).splitlines()]
+    assert "elec-cutoff 20.0 100.0" in lines
+    assert "elec-smearing Fermi 0.01" in lines
+    assert "fluid-site-params H2O O sigmaNuc 0.5" in lines
+    back = JDFTXInfile.from_str(str(jif))
+    assert back["elec-cutoff"] == {"Ecut": 20.0, "EcutRho": 100.0}
+    assert back["elec-smearing"] == {"smearingType": "Fermi", "smearingWidth": 0.01}
+
+
 @pytest.mark.parametrize(
     ("line", "old_written", "written"),
     [

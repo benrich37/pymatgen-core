@@ -941,6 +941,8 @@ class JDFTXInfile(dict, MSONable):
             if value:
                 params.setdefault(tag, []).extend(value)
         elif tag_object.can_repeat:  # store tags that can repeat in a list
+            if isinstance(tag_object, TagContainer) and tag_object.bare_is_noop and value == {}:
+                return params  # a bare line changes nothing
             params.setdefault(tag, []).append(value)
         elif tag in params:
             raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")

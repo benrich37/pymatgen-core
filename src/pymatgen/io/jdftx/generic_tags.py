@@ -761,6 +761,9 @@ class TagContainer(AbstractTag):
         True  # used to ensure only TagContainers are converted between list and dict representations
     )
     subtags: dict[str, AbstractTag] = field(default_factory=dict)
+    # For a repeatable tag that JDFTx reads as doing nothing when bare: a bare line (read as {}) isn't stored. JDFTx's
+    # echo of fluid-site-params has one for each input line after the first, so storing them would add one per restart
+    bare_is_noop: bool = False
 
     def _validate_single_entry(
         self, value: dict | list[dict], try_auto_type_fix: bool = False, warn_user: bool = True
@@ -1084,9 +1087,13 @@ class TagContainer(AbstractTag):
 
         final_value = ""
         indent = "    "
-        # Gather all subtag print values into a list
+        # Gather all subtag print values into a list, in the order of self.subtags (the order JDFTx reads positional
+        # subtags in), not the order of the value's keys. Keys that aren't subtags come last, and raise a KeyError.
         print_str_list = []
-        for subtag, subvalue in value.items():
+        ordered_subtags = [subtag for subtag in self.subtags if subtag in value]
+        ordered_subtags += [subtag for subtag in value if subtag not in self.subtags]
+        for subtag in ordered_subtags:
+            subvalue = value[subtag]
             if self.subtags[subtag].can_repeat and isinstance(subvalue, list):
                 print_str_list += [self.subtags[subtag].write(subtag, entry).strip() + " " for entry in subvalue]
             else:

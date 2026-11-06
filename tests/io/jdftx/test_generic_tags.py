@@ -303,6 +303,15 @@ def test_tag_container_write_leaves_out_unwritten_subtags():
     assert tagcontainer.write("barbie", {"ken": 2.0, "allan": 1.0}) == "barbie \\\n    ken  2.0 \\\n    allan  1.0 "
 
 
+def test_tag_container_write_follows_subtag_order():
+    tagcontainer = TagContainer(
+        subtags={"ken": FloatTag(write_tagname=False), "allan": FloatTag(write_tagname=False), "barbie": FloatTag()}
+    )
+    assert tagcontainer.write("tag", {"barbie": 3.0, "allan": 2.0, "ken": 1.0}) == "tag 1.0 2.0 barbie  3.0 "
+    with pytest.raises(KeyError, match="midge"):
+        tagcontainer.write("tag", {"midge": 1.0})
+
+
 def test_read_from_tokens_requires_a_token():
     with pytest.raises(ValueError, match="No value given for 'tag'"):
         StrTag().read_from_tokens("tag", [])

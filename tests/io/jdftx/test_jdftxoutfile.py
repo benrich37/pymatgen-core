@@ -44,6 +44,7 @@ from .outputs_test_utils import (
     example_vib_modes_known,
     example_vib_nrg_components,
     example_vib_outfile_path,
+    fluid_site_params_outfile_path,
     hse06_outfile_path,
     jdftxoutfile_fromfile_matches_known,
     jdftxoutfile_fromfile_matches_known_simple,
@@ -512,6 +513,26 @@ def test_to_jdftxinfile_keeps_hse06():
     # Reading the restart as an input does warn
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
+
+
+def test_to_jdftxinfile_keeps_fluid_site_params():
+    # JDFTx's fluid-site-params echo used to be unreadable, so the restart silently ran with the default site parameters
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        # JDFTx echoes fluid-solvent's "translation" key as "translationMode", which neither JDFTx nor pymatgen reads
+        warnings.filterwarnings("ignore", message="Skipping invalid tag line: 'fluid-solvent ")
+        outfile = JDFTXOutfile.from_file(fluid_site_params_outfile_path)
+        restart = outfile.to_jdftxinfile()
+    # JDFTx echoes every site, and a bare line for the second input line, which isn't stored
+    entries = outfile.infile["fluid-site-params"]
+    assert [(entry["component"], entry["siteName"]) for entry in entries] == [("H2O", "O"), ("H2O", "H")]
+    assert entries[0]["sigmaNuc"] == 0.5
+    assert entries[1]["aPol"] == 0.4
+    # The restart leaves out the "Rhs 0" that JDFTx echoes for H but refuses as input
+    lines = [line.split() for line in str(restart).splitlines() if line.startswith("fluid-site-params")]
+    assert [line[:3] for line in lines] == [["fluid-site-params", "H2O", "O"], ["fluid-site-params", "H2O", "H"]]
+    assert "Rhs" in lines[0]
+    assert "Rhs" not in lines[1]
 
 
 def test_to_jdftxinfile_keeps_pcm_params():
