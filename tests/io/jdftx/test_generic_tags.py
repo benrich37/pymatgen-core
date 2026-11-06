@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 
 import pytest
 
@@ -10,6 +11,7 @@ from pymatgen.io.jdftx.generic_tags import (
     BoolTagContainer,
     FloatTag,
     IntTag,
+    JDFTXOptionWarning,
     MultiformatTag,
     StrListTag,
     StrTag,
@@ -157,6 +159,17 @@ def test_float_tag():
         float_tag.read("barbie", "")
     assert FloatTag(value_if_bare=0.0).read("barbie", "") == 0.0
     assert FloatTag(value_if_bare=0.0).read("barbie", "1.5") == 1.5
+
+
+def test_str_tag_option_warnings():
+    tag = StrTag(options=["ken", "allan"], option_warnings={"Ken": "Not ken!"})
+    with pytest.warns(JDFTXOptionWarning, match="'barbie ken': Not ken!"):
+        assert tag.read("barbie", "ken") == "ken"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", JDFTXOptionWarning)
+        assert tag.read("barbie", "allan") == "allan"
+        # Finding the format of a value does not warn: the value is read again with the format found
+        assert MultiformatTag(format_options=[tag, FloatTag()]).get_format_index_for_str_value("barbie", "ken") == 0
 
 
 def test_str_list_tag():

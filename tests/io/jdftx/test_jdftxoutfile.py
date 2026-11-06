@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from itertools import combinations
 from time import process_time
 from timeit import Timer
@@ -11,6 +12,7 @@ import pytest
 
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import read_outfile_slices
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
 from pymatgen.io.jdftx.inputs import JDFTXInfile
 from pymatgen.io.jdftx.jdftxoutfileslice import JDFTXOutfileSlice
 from pymatgen.io.jdftx.outputs import JDFTXOutfile, _jof_atr_from_last_slice
@@ -42,6 +44,7 @@ from .outputs_test_utils import (
     example_vib_modes_known,
     example_vib_nrg_components,
     example_vib_outfile_path,
+    hse06_outfile_path,
     jdftxoutfile_fromfile_matches_known,
     jdftxoutfile_fromfile_matches_known_simple,
     jdftxoutfile_matches_known,
@@ -493,6 +496,21 @@ def test_to_jdftxinfile_keeps_d2_dispersion():
     assert outfile.infile["van-der-waals"] == 0.0
     restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
     assert restart["van-der-waals"] == 0.0
+
+
+def test_to_jdftxinfile_keeps_hse06():
+    # pymatgen used to reject hyb-HSE06, so the restart silently fell back to JDFTx's default functional (gga-PBE).
+    # Reading an out file does not repeat the warning given to whoever chose the functional.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", JDFTXOptionWarning)
+        outfile = JDFTXOutfile.from_file(hse06_outfile_path)
+        restart = outfile.to_jdftxinfile()
+    assert outfile.infile["elec-ex-corr"] == "hyb-HSE06"
+    assert outfile.xc_func == "hyb-HSE06"
+    assert restart["elec-ex-corr"] == "hyb-HSE06"
+    # Reading the restart as an input does warn
+    with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
+        assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
 
 
 @pytest.mark.parametrize("latt_scale", ["2 2 1", "1.5 0.75 2"])

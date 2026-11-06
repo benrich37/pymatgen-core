@@ -338,6 +338,8 @@ vexternal_spin_outfile_path = ex_out_files_dir / Path("vexternal_spin.out")
 # Natively generated H2 single point with "debug KpointsBasis" and "debug Symmetries" lines, echoed by JDFTx as
 # "debug  KpointsBasisSymmetries" and a bare "debug "
 debug_outfile_path = ex_out_files_dir / Path("debug.out")
+# Natively generated H2 single point with "elec-ex-corr hyb-HSE06" (SG15 pseudopotentials, as hybrids need)
+hse06_outfile_path = ex_out_files_dir / Path("hse06.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ import pytest
 from pymatgen.core import DummySpecies, Lattice, Species
 from pymatgen.core.structure import Site, Structure
 from pymatgen.core.units import bohr_to_ang
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
 from pymatgen.io.jdftx.inputs import (
     JDFTXInfile,
     JDFTXStructure,
@@ -833,6 +835,36 @@ def test_density_of_states_dict_form():
 def test_density_of_states_read_errors(line: str, error_match: str):
     with pytest.raises(ValueError, match=error_match):
         JDFTXInfile.from_str(f"density-of-states {line}\n", dont_require_structure=True)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("elec-ex-corr hyb-HSE06", "hyb-HSE06"),
+        ("elec-ex-corr hyb-hse06", "hyb-hse06"),  # JDFTx's names are case-insensitive
+        ("elec-ex-corr-compare hyb-HSE06", "hyb-HSE06"),
+    ],
+)
+def test_hse06_is_accepted_with_a_warning(line: str, expected: str):
+    """JDFTx's built-in hyb-HSE06 is read and written back, warning once that it differs from LibXC's HSE06."""
+    tag = line.split(maxsplit=1)[0]
+    with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06") as record:
+        jif = JDFTXInfile.from_str(f"{line}\n", dont_require_structure=True)
+    assert len([w for w in record if issubclass(w.category, JDFTXOptionWarning)]) == 1
+    assert jif[tag] == expected
+    assert str(jif).split() == line.split()
+    jif = JDFTXInfile.from_str("lattice Cubic 10\n", dont_require_structure=True)
+    with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06") as record:
+        jif[tag] = expected
+    assert len([w for w in record if issubclass(w.category, JDFTXOptionWarning)]) == 1
+
+
+@pytest.mark.parametrize("functional", ["gga-PBE", "hyb-PBE0", "hyb-gga-hse06"])
+def test_other_functionals_do_not_warn(functional: str):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", JDFTXOptionWarning)
+        jif = JDFTXInfile.from_str(f"elec-ex-corr {functional}\n", dont_require_structure=True)
+        jif["elec-ex-corr"] = functional
 
 
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])

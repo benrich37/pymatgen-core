@@ -18,6 +18,10 @@ import numpy as np
 __author__ = "Jacob Clary, Ben Rich"
 
 
+class JDFTXOptionWarning(UserWarning):
+    """Warning for an option JDFTx accepts but that is known to be unreliable (see StrTag.option_warnings)."""
+
+
 # This inheritable class is kept for use by AbstractTag instead of using pprint as
 # the type conversions for tags are incredibly delicate and require strings to be
 # printed in a very exact way.
@@ -405,6 +409,8 @@ class StrTag(AbstractTag):
     """
 
     options: list | None = None
+    # Options JDFTx accepts but that are known to be unreliable, mapped to a warning issued when one is read
+    option_warnings: dict[str, str] = field(default_factory=dict)
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -453,6 +459,9 @@ class StrTag(AbstractTag):
         compare_value = value.strip().lower()
         compare_options = [x.strip().lower() for x in self.options] if self.options is not None else None
         if compare_options is None or compare_value in compare_options:
+            for option, message in self.option_warnings.items():
+                if compare_value == option.strip().lower():
+                    warnings.warn(f"'{tag} {value}': {message}", JDFTXOptionWarning, stacklevel=3)
             return value
         raise ValueError(f"The string value '{value}' must be one of {self.options} for tag '{tag}'")
 
@@ -1363,7 +1372,9 @@ class MultiformatTag(AbstractTag):
         problem_log = []
         for i, trial_format in enumerate(self.format_options):
             try:
-                _ = trial_format.read(tag, value)
+                with warnings.catch_warnings():  # the value is read again with the format found, warning then
+                    warnings.simplefilter("ignore", JDFTXOptionWarning)
+                    _ = trial_format.read(tag, value)
                 return i
             except (ValueError, TypeError) as e:
                 problem_log.append(f"Format {i}: {e}")

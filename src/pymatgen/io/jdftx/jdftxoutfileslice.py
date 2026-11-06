@@ -37,6 +37,7 @@ from pymatgen.io.jdftx._output_utils import (
     get_colon_val,
     key_exists,
 )
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
 from pymatgen.io.jdftx.inputs import JDFTXInfile
 from pymatgen.io.jdftx.joutstructures import JOutStructures, _get_joutstructures_start_idx
 
@@ -432,9 +433,11 @@ class JDFTXOutfileSlice:
                 break
         if end_line_idx is None:
             raise ValueError("Calculation did not begin for this out file slice.")
-        self.infile = JDFTXInfile.from_str(
-            "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False, skip_invalid_tags=True
-        )
+        with warnings.catch_warnings():  # Warnings on the choice of options are for whoever sets them, not readers
+            warnings.simplefilter("ignore", JDFTXOptionWarning)
+            self.infile = JDFTXInfile.from_str(
+                "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False, skip_invalid_tags=True
+            )
         self.constant_lattice = True
         if "lattice-minimize" in self.infile:
             latsteps = self.infile["lattice-minimize"]["nIterations"]
@@ -1294,7 +1297,9 @@ class JDFTXOutfileSlice:
             JDFTXInfile: A JDFTXInfile object representing the input parameters of the JDFTXOutfile.
         """
         # Use internal infile as a reference for calculation parameters
-        base_infile = self.infile.copy()
+        with warnings.catch_warnings():  # Warnings on the choice of options were for whoever set them
+            warnings.simplefilter("ignore", JDFTXOptionWarning)
+            base_infile = self.infile.copy()
         if self.structure is None:
             base_infile.strip_structure_tags()
             return base_infile

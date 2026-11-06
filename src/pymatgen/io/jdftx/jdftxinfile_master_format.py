@@ -29,6 +29,7 @@ from pymatgen.io.jdftx.generic_tags import (
 from pymatgen.io.jdftx.jdftxinfile_ref_options import (
     fluid_solvent_options,
     func_c_options,
+    func_option_warnings,
     func_options,
     func_x_options,
     func_xc_options,
@@ -399,12 +400,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
     "electronic": {
         "elec-ex-corr": MultiformatTag(
             format_options=[
-                # note that hyb-HSE06 has a bug in JDFTx and should not be
-                # used and is excluded here use the LibXC version instead
-                # (hyb-gga-HSE06)
                 StrTag(
                     write_tagname=True,
                     options=deepcopy(func_options),
+                    option_warnings=deepcopy(func_option_warnings),
                 ),
                 TagContainer(
                     subtags={
@@ -434,12 +433,10 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
         "elec-ex-corr-compare": MultiformatTag(
             can_repeat=True,
             format_options=[
-                # note that hyb-HSE06 has a bug in JDFTx and should not be used
-                # and is excluded here use the LibXC version instead
-                # (hyb-gga-HSE06)
                 StrTag(
                     write_tagname=True,
                     options=func_options,
+                    option_warnings=deepcopy(func_option_warnings),
                 ),
                 TagContainer(
                     subtags={
