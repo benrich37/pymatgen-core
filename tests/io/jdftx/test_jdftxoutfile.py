@@ -62,6 +62,7 @@ from .outputs_test_utils import (
     problem2_outfile_path,
     problem3_outfile_path,
     rho_external_outfile_path,
+    species_names_outfile_path,
     vdw_d2_outfile_path,
     vexternal_spin_outfile_path,
 )
@@ -513,6 +514,47 @@ def test_to_jdftxinfile_keeps_hse06():
     # Reading the restart as an input does warn
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
+
+
+def test_species_names_from_out_file():
+    """Species named after their pseudopotential files (H1 and H2) used to make the whole out file unreadable."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        outfile = JDFTXOutfile.from_file(species_names_outfile_path)
+    assert len(outfile.slices) == 1
+    steps = outfile.slices[-1].jstrucs
+    assert len(steps) == 3
+    for structure in [outfile.slices[-1].initial_structure, *[step.structure for step in steps], outfile.structure]:
+        assert [site.specie.symbol for site in structure] == ["H", "H"]
+        assert structure.site_properties["jdftx_species"] == ["H1", "H2"]
+    # JDFTx prints Lowdin values by species name ("# oxidation-state H1 +0.015")
+    np.testing.assert_allclose(steps[0].charges, [0.015, -0.005])
+    np.testing.assert_allclose(steps[0].magnetic_moments, [0.538, -0.539])
+    assert outfile.atom_elements == ["H", "H"]
+    assert outfile.atom_elements_int == [1, 1]
+    assert outfile.atom_types == ["H1", "H2"]
+    # Electrons are counted per species, from each one's pseudopotential
+    assert (outfile.total_electrons_uncharged, outfile.semicore_electrons_uncharged) == (2, 0)
+
+
+def test_to_jdftxinfile_keeps_species_names():
+    # Checked with JDFTx: it accepts the restart, with both species and the final positions it printed
+    outfile = JDFTXOutfile.from_file(species_names_outfile_path)
+    restart = outfile.to_jdftxinfile()
+    assert [ion["species-id"] for ion in restart["ion"]] == ["H1", "H2"]
+    assert restart["ion-species"] == ["SG15/H1.upf", "SG15/H2.upf"]
+    assert restart["ion"][0]["x2"] == 1.085877149994234  # As printed, not converted to angstrom and back
+    assert [group["species-id"] for group in restart["initial-magnetic-moments"]["species-values"]] == ["H1", "H2"]
+
+
+def test_species_element_differing_from_pseudopotential_warns(tmp_path: Path):
+    # UPF files state their element, which pymatgen otherwise takes from the species name
+    lines = species_names_outfile_path.read_text().splitlines(keepends=True)
+    i = next(i for i, line in enumerate(lines) if line.startswith("Reading pseudopotential file 'SG15/H2.upf'"))
+    lines[i + 1] = lines[i + 1].replace("'H' pseudopotential", "'O' pseudopotential")
+    (tmp_path / "jdftx.out").write_text("".join(lines))
+    with pytest.warns(UserWarning, match=re.escape("other elements: H2 (read as H, file for O)")):
+        JDFTXOutfile.from_file(tmp_path / "jdftx.out")
 
 
 def test_to_jdftxinfile_keeps_fluid_site_params():

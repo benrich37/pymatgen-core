@@ -342,6 +342,9 @@ debug_outfile_path = ex_out_files_dir / Path("debug.out")
 hse06_outfile_path = ex_out_files_dir / Path("hse06.out")
 # Natively generated H2 single point in LinearPCM water with "pcm-params lMax 3 sigma 0.7 cavityTension 5e-06"
 pcm_params_outfile_path = ex_out_files_dir / Path("pcm_params.out")
+# Natively generated stretched-H2 ionic minimization (2 steps, z-spin) with two H species named after their
+# pseudopotential files, SG15/H1.upf and SG15/H2.upf (copies of H_ONCV_PBE.upf), and initial-magnetic-moments H1 1 H2 -1
+species_names_outfile_path = ex_out_files_dir / Path("species_names.out")
 # Natively generated H2 single point in ClassicalDFT water with "fluid-site-params H2O O sigmaNuc 0.5" and
 # "fluid-site-params H2O H aPol 0.4"
 fluid_site_params_outfile_path = ex_out_files_dir / Path("fluid_site_params.out")

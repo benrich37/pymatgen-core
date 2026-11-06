@@ -21,7 +21,13 @@ if TYPE_CHECKING:
 from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
-from pymatgen.io.jdftx.inputs import JDFTX_TIME_UNIT_TO_FS, _constraint_vector_to_cartesian
+from pymatgen.io.jdftx.inputs import (
+    JDFTX_SPECIES_SITE_PROPERTY,
+    JDFTX_TIME_UNIT_TO_FS,
+    _constraint_vector_to_cartesian,
+    get_species_elements,
+    get_species_names,
+)
 from pymatgen.io.jdftx.jelstep import JElSteps, _eopt_step_keys
 
 __author__ = "Ben Rich"
@@ -690,10 +696,14 @@ class JOutStructure(Structure):
         if len(cur_species):
             if len(names) != len(cur_species):
                 return False
-            _names = list(set(names))
-            _self_names = [s.symbol for s in cur_species]
-            for _name in _names:
-                if names.count(_name) != _self_names.count(_name):
+            # Compare species names (e.g. Fe1), which JDFTx reads ignoring case
+            if JDFTX_SPECIES_SITE_PROPERTY in self.site_properties and len(self) == len(cur_species):
+                _self_names = [name.lower() for name in get_species_names(self)]
+            else:
+                _self_names = [s.symbol.lower() for s in cur_species]
+            _names = [name.lower() for name in names]
+            for _name in set(_names):
+                if _names.count(_name) != _self_names.count(_name):
                     return False
         return True
 
@@ -710,8 +720,8 @@ class JOutStructure(Structure):
             Collected lines will start with the string "# Ionic positions in ..."
             (specifying either cartesian or direct coordinates), followed by a line
             for each ion (atom) in the format "ion_name x y z sd", where ion_name is
-            the name of the element, and sd is a flag indicating whether the ion is
-            excluded from optimization (1) or not (0).
+            the species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file), and sd is a
+            flag indicating whether the ion is excluded from optimization (1) or not (0).
         """
         new_species: list[Element | Species] | None = None
         if len(posns_lines):
@@ -741,6 +751,8 @@ class JOutStructure(Structure):
             if not is_good and len(cur_species):
                 # Abort structure updating if we have a pre-existing structure
                 return cur_species
+            # The ions' elements, and their species names if any isn't its element symbol (e.g. Fe1)
+            elements, species_names = get_species_elements(names)
             self.remove_sites(list(range(len(cur_species))))
             self._printed_ion_lines = [posns_lines[i + 1].strip() for i in range(natoms)]
             self._printed_coords_type = coords_type.lower()
@@ -759,7 +771,9 @@ class JOutStructure(Structure):
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
             velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]  # angstrom/fs
             for i in range(natoms):
-                self.append(species=names[i], coords=posns[i], coords_are_cartesian=coords_are_cartesian)
+                self.append(species=elements[i], coords=posns[i], coords_are_cartesian=coords_are_cartesian)
+            if species_names is not None:
+                self.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
             for prop, vals in zip(
                 ["selective_dynamics", "velocities", "constraint_types", "constraint_vectors", "group_names"],
                 [selective_dynamics, velocities, constraint_types, constraint_vectors, group_names_list],
@@ -774,7 +788,7 @@ class JOutStructure(Structure):
             # self.constraint_vectors = constraint_vectors
             # self.group_names = group_names_list
             # Calling `self.species` is fairly expensive, so we create in manually like this to save compute time
-            new_species = [Element(name) for name in names]
+            new_species = [Element(element) for element in elements]
         return new_species if new_species is not None else cur_species
 
     def _parse_forces_lines(self, forces_lines: list[str], forces_name="forces") -> None:
@@ -852,16 +866,22 @@ class JOutStructure(Structure):
                 charges_dict = self._parse_lowdin_line(line, charges_dict)
             elif line_type_map["magnetic_moments"] in line:
                 moments_dict = self._parse_lowdin_line(line, moments_dict)
-        names = [s.name for s in cur_species]
+        # JDFTx prints the values by species name (e.g. "# oxidation-state Fe1 ..."), which it reads ignoring case
+        if len(self) == len(cur_species):
+            names = [name.lower() for name in get_species_names(self)]
+        else:
+            names = [s.name.lower() for s in cur_species]
+        charges_dict = {name.lower(): values for name, values in charges_dict.items()}
+        moments_dict = {name.lower(): values for name, values in moments_dict.items()}
         charges = None
         moments = None
-        if len(charges_dict):
+        if charges_dict:
             charges = np.zeros(len(names))
             for el in charges_dict:
                 idcs = [int(i) for i in range(len(names)) if names[i] == el]
                 for i, idx in enumerate(idcs):
                     charges[idx] += charges_dict[el][i]
-        if len(moments_dict):
+        if moments_dict:
             moments = np.zeros(len(names))
             for el in moments_dict:
                 idcs = [i for i in range(len(names)) if names[i] == el]
@@ -1113,7 +1133,7 @@ def _parse_posn_line(
     (for HyperPlane constraints).
 
     tuple: A tuple containing the following elements:
-        - str: Ion name (element symbol)
+        - str: Ion species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file)
         - np.ndarray: Ion position coordinates as a 3D vector
         - list[int]: Selective dynamics flags (list of 0/1 values)
         - np.ndarray | None: Velocity as a 3D vector if present, otherwise None

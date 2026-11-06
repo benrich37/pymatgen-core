@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import math
 import pprint
+import re
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
@@ -37,8 +38,8 @@ from pymatgen.io.jdftx._output_utils import (
     get_colon_val,
     key_exists,
 )
-from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
-from pymatgen.io.jdftx.inputs import JDFTXInfile
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning, element_from_species_name
+from pymatgen.io.jdftx.inputs import JDFTX_SPECIES_SITE_PROPERTY, JDFTXInfile, get_species_elements, get_species_names
 from pymatgen.io.jdftx.joutstructures import JOutStructures, _get_joutstructures_start_idx
 
 __author__ = "Ben Rich"
@@ -148,7 +149,8 @@ class JDFTXOutfileSlice:
         nbands (int): The number of bands used in the most recent JDFTx call.
         atom_elements (list[str]): The list of each ion's element symbol in the most recent JDFTx call.
         atom_elements_int (list[int]): The list of ion's atomic numbers in the most recent JDFTx call.
-        atom_types (list[str]): Non-repeating list of each ion's element symbol in the most recent JDFTx call.
+        atom_types (list[str]): Non-repeating list of the ions' species names in the most recent JDFTx call. These
+            are element symbols, unless a species is named after its pseudopotential file (e.g. Fe1 for Fe1.upf).
         spintype (str): The spin type used in the most recent JDFTx call. Options are "none", "collinear".
         nspin (int): The number of spins used in the most recent JDFTx call.
         nat (int): The number of atoms in the most recent JDFTx call.
@@ -767,6 +769,36 @@ class JDFTXOutfileSlice:
         if self.has_parsable_pseudo and self.pp_type in ["GBRV", "SG15"]:
             self._set_pseudo_vars_t1(text)
         # Otherwise variables requiring parsing pseudopotential output will be kept as None
+        self._check_species_elements(text)
+
+    def _check_species_elements(self, text: list[str]) -> None:
+        """Warn if a pseudopotential file is for another element than the one taken from its species' name.
+
+        JDFTx doesn't print a species' element, so pymatgen takes it from the species name (see
+        element_from_species_name). UPF files (e.g. SG15) state theirs, which JDFTx prints as
+        "'<element>' pseudopotential". JDFTx reads the pseudopotential files in the order of its species, the order of
+        atom_types.
+
+        Args:
+            text (list[str]): Output of read_file for out file.
+        """
+        section_starts = find_all_key("Reading pseudopotential file", text)
+        if self.atom_types is None or len(section_starts) != len(self.atom_types):
+            return
+        mismatches = []
+        for start, species in zip(section_starts, self.atom_types, strict=True):
+            for line in text[start + 1 : start + 3]:
+                if (match := re.match(r"\s*'(\w+)' pseudopotential", line)) is not None:
+                    element = element_from_species_name(species)
+                    if element is not None and match.group(1).lower() != element.lower():
+                        mismatches.append(f"{species} (read as {element}, file for {match.group(1)})")
+                    break
+        if mismatches:
+            warnings.warn(
+                "pymatgen takes a species' element from its name, but these species' pseudopotential files are for "
+                f"other elements: {', '.join(mismatches)}",
+                stacklevel=2,
+            )
 
     def _set_pseudo_vars_t1(self, text: list[str]) -> None:
         """Set the pseudopotential variables for SG15 and GBRV pseudopotentials.
@@ -792,8 +824,9 @@ class JDFTXOutfileSlice:
             raise ValueError("Pseudopotential data cannot be allocated without atom types.")
         if self.atom_elements is None:
             raise ValueError("Atom elements not set yet.")
-        # Explicit zipping due to pre-commit in three lines below
-        element_total_electrons = np.array([total_elec_dict[x] for x in self.atom_elements])
+        # Each species has its own pseudopotential (two species of one element can differ, e.g. in semicore states)
+        atom_species = [ion["species-id"] for ion in self.infile["ion"]] if "ion" in self.infile else self.atom_elements
+        element_total_electrons = np.array([total_elec_dict[x] for x in atom_species])
         pmg_elements = [Element(x) for x in self.atom_elements]
         element_valence_electrons = np.array(
             [
@@ -1098,12 +1131,13 @@ class JDFTXOutfileSlice:
         if endline is None:
             raise ValueError("Unable to find end line for atom lines")
         lines = find_first_range_key("ion ", text, startline=startline, endline=endline)
-        atom_elements = [text[x].split()[1] for x in lines]
+        species_names = [text[x].split()[1] for x in lines]
+        atom_elements, _ = get_species_elements(species_names)
         self.nat = len(atom_elements)
         atom_coords = [text[x].split()[2:5] for x in lines]
         self.atom_coords_initial = np.array(atom_coords, dtype=float)
         atom_types = []
-        for x in atom_elements:
+        for x in species_names:
             if x not in atom_types:
                 atom_types.append(x)
         self.atom_elements = atom_elements
@@ -1356,8 +1390,9 @@ class JDFTXOutfileSlice:
         ion_tags = ions["ion"]
         positions = np.array([[ion[f"x{k}"] for k in range(3)] for ion in ion_tags])
         expected = self.structure.cart_coords / bohr_to_ang if in_cart_coords else self.structure.frac_coords
+        species_names = [name.lower() for name in get_species_names(self.structure)]  # JDFTx reads them ignoring case
         if (
-            [ion["species-id"] for ion in ion_tags] != [site.specie.symbol for site in self.structure]
+            [ion["species-id"].lower() for ion in ion_tags] != species_names
             or positions.shape != expected.shape
             or not np.allclose(positions, expected, rtol=0, atol=1e-8)
         ):
@@ -1476,8 +1511,11 @@ def _get_init_structure(pre_out_slice: list[str]) -> Structure | None:
     try:
         lat_mat = _get_initial_lattice(pre_out_slice)
         coords = _get_initial_coords(pre_out_slice)
-        species = _get_initial_species(pre_out_slice)
-        return Structure(lattice=lat_mat, species=species, coords=coords, coords_are_cartesian=True)
+        elements, species_names = get_species_elements(_get_initial_species(pre_out_slice))
+        structure = Structure(lattice=lat_mat, species=elements, coords=coords, coords_are_cartesian=True)
+        if species_names is not None:  # Species not named after their element (e.g. Fe1)
+            structure.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
+        return structure
     except AttributeError:
         return None
 

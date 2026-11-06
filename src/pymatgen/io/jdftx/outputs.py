@@ -550,7 +550,8 @@ class JDFTXOutfile:
         nbands (int): The number of bands used in the most recent JDFTx call.
         atom_elements (list[str]): The list of each ion's element symbol in the most recent JDFTx call.
         atom_elements_int (list[int]): The list of ion's atomic numbers in the most recent JDFTx call.
-        atom_types (list[str]): Non-repeating list of each ion's element symbol in the most recent JDFTx call.
+        atom_types (list[str]): Non-repeating list of the ions' species names in the most recent JDFTx call. These
+            are element symbols, unless a species is named after its pseudopotential file (e.g. Fe1 for Fe1.upf).
         spintype (str): The spin type used in the most recent JDFTx call. Options are "none", "collinear",
         nspin (int): The number of spins used in the most recent JDFTx call.
         nat (int): The number of atoms in the most recent JDFTx call.

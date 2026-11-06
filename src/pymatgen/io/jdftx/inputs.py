@@ -103,6 +103,22 @@ def get_species_elements(species_names: Sequence[str]) -> tuple[list[str], list[
     return elements, list(species_names)
 
 
+def get_species_names(structure: Structure) -> list[str]:
+    """Get the JDFTx species name of each site of a structure.
+
+    Args:
+        structure (Structure): The structure.
+
+    Returns:
+        list[str]: Each site's name from the jdftx_species site property, or its element symbol if it has none.
+    """
+    names = structure.site_properties.get(JDFTX_SPECIES_SITE_PROPERTY, [None] * len(structure))
+    return [
+        name if isinstance(name, str) else str(getattr(site.specie, "symbol", site.specie))
+        for name, site in zip(names, structure, strict=True)
+    ]
+
+
 # TODO: Add check for whether all ions have or lack velocities.
 # TODO: Add default value filling like JDFTx does.
 # TODO: Add more robust checking for if two repeatable tag values represent the
