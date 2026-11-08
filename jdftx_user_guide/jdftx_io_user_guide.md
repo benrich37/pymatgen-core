@@ -48,6 +48,7 @@ jif["elec-cutoff"]                                 # {'Ecut': 20.0, 'EcutRho': 1
 jif["elec-cutoff"] = {"Ecut": 25, "EcutRho": 125}  # change a setting
 jif["elec-smearing"] = "Fermi 0.01"                # or give it as written in the file
 jif.append_tag("fluid-cation", {"name": "K+", "concentration": 0.1})
+jif.append_tag("fluid-anion", {"name": "Cl-", "concentration": 0.1})  # JDFTx refuses a charged electrolyte
 del jif["ionic-minimize"]
 jif.write_file("h2o_edited.in")
 ```

@@ -18,7 +18,8 @@ from a structure, read the results of a run, follow its steps, and restart it.
 Both follow the same order, and every snippet in the Markdown guide should match a notebook cell, so the two stay
 consistent. `check_notebook.py` runs the notebook's code cells in an empty temporary folder, next to a copy of the test
 files laid out as in the repository, failing on any error or warning, and dry-runs the input files they write:
-`python check_notebook.py [path/to/jdftx]`.
+`python check_notebook.py [path/to/jdftx]`. It doesn't run the Markdown guide's snippets, which aren't self-contained, so
+check those by hand after changing them.
 
 ## Example data
 
@@ -27,7 +28,9 @@ cell), relative to this folder, instead of bundled copies. That keeps them out o
 excluded, and codespell would otherwise flag misspelled words in the messages JDFTx prints to its out files. Published
 outside this repository, the guide needs its own copies again, excluded from codespell (see decision 2).
 
-All small, and checked for personal paths and host names (none).
+All small, and checked for personal paths and host names (none). The notebook's text describes these files (for example
+the number of steps, and the magnetic moments at the first and last step), and the checker doesn't catch a change that
+makes that text wrong, so recheck the text if one of these files changes.
 
 | File, in `test-files/io/jdftx/` | What it is | Used for |
 |---|---|---|
