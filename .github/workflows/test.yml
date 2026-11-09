@@ -4,6 +4,7 @@ name: test
 
 on:
   push:
+    branches: [main]
     paths:
       [
         "src/**/*.*",
@@ -13,6 +14,7 @@ on:
         "setup.py",
       ]
   pull_request:
+    branches: [main]
     paths:
       [
         "src/**/*.*",
@@ -90,9 +92,29 @@ jobs:
       - name: Install ubuntu-only conda dependencies
         if: matrix.config.os == 'ubuntu-latest'
         run: |
-          micromamba install -n pmg -c conda-forge bader enumlib \
+          micromamba install -n pmg -c conda-forge bader \
             packmol pygraphviz tblite --yes
             # openff-toolkit # TODO: doesn't support Python 3.13 yet
+
+      # enum.x / makestr.x from the latest Enumlib.jl release (Julia successor to the
+      # Fortran enumlib). Standalone binaries with the Julia runtime bundled in.
+      - name: Install Enumlib.jl (Ubuntu/macOS)
+        if: matrix.config.os == 'ubuntu-latest' || matrix.config.os == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "${{ runner.os }}" in
+            Linux) PLATFORM=linux-x86_64 ;;
+            macOS) PLATFORM=macos-aarch64 ;;
+          esac
+          TAG=$(gh release view -R glwhart/Enumlib.jl --json tagName -q .tagName)
+          ASSET="enumlib-jl-${TAG#v}-${PLATFORM}"
+          mkdir -p "$RUNNER_TEMP/enumlib-jl" && cd "$RUNNER_TEMP/enumlib-jl"
+          gh release download "$TAG" -R glwhart/Enumlib.jl -p "${ASSET}.tar.gz*"
+          shasum -a 256 -c "${ASSET}.tar.gz.sha256"
+          tar -xzf "${ASSET}.tar.gz"
+          echo "$PWD/${ASSET}/bin" >> "$GITHUB_PATH"
+          "${ASSET}/bin/enum.x" --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -134,8 +156,11 @@ jobs:
           PMG_MAPI_KEY: ${{ secrets.PMG_MAPI_KEY }}
           PMG_TEST_FILES_DIR: "${{ github.workspace }}/test-files"
           PYTHONWARNDEFAULTENCODING: "true" # PEP 597: Enable optional EncodingWarning
+          # Coverage tracing roughly doubles pytest wall time, so only collect it on the
+          # shard that uploads to codecov (see the Codecov step below).
+          COV_ARGS: ${{ matrix.config.os == 'ubuntu-latest' && matrix.config.extras == 'optional' && '--cov=pymatgen --cov-report=xml' || '' }}
         run: |
-          pytest --cov=pymatgen --cov-report=xml tests --color=yes
+          pytest $COV_ARGS tests --color=yes
       - name: Codecov
         # Upload from the ubuntu shard that installs `extras: optional` so
         # codecov reflects the full test surface. The python 3.11 shard runs

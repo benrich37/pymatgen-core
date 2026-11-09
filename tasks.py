@@ -73,13 +73,6 @@ def _compatibility_section(version: str, breaking_prs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-CHANGELOG_PROMPT = """
-Provide a concise summary of the following pull requests as a change log for the pymatgen package. Format the summary
-as a markdown bulleted list. Make sure to include the GitHub ids of all the authors. Do not include any code
-blocks and timing outputs. Do not include any dependabot and pre-commit PRs.
-"""
-
-
 @task
 def release_github(ctx: Context, version: str) -> None:
     """
@@ -161,22 +154,6 @@ def update_changelog(ctx: Context, version: str | None = None, dry_run: bool = F
             ignored_commits += [line]
 
     body = "\n".join(lines)
-    try:
-        # Use OpenAI to improve changelog. Requires openai to be installed and an OPENAPI_KEY env variable.
-        from openai import OpenAI
-
-        client = OpenAI(api_key=os.environ["OPENAPI_KEY"])
-
-        messages = [{"role": "user", "content": CHANGELOG_PROMPT + f": '{body}'"}]
-        chat = client.chat.completions.create(model="gpt-5", messages=messages)
-
-        reply = chat.choices[0].message.content
-        body = "\n".join(reply.split("\n")[1:-1])
-        body = body.strip().strip("`")
-        print(f"ChatGPT Summary of Changes:\n{body}")
-
-    except BaseException as ex:
-        print(f"Unable to use openai due to {ex}")
     with open("CHANGES.md", encoding="utf-8") as file:
         contents = file.read()
     delim = "##"
@@ -228,7 +205,9 @@ def release(ctx: Context, version: str | None = None) -> None:
         raise ValueError("Version must use the YYYY.M.D calendar format")
 
     tag = f"v{version}"
-    if subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True).stdout:
+    # Untracked files (e.g. local tool dirs) cannot affect the tagged commit, so only tracked changes block a release.
+    git_status = ["git", "status", "--porcelain", "--untracked-files=no"]
+    if subprocess.run(git_status, check=True, capture_output=True, text=True).stdout:
         raise RuntimeError("Commit or stash all changes before creating a release tag")
     if (
         subprocess.run(

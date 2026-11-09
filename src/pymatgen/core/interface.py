@@ -14,12 +14,11 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
-from scipy.spatial.distance import squareform
 
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.sites import PeriodicSite, Site
 from pymatgen.core.structure import Structure
-from pymatgen.core.surface import Slab
+from pymatgen.core.surface import Slab, _get_condensed_pbc_z_distances
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 from .adsorption import AdsorbateSiteFinder
@@ -177,6 +176,7 @@ class GrainBoundary(Structure):
             self.ab_shift,
             self.site_properties,
             self.oriented_unit_cell,
+            properties=self.properties,
         )
 
     def get_sorted_structure(
@@ -209,8 +209,9 @@ class GrainBoundary(Structure):
             self.init_cell,
             self.vacuum_thickness,
             self.ab_shift,
-            self.site_properties,
+            struct.site_properties,
             self.oriented_unit_cell,
+            properties=self.properties,
         )
 
     @property
@@ -304,6 +305,7 @@ class GrainBoundary(Structure):
             ab_shift=dct["ab_shift"],
             oriented_unit_cell=Structure.from_dict(dct["oriented_unit_cell"]),
             site_properties=struct.site_properties,
+            properties=dct.get("properties"),
         )
 
 
@@ -369,6 +371,8 @@ class GrainBoundaryGenerator:
             alpha, beta, gamma = initial_structure.lattice.angles
             # c axis is not in the third direction
             if abs(gamma - 90) < angle_tolerance:
+                # Reorient a copy so the caller's structure is not modified
+                initial_structure = initial_structure.copy()
                 # alpha = 120 or 60, rotate b, c to a, b vectors
                 if abs(alpha - 90) > angle_tolerance:
                     initial_structure.make_supercell([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
@@ -543,8 +547,7 @@ class GrainBoundaryGenerator:
         # Transform four index notation to three index notation for plane
         if plane is not None:
             if len(plane) == 4:
-                u1, v1, w1 = plane[0], plane[1], plane[3]
-                plane = (u1, v1, w1)
+                plane = _hkil_to_hkl(plane, lat_type)
             elif len(plane) == 3:
                 plane = cast("tuple[int, int, int]", tuple(plane))
 
@@ -569,14 +572,14 @@ class GrainBoundaryGenerator:
                     c2_a2_ratio = 1.0 if ratio is None else ratio[0] / ratio[1]
                     metric = np.array([[1, 0, 0], [0, 1, 0], [0, 0, c2_a2_ratio]])
                 elif lat_type == "o" and ratio is not None:
-                    for idx in range(3):
-                        if ratio[idx] is None:
-                            ratio[idx] = 1
+                    # Use 1 for irrational (None) axes in the metric only. Don't modify ratio itself,
+                    # since get_trans_mat needs the None entries to treat those axes as irrational.
+                    c2, b2, a2 = (1 if val is None else val for val in ratio)
                     metric = np.array(
                         [
                             [1, 0, 0],
-                            [0, ratio[1] / ratio[2], 0],
-                            [0, 0, ratio[0] / ratio[2]],
+                            [0, b2 / a2, 0],
+                            [0, 0, c2 / a2],
                         ]
                     )
                 else:
@@ -704,18 +707,9 @@ class GrainBoundaryGenerator:
         )
         index_incident = np.nonzero(t_and_b_dis < np.min(t_and_b_dis) + tol_coi)
 
-        top_labels = []
-        for idx in range(n_sites):
-            if idx in index_incident[0]:
-                top_labels.append("top_incident")
-            else:
-                top_labels.append("top")
-        bottom_labels = []
-        for idx in range(n_sites):
-            if idx in index_incident[1]:
-                bottom_labels.append("bottom_incident")
-            else:
-                bottom_labels.append("bottom")
+        top_incident, bottom_incident = set(index_incident[0].tolist()), set(index_incident[1].tolist())
+        top_labels = ["top_incident" if idx in top_incident else "top" for idx in range(n_sites)]
+        bottom_labels = ["bottom_incident" if idx in bottom_incident else "bottom" for idx in range(n_sites)]
         top_grain = Structure(
             Lattice(top_grain.lattice.matrix),
             top_grain.species,
@@ -974,10 +968,7 @@ class GrainBoundaryGenerator:
             )
 
         if surface is not None and len(surface) == 4:
-            u1 = surface[0]
-            v1 = surface[1]
-            w1 = surface[3]
-            surface = (u1, v1, w1)
+            surface = _hkil_to_hkl(surface, lat_type)
 
         # Set the surface for grain boundary.
         if surface is None:
@@ -1002,14 +993,14 @@ class GrainBoundaryGenerator:
                 elif lat_type == "o":
                     if ratio is None:
                         raise ValueError(f"Invalid {ratio=} for orthorhombic system")
-                    for idx in range(3):
-                        if ratio is not None and ratio[idx] is None:
-                            ratio[idx] = 1
+                    # Use 1 for irrational (None) axes in the metric only. Don't modify ratio itself,
+                    # since the CSL construction below needs the None entries.
+                    c2, b2, a2 = (1 if val is None else val for val in ratio)
                     metric = np.array(
                         [
                             [1, 0, 0],
-                            [0, ratio[1] / ratio[2], 0],
-                            [0, 0, ratio[0] / ratio[2]],
+                            [0, b2 / a2, 0],
+                            [0, 0, c2 / a2],
                         ]
                     )
                 else:
@@ -2179,24 +2170,10 @@ class GrainBoundaryGenerator:
         else:
             normal_init = False
 
-        jj = np.arange(0, max_j + 1)
-        combination = []
-        for ii in product(jj, repeat=3):
-            if sum(abs(np.array(ii))) != 0:
-                combination.append(list(ii))
-            if len(np.nonzero(ii)[0]) == 3:
-                for i1 in range(3):
-                    new_i = list(ii).copy()
-                    new_i[i1] = -1 * new_i[i1]
-                    combination.append(new_i)
-            elif len(np.nonzero(ii)[0]) == 2:
-                new_i = list(ii).copy()
-                new_i[np.nonzero(ii)[0][0]] = -1 * new_i[np.nonzero(ii)[0][0]]
-                combination.append(new_i)
-
-        for ii in combination:  # type: ignore[assignment]
-            if reduce(math.gcd, ii) == 1:
-                temp = np.dot(np.array(ii), csl)
+        combination = _get_signed_index_combinations(max_j)
+        for indices in combination:
+            if reduce(math.gcd, indices) == 1:
+                temp = np.dot(np.array(indices), csl)
                 if abs(np.dot(temp, surface)) < 1e-8:
                     ab_vector.append(temp)
                 else:
@@ -2230,24 +2207,10 @@ class GrainBoundaryGenerator:
                     break
                 max_j *= 3
                 max_j = min(max_j, max_search)
-                jj = np.arange(0, max_j + 1)
-                combination = []
-                for ii in product(jj, repeat=3):
-                    if sum(abs(np.array(ii))) != 0:
-                        combination.append(list(ii))
-                    if len(np.nonzero(ii)[0]) == 3:
-                        for i1 in range(3):
-                            new_i = list(ii).copy()
-                            new_i[i1] = -1 * new_i[i1]
-                            combination.append(new_i)
-                    elif len(np.nonzero(ii)[0]) == 2:
-                        new_i = list(ii).copy()
-                        new_i[np.nonzero(ii)[0][0]] = -1 * new_i[np.nonzero(ii)[0][0]]
-                        combination.append(new_i)
-
-                for ii in combination:  # type: ignore[assignment]
-                    if reduce(math.gcd, ii) == 1:
-                        temp = np.dot(np.array(ii), csl)
+                combination = _get_signed_index_combinations(max_j)
+                for indices in combination:
+                    if reduce(math.gcd, indices) == 1:
+                        temp = np.dot(np.array(indices), csl)
                         if abs(np.dot(temp, surface)) > 1e-8:
                             c_cross = np.cross(np.matmul(temp, trans), np.matmul(surface, ctrans))
                             if np.linalg.norm(c_cross) < 1e-8:
@@ -2372,6 +2335,56 @@ class GrainBoundaryGenerator:
         return cast("tuple[int, int, int]", tuple(miller))
 
 
+def _get_signed_index_combinations(max_j: int) -> list[list[int]]:
+    """Get the index combinations searched for GB lattice vectors in slab_from_csl.
+
+    These are all non-zero (i, j, k) with 0 <= i, j, k <= max_j, each followed by its
+    variants with one index negated: each of the three for three non-zero indices,
+    or the first non-zero one for two non-zero indices.
+
+    Args:
+        max_j (int): Maximum absolute index.
+
+    Returns:
+        list[list[int]]: The index combinations.
+    """
+    combination: list[list[int]] = []
+    for ii in product(range(max_j + 1), repeat=3):
+        nonzero = [idx for idx, val in enumerate(ii) if val != 0]
+        if nonzero:
+            combination.append(list(ii))
+        if len(nonzero) == 3:
+            for i1 in range(3):
+                new_i = list(ii)
+                new_i[i1] = -new_i[i1]
+                combination.append(new_i)
+        elif len(nonzero) == 2:
+            new_i = list(ii)
+            new_i[nonzero[0]] = -new_i[nonzero[0]]
+            combination.append(new_i)
+    return combination
+
+
+def _hkil_to_hkl(plane: Sequence[int], lat_type: str) -> tuple[int, int, int]:
+    """Convert a four-index (h, k, i, l) plane in hexagonal axes to three indices.
+
+    For the rhombohedral lattice, the indices are converted to the (obverse) rhombohedral
+    axes, consistent with the conversion of four-index rotation axes, and are not reduced.
+
+    Args:
+        plane (Sequence[int]): Plane in four-index notation (h, k, i, l).
+        lat_type (str): One character lattice type, e.g. "h" or "r".
+
+    Returns:
+        tuple[int, int, int]: Plane in three-index notation.
+    """
+    h, k, _i, l = plane  # noqa: E741
+    if lat_type.lower() == "r":
+        # Rhombohedral axes: a_r1 = (2a + b + c) / 3, a_r2 = (-a + b + c) / 3, a_r3 = (-a - 2b + c) / 3
+        return (2 * h + k + l, -h + k + l, -h - 2 * k + l)
+    return (h, k, l)
+
+
 def fix_pbc(structure: Structure, matrix: NDArray = None) -> Structure:
     """Wrap all frac_coords of the input structure within [0, 1].
 
@@ -2440,6 +2453,51 @@ def symm_group_cubic(mat: NDArray) -> NDArray:
 
     all_vectors = [np.dot(sym, vec) for sym in sym_group for vec in np.atleast_2d(mat)]
     return np.unique(np.array(all_vectors), axis=0)
+
+
+def _get_in_plane_reflection(lattice: Lattice, tol: float = 1e-3) -> NDArray | None:
+    """Find a reflection line of the 2D lattice spanned by the a and b vectors.
+
+    Args:
+        lattice (Lattice): lattice whose c vector is perpendicular to a and b.
+        tol (float): relative tolerance on the 2D metric tensor.
+
+    Returns:
+        Integer 2x2 matrix whose rows are the images of a and b in terms of a and b,
+        preferring the reflection line along a, then along b, then along a + b.
+        None for an oblique lattice, which has no reflection line.
+    """
+    # Lagrange-Gauss reduction: lattice vectors as short as the reduced basis vectors have
+    # coefficients in {-1, 0, 1}, so every reflection does too in the reduced basis
+    vecs = lattice.matrix[:2].copy()
+    to_reduced = np.eye(2, dtype=int)
+    while True:
+        if vecs[1] @ vecs[1] < vecs[0] @ vecs[0]:
+            vecs, to_reduced = vecs[::-1].copy(), to_reduced[::-1].copy()
+        mu = round(vecs[0] @ vecs[1] / (vecs[0] @ vecs[0]))
+        if mu == 0:
+            break
+        vecs[1] -= mu * vecs[0]
+        to_reduced[1] -= mu * to_reduced[0]
+
+    metric = vecs @ vecs.T
+    from_reduced = np.round(np.linalg.inv(to_reduced)).astype(int)
+    reflections = []
+    for entries in product((-1, 0, 1), repeat=4):
+        refl = np.reshape(entries, (2, 2))
+        if round(np.linalg.det(refl)) == -1 and np.allclose(
+            refl @ metric @ refl.T, metric, rtol=0, atol=tol * np.trace(metric)
+        ):
+            reflections.append(from_reduced @ refl @ to_reduced)
+
+    if not reflections:
+        return None
+    # Each reflection line has exactly one reflection. Prefer the one fixing a (line along a), then the one
+    # fixing b; otherwise the largest entry sum picks the line along a + b (a <-> b) over a - b (a <-> -b)
+    return min(
+        reflections,
+        key=lambda refl: (refl[0].tolist() != [1, 0], refl[1].tolist() != [0, 1], -refl.sum()),
+    )
 
 
 class Interface(Structure):
@@ -2757,7 +2815,8 @@ class Interface(Structure):
     ) -> Self:
         """Make an Interface by merging a substrate and film slabs
         The film a- and b-vectors will be forced to be the substrate slab's
-        a- and b-vectors.
+        a- and b-vectors. The film is turned over onto the substrate by a 2-fold
+        rotation about an in-plane axis, so its top surface faces the substrate.
 
         For now, it's suggested to use a factory method that will ensure the
         appropriate Interface is already met.
@@ -2768,6 +2827,9 @@ class Interface(Structure):
             in_plane_offset (tuple): fractional shift in plane for the film with
                 respect to the substrate. For example, (0.5, 0.5) will shift the
                 film by half the substrate's a- and b-vectors. Defaults to (0, 0).
+                If the substrate cell is left-handed, the interface cell uses the
+                substrate's (a, -b, c), so the stored Interface.in_plane_offset is
+                (x, -y) for a passed (x, y). This is the same physical shift.
             gap (float): gap between substrate and film in Angstroms. Defaults to 1.6.
             vacuum_over_film (float): vacuum space above the film in Angstroms.
                 Defaults to 0.
@@ -2791,13 +2853,6 @@ class Interface(Structure):
         ):
             raise ValueError("The lattice angles alpha or beta of the substrate slab are not approximately 90 degrees.")
 
-        # Ensure sub is right-handed
-        # IE sub has surface facing "up"
-        sub_vecs = substrate_slab.lattice.matrix.copy()
-        if np.dot(np.cross(*sub_vecs[:2]), sub_vecs[2]) < 0:
-            sub_vecs[2] *= -1.0
-            substrate_slab.lattice = Lattice(sub_vecs)
-
         # Find the limits of C-coords
         sub_coords = substrate_slab.frac_coords
         film_coords = film_slab.frac_coords
@@ -2807,10 +2862,13 @@ class Interface(Structure):
         film_max_c = np.max(film_coords[:, 2]) * film_slab.lattice.c
         min_height = np.abs(film_max_c - film_min_c) + np.abs(sub_max_c - sub_min_c)
 
-        # Construct new lattice
+        # Construct new lattice. It is right-handed with the substrate surface facing "up", so a
+        # left-handed substrate (a, b, c) is relabelled (a, -b, c) instead of being mirrored.
+        sub_left_handed = np.linalg.det(substrate_slab.lattice.matrix) < 0
+        film_left_handed = np.linalg.det(film_slab.lattice.matrix) < 0
         abc = (*substrate_slab.lattice.abc[:2], min_height + gap + vacuum_over_film)
-        angles = substrate_slab.lattice.angles
-        lattice = Lattice.from_parameters(*abc, *angles)
+        alpha, beta, gamma = substrate_slab.lattice.angles
+        lattice = Lattice.from_parameters(*abc, alpha, beta, 180 - gamma if sub_left_handed else gamma)
 
         # Get the species
         species = substrate_slab.species + film_slab.species
@@ -2820,9 +2878,34 @@ class Interface(Structure):
         sub_coords = np.subtract(sub_coords, [0, 0, np.min(sub_coords[:, 2])])
         sub_coords[:, 2] *= substrate_slab.lattice.c / lattice.c
 
-        # Flip the film over
+        # Turn the film over by a 2-fold rotation about an in-plane axis. Negating the fractional
+        # z alone is that rotation if the film and substrate cells have opposite handedness, and
+        # a mirror otherwise, which first needs a reflection line of the film's 2D lattice.
+        if film_left_handed == sub_left_handed:
+            reflection = _get_in_plane_reflection(film_slab.lattice)
+            if reflection is not None:
+                # Rows of the reflection are the images of a and b, so fractional row vectors map as f @ R
+                film_coords[:, :2] = np.mod(film_coords[:, :2] @ reflection, 1)
+            elif not any(
+                np.linalg.det(op.rotation_matrix) < 0
+                # symprec matches Slab.is_symmetric, so a slightly relaxed achiral slab is not reported as chiral
+                for op in SpacegroupAnalyzer(film_slab, symprec=0.1).get_symmetry_operations()
+            ):
+                warnings.warn(
+                    "The film is chiral and its 2D lattice is oblique, so it can only be turned over as "
+                    "its mirror image (the other enantiomer). Use a film cell whose a and b vectors have "
+                    "the opposite handedness to the substrate's.",
+                    stacklevel=2,
+                )
         film_coords[:, 2] *= -1.0
         film_coords[:, 2] *= film_slab.lattice.c / lattice.c
+
+        if sub_left_handed:
+            sub_coords[:, 1] = np.mod(-sub_coords[:, 1], 1)
+            film_coords[:, 1] = np.mod(-film_coords[:, 1], 1)
+            in_plane_offset = (in_plane_offset[0], -in_plane_offset[1])
+        if any(in_plane_offset):
+            film_coords[:, :2] = np.mod(film_coords[:, :2] + in_plane_offset, 1)
 
         # Shift the film coords to right over the substrate + gap
         film_coords = np.subtract(film_coords, [0, 0, np.min(film_coords[:, 2])])
@@ -2882,19 +2965,7 @@ def label_termination(slab: Structure, ftol: float = 0.25, t_idx: int | None = N
         sp_symbol = SpacegroupAnalyzer(slab, symprec=0.1).get_space_group_symbol()
         return f"{form}_{sp_symbol}_{len(slab)}"
 
-    dist_matrix = np.zeros((n, n))
-    h = slab.lattice.c
-    # Projection of c lattice vector in
-    # direction of surface normal.
-    for ii, jj in combinations(list(range(n)), 2):
-        if ii != jj:
-            cdist = frac_coords[ii][2] - frac_coords[jj][2]
-            cdist = abs(cdist - round(cdist)) * h
-            dist_matrix[ii, jj] = cdist
-            dist_matrix[jj, ii] = cdist
-
-    condensed_m = squareform(dist_matrix)
-    z = linkage(condensed_m)
+    z = linkage(_get_condensed_pbc_z_distances(frac_coords[:, 2], slab.lattice.c))
     clusters = fcluster(z, ftol, criterion="distance")
 
     clustered_sites: dict[int, list[PeriodicSite]] = {c: [] for c in clusters}
@@ -2918,30 +2989,19 @@ def label_termination(slab: Structure, ftol: float = 0.25, t_idx: int | None = N
 def count_layers(struct: Structure, el: Element | Species | None = None) -> int:
     """Count the number of layers along the c-axis."""
     el = el or struct.elements[0]
-    frac_coords = [site.frac_coords for site in struct if site.species_string == str(el)]
-    n_el_sites = len(frac_coords)
-
-    if n_el_sites == 1:
+    # Match either the exact species string (e.g. "Ti4+") or, for an element, any of its species
+    el_sites = [site for site in struct if str(el) in {site.species_string, *(sp.symbol for sp in site.species)}]
+    if len(el_sites) == 1:
         return 1
 
-    dist_matrix = np.zeros((n_el_sites, n_el_sites))
-    h = struct.lattice.c
-    # Projection of c lattice vector in
-    # direction of surface normal.
-    for ii, jj in combinations(list(range(n_el_sites)), 2):
-        if ii != jj:
-            cdist = frac_coords[ii][2] - frac_coords[jj][2]
-            cdist = abs(cdist - round(cdist)) * h
-            dist_matrix[ii, jj] = cdist
-            dist_matrix[jj, ii] = cdist
-
-    condensed_m = squareform(dist_matrix)
-    z = linkage(condensed_m)
+    frac_z = [site.frac_coords[2] for site in el_sites]
+    z = linkage(_get_condensed_pbc_z_distances(frac_z, struct.lattice.c))
     clusters = fcluster(z, 0.25, criterion="distance")
 
     clustered_sites: dict[int, list[Site]] = {c: [] for c in clusters}
     for idx, cluster in enumerate(clusters):
-        clustered_sites[cluster].append(struct[idx])
+        # Clusters are indexed over the selected sites, not over the whole structure
+        clustered_sites[cluster].append(el_sites[idx])
 
     plane_heights = {np.mean(np.mod([s.frac_coords[2] for s in sites], 1)): c for c, sites in clustered_sites.items()}
 

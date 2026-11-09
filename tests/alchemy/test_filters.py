@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from monty.json import MontyDecoder
 
 from pymatgen.alchemy.filters import (
@@ -63,6 +64,27 @@ class TestSpecieProximityFilter(MatSciTest):
         sf = SpecieProximityFilter({"P": 5})
         assert not sf.test(struct)
 
+    @pytest.mark.parametrize(
+        ("min_dists", "expected"),
+        [
+            ({"Na": 2.9}, True),  # nearest Na-Na is the periodic image at 3 A
+            ({"Na": 3.1}, False),
+            ({"K": 10}, True),  # species not in structure
+            ({"Li": 1.5, "Na": 1.5}, True),  # Li-Na pairs are not checked, only like pairs
+            ({"Li": 2.1}, False),  # Li on the disordered site is 2 A from the pure Li
+            ({"Li": 1.9, "Na": 2.9}, True),
+            ({"Li": 1.9, "Na": 3.1}, False),
+        ],
+    )
+    def test_filter_pairs(self, min_dists, expected):
+        # Na at z = 0 A, Li at z = 1 A, (Li, Mg) at z = 3 A; periodic images are 3 A apart along a and b
+        struct = Structure(
+            Lattice.tetragonal(3, 6),
+            ["Na", "Li", {"Li": 0.5, "Mg": 0.5}],
+            [[0, 0, 0], [0, 0, 1 / 6], [0, 0, 0.5]],
+        )
+        assert SpecieProximityFilter(min_dists).test(struct) is expected
+
     def test_as_from_dict(self):
         sf = SpecieProximityFilter({"Li": 1})
         dct = sf.as_dict()
@@ -105,3 +127,100 @@ class TestRemoveExistingFilter:
             self._struct_list[-1],
             transmuter.transformed_structures[-1].final_structure,
         )
+
+    @pytest.mark.parametrize("symprec", [None, 1e-3])
+    def test_different_composition(self, symprec):
+        # with symprec=None a structure of a different composition used to fall through to a
+        # SpacegroupAnalyzer(symprec=None) call, raising SymmetryUndeterminedError
+        nacl = Structure(Lattice.cubic(5.6), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+        kbr = Structure(Lattice.cubic(6.6), ["K", "Br"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+        fil = RemoveExistingFilter([nacl], symprec=symprec)
+        assert fil.test(kbr)
+        assert not fil.test(nacl.copy())
+
+    def test_as_from_dict(self):
+        # as_dict used to drop existing_structures/symprec and from_dict raised TypeError on init_args
+        fil = RemoveExistingFilter(self._existing_structures, symprec=1e-3)
+        fil2 = MontyDecoder().process_decoded(json.loads(json.dumps(fil.as_dict())))
+        assert isinstance(fil2, RemoveExistingFilter)
+        assert fil2.symprec == 1e-3
+        assert fil2.existing_structures == self._existing_structures
+        assert isinstance(fil2.structure_matcher, StructureMatcher)
+        assert not fil2.test(self._existing_structures[0])
+
+
+class TestContainSpecieRepr:
+    def test_repr(self):
+        f = ContainsSpecieFilter(["Si4+"], strict_compare=True, AND=False, exclude=True)
+        s = repr(f)
+        assert "ContainsSpecieFilter" in s
+        assert "strict_compare = True" in s
+        assert "exclude = True" in s
+
+
+class TestChargeBalanceFilter:
+    def test_filter(self):
+        from pymatgen.alchemy.filters import ChargeBalanceFilter
+        from pymatgen.core import Lattice
+
+        lattice = Lattice.cubic(4.0)
+        # neutral structure: LiFePO4 is charge-balanced
+        neutral = MatSciTest.get_structure("LiFePO4")
+        f = ChargeBalanceFilter()
+        assert f.test(neutral) is True
+        # a composition with a genuine net charge fails
+        charged = Structure(
+            lattice,
+            [Species("Si4+"), Species("O2-")],
+            [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+        )
+        assert f.test(charged) is False
+
+
+class TestSpeciesMaxDistFilter:
+    def test_filter(self):
+        from pymatgen.alchemy.filters import SpeciesMaxDistFilter
+
+        struct = MatSciTest.get_structure("LiFePO4")
+        f = SpeciesMaxDistFilter("Li", "Fe", max_dist=50.0)
+        assert f.test(struct) is True
+
+
+class TestRemoveDuplicatesFilterExtra:
+    def test_typeerror(self):
+        with pytest.raises(TypeError, match="must be a dict"):
+            RemoveDuplicatesFilter(structure_matcher=42)  # type: ignore[arg-type]
+
+    def test_from_dict_structure_matcher(self):
+        f = RemoveDuplicatesFilter(structure_matcher=StructureMatcher().as_dict())
+        assert isinstance(f.structure_matcher, StructureMatcher)
+
+    def test_symprec_filter(self):
+        struct = MatSciTest.get_structure("LiFePO4")
+        f = RemoveDuplicatesFilter(symprec=1e-4)
+        assert f.test(struct) is True
+
+
+class TestRemoveExistingFilterExtra:
+    def test_from_dict_structure_matcher(self):
+        struct = MatSciTest.get_structure("LiFePO4")
+        f = RemoveExistingFilter([struct], structure_matcher=StructureMatcher().as_dict())
+        assert isinstance(f.structure_matcher, StructureMatcher)
+
+    def test_symprec_reject_duplicate(self):
+        struct = MatSciTest.get_structure("LiFePO4")
+        f = RemoveExistingFilter([struct], symprec=1e-4)
+        assert f.test(struct) is False
+        # a similar-structure with identical space group and similar lattice should also be filtered
+        dup = struct.copy()
+        assert f.test(dup) is False
+
+
+class TestRemoveDuplicatesFilterSymprec:
+    def test_symprec(self):
+        struct = MatSciTest.get_structure("LiFePO4")
+        f = RemoveDuplicatesFilter(symprec=1e-4)
+        first = f.test(struct)
+        second = f.test(struct.copy())
+        assert first is True
+        assert second is False

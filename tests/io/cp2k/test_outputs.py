@@ -155,13 +155,15 @@ class TestCp2kOutput:
         assert self.out.complete_dos is None
         assert self.out.data["dft"]["functional"] == ["PBE"]
         assert self.out.data["dft"]["cutoffs"] == {"density": 1e-10, "gradient": 1e-10, "tau": 1e-10}
-        assert self.out.data["scf"] == {"max_scf": "1", "eps_scf": "1"}
+        assert self.out.data["scf"] == {"max_scf": "1", "eps_scf": "1.00E+00"}
         info = self.out.data["atomic_kind_info"]["Si_1"]
         assert info["orbital_basis_set"] == "DZVP-MOLOPT-SR-GTH-q4"
         assert info["pseudo_potential"] == "GTH-PBE-q4"
         assert info["valence_electrons"] == 4
         assert info["core_electrons"] == 10
         assert info["element"] == "Si"
+        # "Total Pseudopotential Energy :: -7.143143335066" (Ha) from the atomic guess
+        assert info["total_pseudopotential_energy"] == approx(-7.143143335066 * Ha_to_eV)
 
     def test_structure_energy_forces(self):
         assert self.out.final_structure == self.out.initial_structure
@@ -489,6 +491,55 @@ class TestCp2kOutputModified:
         assert sorted(out.data["band_gap"][Spin.up] + out.data["band_gap"][Spin.down]) == [2.0, 3.0]
         assert out.band_gap == approx(2.5)
 
+    def test_homo_lumo_returns_last_step(self, tmp_path):
+        gaps = "".join(f"  HOMO - LUMO gap [eV] :    {gap}\n" for gap in (1.0, 2.0, 3.0, 4.0))
+        filename = _copy_run(tmp_path, {" The number of warnings": f"{gaps} The number of warnings"})
+        out = Cp2kOutput(filename)
+        out.parse_homo_lumo()
+        # spin 1 / spin 2 alternate within each step, steps are chronological
+        assert out.data["band_gap"] == {Spin.up: [1.0, 3.0], Spin.down: [2.0, 4.0]}
+        assert out.band_gap == approx(3.5)
+
+        rks = {
+            "Kohn-Sham calculation               UKS": "Kohn-Sham calculation               RKS",
+            " The number of warnings": "  HOMO - LUMO gap [eV] :    2.0\n  HOMO - LUMO gap [eV] :    3.0\n"
+            " The number of warnings",
+        }
+        out = Cp2kOutput(_copy_run(tmp_path, rks))
+        out.parse_homo_lumo()
+        assert out.band_gap == approx(3.0)
+
+    def test_bandstructure_non_spin_polarized_uneven_sets(self, tmp_path):
+        filename = _copy_run(
+            tmp_path, {"Kohn-Sham calculation               UKS": "Kohn-Sham calculation               RKS"}
+        )
+
+        def band_set(set_idx, kpts):
+            lines = [
+                f"# Set {set_idx}: 2 special points, {len(kpts)} k-points, 2 bands",
+                f"#  Special point 1  {kpts[0][0]} {kpts[0][1]} {kpts[0][2]}  Gamma",
+                f"#  Special point 2  {kpts[-1][0]} {kpts[-1][1]} {kpts[-1][2]}  X",
+            ]
+            for idx, kpt in enumerate(kpts):
+                lines += [
+                    f"#  Point {idx + 1}      Spin 1:     {kpt[0]} {kpt[1]} {kpt[2]}  0.5",
+                    "#   Band    Energy [eV]     Occupation",
+                    f"  1  {-1 - idx:.6f}  2.0",
+                    f"  2  {1 + idx:.6f}  0.0",
+                ]
+            return lines
+
+        bs_lines = band_set(1, [(0, 0, 0), (0.25, 0, 0.25), (0.5, 0, 0.5)]) + band_set(
+            2, [(0.5, 0, 0.5), (0.5, 0.25, 0.75)]
+        )
+        (tmp_path / "BAND.bs").write_text("\n".join(bs_lines) + "\n", encoding="utf-8")
+        out = Cp2kOutput(filename)
+        out.parse_structures()
+        out.parse_bandstructure(str(tmp_path / "BAND.bs"))
+        assert len(out.band_structure.kpoints) == 5
+        assert out.band_structure.bands[Spin.up].shape == (2, 5)
+        assert out.band_structure.bands[Spin.up][:, 2].tolist() == [-3.0, 3.0]
+
     def test_stress_from_output(self, tmp_path):
         stress_rows = (
             " STRESS|      x                 Infinity           -Infinity           -Infinity\n"
@@ -646,6 +697,69 @@ class TestParseFunctions:
         assert len(tdos.energies) == 4
         assert tdos.efermi == approx(-0.247583 * Ha_to_eV + 1e-6)
         assert_allclose(tdos.densities[Spin.up], [1, 0, 0, 0.18690139 * 3 + 0.14643195 * 2 + 0.14643194])
+
+    def test_parse_mo_eigenvalues_unocc_not_converged(self, tmp_path):
+        """A non-converged unoccupied subspace triggers a warning and still parses."""
+        lines = Path(f"{TEST_DIR}/cp2k.out").read_text().split("\n")
+        out = []
+        i = 0
+        injected = 0
+        while i < len(lines):
+            out.append(lines[i])
+            if " Lowest eigenvalues of the unoccupied subspace spin" in lines[i] and injected < 2:
+                out.append(lines[i + 1])  # the dashes
+                out.append(" WARNING : did not converge")
+                out.append(" A")
+                out.append(" B")
+                i += 2
+                injected += 1
+                continue
+            i += 1
+        out_path = tmp_path / "cp2k_nonconv.out"
+        out_path.write_text("\n".join(out), encoding="utf-8")
+        assert injected == 2
+
+        result = Cp2kOutput(str(out_path), auto_load=False)
+        with pytest.warns(UserWarning, match="did NOT converge"):
+            result.parse_mo_eigenvalues()
+        ev = result.data["eigenvalues"][-1]
+        assert len(ev["unoccupied"][Spin.up]) > 0
+        assert result.vbm is not None
+        assert result.cbm is not None
+
+    def test_parse_mo_eigenvalues_convergence_line_skipped(self, tmp_path):
+        """A 'convergence' warning (not 'did not converge') in the unoccupied block is skipped."""
+        lines = Path(f"{TEST_DIR}/cp2k.out").read_text().split("\n")
+        out = []
+        i = 0
+        injected = 0
+        while i < len(lines):
+            out.append(lines[i])
+            if " Lowest eigenvalues of the unoccupied subspace spin            1" in lines[i] and injected == 0:
+                out.append(lines[i + 1])  # dashes
+                out.append(" SCF: convergence not yet met")
+                i += 2
+                injected += 1
+                continue
+            i += 1
+        out_path = tmp_path / "cp2k_convergence.out"
+        out_path.write_text("\n".join(out), encoding="utf-8")
+        assert injected == 1
+        result = Cp2kOutput(str(out_path), auto_load=False)
+        result.parse_mo_eigenvalues()
+        assert len(result.data["eigenvalues"]) > 0
+
+    def test_parse_mo_eigenvalues_no_subspace(self, tmp_path):
+        """If the output has no eigenvalue subspace section, parse is a no-op."""
+        lines = Path(f"{TEST_DIR}/cp2k.out").read_text().splitlines()
+        kept = [ln for ln in lines if "subspace spin" not in ln and "Fermi Energy" not in ln]
+        out_path = tmp_path / "cp2k_no_ev.out"
+        out_path.write_text("\n".join(kept), encoding="utf-8")
+        result = Cp2kOutput(str(out_path), auto_load=False)
+        result.parse_mo_eigenvalues()
+        assert result.data["eigenvalues"] == []
+        assert result.cbm is None
+        assert result.vbm is None
 
     def test_parse_pdos_spin_and_labels(self, tmp_path):
         labels = ["p", "d", "f", "f-3", "f-2", "f-1", "f0", "f+1", "f+2", "f+3"]

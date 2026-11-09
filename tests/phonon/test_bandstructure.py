@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 
+import numpy as np
 import orjson
 from numpy.testing import assert_allclose, assert_array_equal
 from pytest import approx
 
+from pymatgen.core import Lattice, Structure
 from pymatgen.electronic_structure.bandstructure import Kpoint
-from pymatgen.phonon.bandstructure import PhononBandStructureSymmLine
+from pymatgen.phonon.bandstructure import PhononBandStructureSymmLine, estimate_band_connection
 from pymatgen.util.testing import TEST_FILES_DIR, MatSciTest
 
 TEST_DIR = f"{TEST_FILES_DIR}/electronic_structure/bandstructure"
@@ -67,6 +69,66 @@ class TestPhononBandStructureSymmLine(MatSciTest):
         for tol in (0, 0.01, 0.02, 0.03, 0.04, 0.05, 1, 10):
             assert self.bs2.has_imaginary_gamma_freq(tol=tol) is False, f"{tol=}"
 
+    def test_has_imaginary_gamma_freq_repeated_gamma(self):
+        # Gamma appears twice on the path; only the second occurrence has an imaginary mode.
+        # Each occurrence must be checked against its own frequencies.
+        qpoints = [[0, 0, 0], [0.25, 0, 0], [0.5, 0, 0], [0.25, 0, 0], [0, 0, 0]]
+        frequencies = np.ones((3, len(qpoints)))
+        frequencies[0, -1] = -1
+        bs = PhononBandStructureSymmLine(
+            qpoints,
+            frequencies,
+            Lattice.cubic(4).reciprocal_lattice,
+            labels_dict={"Gamma": [0, 0, 0], "X": [0.5, 0, 0]},
+        )
+        assert bs.has_imaginary_gamma_freq() is True
+        frequencies[0, -1] = 1
+        assert bs.has_imaginary_gamma_freq() is False
+
+    def test_labels_and_distance(self):
+        assert_allclose(
+            [self.bs.distance[idx] for idx in (0, 50, 51, 52, -1)],
+            [0, 0.15219323466, 0.15219323466, 0.15523709935, 0.63231731398],
+        )
+        labelled = [(idx, q_pt.label) for idx, q_pt in enumerate(self.bs.qpoints) if q_pt.label]
+        assert labelled == [
+            (0, "Gamma"),
+            (50, "X"),
+            (51, "X"),
+            (101, "Y"),
+            (102, "Y"),
+            (152, "Gamma"),
+            (153, "Gamma"),
+            (203, "Z"),
+        ]
+        assert_allclose(
+            [direction for direction, _ in self.bs.nac_frequencies],
+            [[1, 0, 0], [0.5**0.5, 0.5**0.5, 0], [3**-0.5, 3**-0.5, 3**-0.5]],
+        )
+
+        # two labels on the same qpoint: both end up in labels_dict, the qpoint takes the last one
+        qpoints = [[0, 0, 0], [0.25, 0, 0], [0.5, 0, 0], [0.5, 0, 0], [0.5, 0.25, 0], [0.5, 0.5, 0]]
+        labels = {"G": [0, 0, 0], "X": [0.5, 0, 0], "X'": [0.5, 0, 0], "M": [0.5, 0.5, 0]}
+        bs = PhononBandStructureSymmLine(
+            qpoints, np.zeros((3, 6)), Lattice.cubic(4).reciprocal_lattice, labels_dict=labels
+        )
+        assert [q_pt.label for q_pt in bs.qpoints] == ["G", None, "X'", "X'", None, "M"]
+        assert list(bs.labels_dict) == ["G", "X", "X'", "M"]
+        assert_allclose(bs.distance, np.pi / 8 * np.array([0, 1, 2, 2, 3, 4]))
+        assert bs.branches == [
+            {"start_index": 0, "end_index": 2, "name": "G-X'"},
+            {"start_index": 3, "end_index": 5, "name": "X'-M"},
+        ]
+
+    def test_estimate_band_connection(self):
+        # ties go to the highest band index, taken bands are skipped
+        assert estimate_band_connection(np.eye(3), np.ones((3, 3)), [0, 1, 2]) == [2, 1, 0]
+        # no positive overlap left falls back to band 0
+        assert estimate_band_connection(np.eye(3), np.zeros((3, 3)), [0, 1, 2]) == [0, 0, 0]
+        permutation = np.eye(3)[[2, 0, 1]]
+        assert estimate_band_connection(np.eye(3), permutation, [0, 1, 2]) == [2, 0, 1]
+        assert estimate_band_connection(np.eye(3), permutation, [2, 0, 1]) == [1, 2, 0]
+
     def test_nac(self):
         assert self.bs.has_nac
         assert not self.bs2.has_nac
@@ -121,6 +183,35 @@ class TestPhononBandStructureSymmLine(MatSciTest):
         max_qpoint2, max_freq2 = self.bs2.max_freq()
         assert list(max_qpoint2.frac_coords) == [0, 0, 0]
         assert max_freq2 == approx(15.2873634264)
+
+    def test_band_reorder(self):
+        # one atom, three modes polarized along x, y, z. The x and y branches cross, so
+        # sorting frequencies at each q-point (as phonopy does) swaps them halfway.
+        n_q = 6
+        freq_x, freq_y, freq_z = np.linspace(1, 3, n_q), np.linspace(3, 1, n_q), np.full(n_q, 5.0)
+        frequencies = np.sort([freq_x, freq_y, freq_z], axis=0)
+        polarization = np.eye(3)
+        eigendisplacements = np.zeros((3, n_q, 1, 3), dtype=complex)
+        for q_idx in range(n_q):
+            x_first = freq_x[q_idx] < freq_y[q_idx]
+            eigendisplacements[0, q_idx, 0] = polarization[0 if x_first else 1]
+            eigendisplacements[1, q_idx, 0] = polarization[1 if x_first else 0]
+            eigendisplacements[2, q_idx, 0] = polarization[2]
+
+        lattice = Lattice.cubic(5).reciprocal_lattice
+        bs = PhononBandStructureSymmLine(
+            np.linspace([0, 0, 0], [0.5, 0, 0], n_q),
+            frequencies,
+            lattice,
+            eigendisplacements=eigendisplacements,
+            labels_dict={"Gamma": [0, 0, 0], "X": [0.5, 0, 0]},
+            structure=Structure(Lattice.cubic(5), ["Si"], [[0, 0, 0]]),
+        )
+        bs.band_reorder()
+
+        assert_allclose(bs.bands, [freq_x, freq_y, freq_z])
+        for band_idx in range(3):
+            assert_allclose(np.abs(bs.eigendisplacements[band_idx, :, 0]), np.tile(polarization[band_idx], (n_q, 1)))
 
     def test_get_gamma_point(self):
         for bs in (self.bs, self.bs2):

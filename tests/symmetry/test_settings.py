@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from pymatgen.symmetry.settings import JonesFaithfulTransformation, Lattice, SymmOp
@@ -38,6 +39,18 @@ class TestJonesFaithfulTransformation:
             assert test_str == jft.transformation_string
             assert test_str == jft2.transformation_string
 
+    def test_parse_transformation_string_returns_independent_copies(self):
+        # parsing is cached, so the returned matrix and vector must not be shared between calls
+        P, p = JonesFaithfulTransformation.parse_transformation_string("a-b,a+b,2c;0,0,1/2")
+        P[0, 0] = 99
+        p[0] = 99
+        P2, p2 = JonesFaithfulTransformation.parse_transformation_string("a-b,a+b,2c;0,0,1/2")
+        assert_allclose(P2, [[1, 1, 0], [-1, 1, 0], [0, 0, 2]])
+        assert p2 == [0, 0, 0.5]
+
+        with pytest.raises(ValueError, match="Failed to parse transformation string"):
+            JonesFaithfulTransformation.parse_transformation_string(["a,b,c;0,0,0"])
+
     def test_inverse(self):
         for test_string in self.test_strings:
             jft = JonesFaithfulTransformation.from_transformation_str(test_string)
@@ -47,16 +60,38 @@ class TestJonesFaithfulTransformation:
     def test_transform_lattice(self):
         lattice = Lattice.cubic(5)
 
+        # the new basis vectors are (a', b', c') = (a, b, c) P, e.g. a' = a - b for "a-b,a+b,2c"
         all_ref_lattices = [
             [[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 5.0]],
-            [[5.0, 5.0, 0.0], [-5.0, 5.0, 0.0], [0.0, 0.0, 10.0]],
-            [[1.25, 1.25, -2.5], [1.25, -1.25, -2.5], [-2.5, 0.0, 0.0]],
+            [[5.0, -5.0, 0.0], [5.0, 5.0, 0.0], [0.0, 0.0, 10.0]],
+            [[1.25, 1.25, -2.5], [1.25, -1.25, 0.0], [-2.5, -2.5, 0.0]],
             [[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 5.0]],
         ]
 
         for ref_lattice, (P, p) in zip(all_ref_lattices, self.test_Pps, strict=True):
             jft = JonesFaithfulTransformation(P, p)
             assert_allclose(jft.transform_lattice(lattice).matrix, ref_lattice)
+
+    def test_transform_lattice_non_cubic(self):
+        lattice = Lattice.orthorhombic(1, 2, 3)
+        # cyclic permutation of the basis vectors
+        jft = JonesFaithfulTransformation.from_transformation_str("b,c,a;0,0,0")
+        assert_allclose(jft.transform_lattice(lattice).abc, (2, 3, 1))
+
+        # transformed lattice and coordinates must describe the same Cartesian positions
+        lattice = Lattice.from_parameters(3, 4, 5, 80, 95, 105)
+        jft = JonesFaithfulTransformation.from_transformation_str("a-b,a+b,2c;0,0,1/2")
+        new_lattice = jft.transform_lattice(lattice)
+        frac_coords = np.array([[0.1, 0.2, 0.3], [0.7, 0.4, 0.9]])
+        new_frac_coords = jft.transform_coords(frac_coords)
+        shift = lattice.get_cartesian_coords(jft.p)
+        assert_allclose(
+            new_lattice.get_cartesian_coords(new_frac_coords), lattice.get_cartesian_coords(frac_coords) - shift
+        )
+
+    def test_str(self):
+        jft = JonesFaithfulTransformation.from_transformation_str("a-b,a+b,2c;0,0,1/2")
+        assert str(jft) == "a-b,a+b,2c;0,0,1/2"
 
     def test_transform_coords(self):
         coords = [[0, 0, 0], [0.5, 0.5, 0.5]]

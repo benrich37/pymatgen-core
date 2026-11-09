@@ -7,7 +7,8 @@ import math
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from monty.json import MSONable
+import numpy as np
+from monty.json import MontyDecoder, MSONable
 
 from pymatgen.core import get_el_sp
 from pymatgen.core.structure_matcher import ElementComparator, StructureMatcher
@@ -131,17 +132,21 @@ class SpecieProximityFilter(AbstractStructureFilter):
 
     def test(self, structure: Structure):
         """True if structure does not contain species within specified distances."""
-        all_species = set(self.specie_and_min_dist)
-        for site in structure:
-            species = set(site.species)
-            if sp_to_test := species.intersection(all_species):
-                max_r = max(self.specie_and_min_dist[sp] for sp in sp_to_test)
-                neighbors = structure.get_neighbors(site, max_r)
-                for sp in sp_to_test:
-                    for nn_site, dist, *_ in neighbors:
-                        if sp in nn_site.species and dist < self.specie_and_min_dist[sp]:
-                            return False
-        return True
+        # mask of the sites containing each species of interest
+        site_masks = {
+            sp: mask
+            for sp in self.specie_and_min_dist
+            if (mask := np.array([sp in site.species for site in structure], dtype=bool)).any()
+        }
+        if not site_masks:
+            return True
+        # one neighbor list for all sites instead of a neighbor search per site
+        max_r = max(self.specie_and_min_dist[sp] for sp in site_masks)
+        center_indices, point_indices, _, distances = structure.get_neighbor_list(max_r)
+        return not any(
+            np.any(mask[center_indices] & mask[point_indices] & (distances < self.specie_and_min_dist[sp]))
+            for sp, mask in site_masks.items()
+        )
 
     def as_dict(self):
         """Get MSONable dict."""
@@ -252,15 +257,15 @@ class RemoveExistingFilter(AbstractStructureFilter):
             finder = SpacegroupAnalyzer(s, symprec=self.symprec)
             return finder.get_space_group_number()
 
+        comparator = self.structure_matcher._comparator
+        hash_comp = comparator.get_hash(structure.composition)
         for struct in self.existing_structures:
-            if (
-                (
-                    self.structure_matcher._comparator.get_hash(structure.composition)
-                    == self.structure_matcher._comparator.get_hash(struct.composition)
-                    and self.symprec is None
-                )
-                or get_sg(struct) == get_sg(structure)
-            ) and self.structure_matcher.fit(struct, structure):
+            if comparator.get_hash(struct.composition) != hash_comp:
+                continue
+            # only compare space groups if symprec is given (SpacegroupAnalyzer fails with symprec=None)
+            if self.symprec is not None and get_sg(struct) != get_sg(structure):
+                continue
+            if self.structure_matcher.fit(struct, structure):
                 return False
 
         self.structure_list.append(structure)
@@ -271,8 +276,28 @@ class RemoveExistingFilter(AbstractStructureFilter):
         return {
             "@module": type(self).__module__,
             "@class": type(self).__name__,
-            "init_args": {"structure_matcher": self.structure_matcher.as_dict()},
+            "init_args": {
+                "existing_structures": [struct.as_dict() for struct in self.existing_structures],
+                "structure_matcher": self.structure_matcher.as_dict(),
+                "symprec": self.symprec,
+            },
         }
+
+    @classmethod
+    def from_dict(cls, dct: dict) -> Self:
+        """
+        Args:
+            dct (dict): Dict representation.
+
+        Returns:
+            RemoveExistingFilter
+        """
+        init_args = MontyDecoder().process_decoded(dct["init_args"])
+        return cls(
+            init_args.get("existing_structures", []),
+            structure_matcher=init_args.get("structure_matcher"),
+            symprec=init_args.get("symprec"),
+        )
 
 
 class ChargeBalanceFilter(AbstractStructureFilter):

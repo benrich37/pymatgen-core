@@ -27,17 +27,16 @@ from typing import TYPE_CHECKING, Literal, SupportsIndex, cast, overload
 import numpy as np
 import orjson
 from scipy.cluster.hierarchy import fcluster, linkage
-from scipy.spatial.distance import squareform
 
 from pymatgen.core import Lattice, PeriodicSite, Structure, get_el_sp
 from pymatgen.core.operations import SymmOp
 from pymatgen.core.structure_matcher import StructureMatcher
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from pymatgen.util.coord import in_coord_list
 from pymatgen.util.due import Doi, due
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from collections.abc import Set as AbstractSet
     from typing import Any, Self
 
     from numpy.typing import ArrayLike, NDArray
@@ -214,13 +213,13 @@ class Slab(Structure):
         Note that the Slab must be oxidation state decorated for this to work properly.
         Otherwise, the Slab will always have a dipole moment of 0.
         """
-        centroid = np.sum(self.cart_coords, axis=0) / len(self)
-
-        dipole = np.zeros(3)
-        for site in self:
-            charge = sum(getattr(sp, "oxi_state", 0) * amt for sp, amt in site.species.items())
-            dipole += charge * np.dot(site.coords - centroid, self.normal) * self.normal
-        return dipole
+        cart_coords = self.cart_coords
+        centroid = np.sum(cart_coords, axis=0) / len(self)
+        charges = np.array(
+            [sum(getattr(sp, "oxi_state", 0) * amt for sp, amt in site.species.items()) for site in self]
+        )
+        normal = self.normal
+        return np.dot(charges, (cart_coords - centroid) @ normal) * normal
 
     @property
     def normal(self) -> np.ndarray:
@@ -447,21 +446,17 @@ class Slab(Structure):
         # We want to find the site on the other side of the slab.
         site_other = None
         for op in ops:
-            slab = self.copy()
             site_other = op.operate(point)
             if math.isclose(site_other[2], point[2], abs_tol=1e-6):
                 continue
 
-            # Add dummy sites to check if the overall structure is symmetric
+            # Add dummy sites to a copy to check if the overall structure is symmetric.
+            # If not, try another symmetry operator.
+            slab = self.copy()
             slab.append("O", point, coords_are_cartesian=cartesian)
             slab.append("O", site_other, coords_are_cartesian=cartesian)
             if SpacegroupAnalyzer(slab).is_laue():
                 break
-
-            # If not symmetric, remove the two added
-            # sites and try another symmetry operator
-            slab.remove_sites([len(slab) - 1])
-            slab.remove_sites([len(slab) - 1])
 
         if site_other is None:
             raise RuntimeError("Failed to get symmetric site.")
@@ -630,6 +625,7 @@ class Slab(Structure):
             site_properties=struct.site_properties,
             reorient_lattice=self.reorient_lattice,
             reconstruction=self.reconstruction,
+            energy=self.energy,
         )
 
     def add_adsorbate_atom(
@@ -975,18 +971,19 @@ class SlabGenerator:
             divisor = abs(reduce(math.gcd, vector))  # type: ignore[arg-type]
             return cast("tuple[int, int, int]", tuple(int(idx / divisor) for idx in vector))
 
-        def add_site_types() -> None:
-            """Add Wyckoff symbols and equivalent sites to the initial structure."""
-            if (
-                "bulk_wyckoff" not in initial_structure.site_properties
-                or "bulk_equivalent" not in initial_structure.site_properties
-            ):
-                spg_analyzer = SpacegroupAnalyzer(initial_structure)
-                initial_structure.add_site_property("bulk_wyckoff", spg_analyzer.get_symmetry_dataset().wyckoffs)
-                initial_structure.add_site_property(
-                    "bulk_equivalent",
-                    spg_analyzer.get_symmetry_dataset().equivalent_atoms.tolist(),
-                )
+        def add_site_types(structure: Structure | IStructure) -> Structure | IStructure:
+            """Add Wyckoff symbols and equivalent sites to a copy of the structure, if missing."""
+            if "bulk_wyckoff" in structure.site_properties and "bulk_equivalent" in structure.site_properties:
+                return structure
+            # Work on a copy so the caller's structure is not modified
+            structure = structure.copy()
+            spg_analyzer = SpacegroupAnalyzer(structure)
+            structure.add_site_property("bulk_wyckoff", spg_analyzer.get_symmetry_dataset().wyckoffs)
+            structure.add_site_property(
+                "bulk_equivalent",
+                spg_analyzer.get_symmetry_dataset().equivalent_atoms.tolist(),
+            )
+            return structure
 
         def calculate_surface_normal() -> np.ndarray:
             """Calculate the unit surface normal vector using the reciprocal
@@ -1069,7 +1066,7 @@ class SlabGenerator:
 
         # Add Wyckoff symbols and equivalent sites to the initial structure,
         # to help identify types of sites in the generated slab
-        add_site_types()
+        initial_structure = add_site_types(initial_structure)
 
         # Calculate the surface normal
         lattice = initial_structure.lattice
@@ -1262,17 +1259,8 @@ class SlabGenerator:
             termination = frac_coords[0, 2] + 0.5
             return [termination - math.floor(termination)]
 
-        # Compute a Cartesian z-coordinate distance matrix
-        dist_matrix = np.zeros((n_atoms, n_atoms), dtype=np.float64)
-        for i, j in itertools.combinations(range(n_atoms), 2):
-            z_dist = frac_coords[i, 2] - frac_coords[j, 2]
-            # Apply PBC and project onto surface normal
-            z_dist = abs(z_dist - round(z_dist)) * self._proj_height
-            dist_matrix[i, j] = z_dist
-            dist_matrix[j, i] = z_dist
-
-        # Cluster the sites by z coordinates
-        z_matrix = linkage(squareform(dist_matrix))
+        # Cluster the sites by their z-coordinate distances projected onto the surface normal
+        z_matrix = linkage(_get_condensed_pbc_z_distances(frac_coords[:, 2], self._proj_height))
         clusters = fcluster(z_matrix, ftol, criterion="distance")
 
         # Generate cluster to z-coordinate mapping including PBC
@@ -1442,7 +1430,10 @@ class SlabGenerator:
         Returns:
             Slab: The repaired Slab.
         """
-        for species_pair, bond_dist in bonds.items():
+        for raw_pair, bond_dist in bonds.items():
+            # Compare as strings to site.species_string, so Element/Species keys work as well
+            species_pair = tuple(sp if isinstance(sp, str) else str(sp) for sp in raw_pair)
+
             # Determine which element should be the reference (center)
             # element for determining broken bonds, e.g. P for PO4 bond.
             cn_dict = {}
@@ -1548,12 +1539,14 @@ class SlabGenerator:
 
         return Slab(
             init_slab.lattice,
-            slab.species,
+            slab.species_and_occu,
             slab.frac_coords,
             init_slab.miller_index,
             init_slab.oriented_unit_cell,
             init_slab.shift,
             init_slab.scale_factor,
+            reorient_lattice=init_slab.reorient_lattice,
+            site_properties=slab.site_properties,
             energy=init_slab.energy,
         )
 
@@ -2053,7 +2046,7 @@ def get_symmetrically_equivalent_miller_indices(
             index for hexagonal systems, or hkl (False).
         system: The crystal system of the structure.
     """
-    # Convert to hkl if hkil, because in_coord_list only handles tuples of 3
+    # Convert to hkl if hkil, because the symmetry operations only handle tuples of 3
     if len(miller_index) >= 3:
         _miller_index: tuple[int, ...] = (
             miller_index[0],
@@ -2064,42 +2057,47 @@ def get_symmetrically_equivalent_miller_indices(
         _miller_index = (miller_index[0], miller_index[1], miller_index[2])
 
     max_idx = max(np.abs(miller_index))
-    idx_range = range(max_idx, -max_idx - 1, -1)
 
     # Skip crystal system analysis if already given
-    if system:
-        spg_analyzer = None
-    else:
-        spg_analyzer = SpacegroupAnalyzer(structure)
-        system = spg_analyzer.get_crystal_system()
+    if not system:
+        system = SpacegroupAnalyzer(structure).get_crystal_system()
 
-    # Get distinct hkl planes from the rhombohedral setting if trigonal
+    # Get distinct hkl planes from the rhombohedral setting if trigonal. The operations of the
+    # primitive lattice are expressed in its own basis, so convert them to the basis of the input
+    # structure (e.g. the hexagonal setting of an R-centered cell) before applying them to its hkl.
     if system == "trigonal":
-        if not spg_analyzer:
-            spg_analyzer = SpacegroupAnalyzer(structure)
-        prim_structure = spg_analyzer.get_primitive_standard_structure()
-        symm_ops = prim_structure.lattice.get_recp_symmetry_operation()
+        prim_lattice = structure.get_primitive_structure().lattice
+        symm_ops = _transform_recp_symm_ops(prim_lattice.get_recp_symmetry_operation(), prim_lattice, structure.lattice)
 
     else:
         symm_ops = structure.lattice.get_recp_symmetry_operation()
 
+    # Equivalent indices can have larger components than the input, e.g. (1, 1, 0) and (2, -1, 0)
+    # in a hexagonal hkl setting, so search up to the largest component of all symmetry images.
+    search_max = max(max_idx, *(int(np.max(np.abs(np.rint(op.operate(_miller_index))))) for op in symm_ops))
+    idx_range = range(search_max, -search_max - 1, -1)
+
     equivalent_millers: list[tuple[int, int, int]] = [_miller_index]  # type: ignore[list-item]
+    equivalent_set: set[tuple[int, ...]] = {_miller_index}
+    affine_ops = _stack_affine_matrices(symm_ops)
     # Explicit x3 repeat instead of keyword, so mypy understands it correctly
     for miller in itertools.product(idx_range, idx_range, idx_range):
         if miller == _miller_index:
             continue
 
         if any(idx != 0 for idx in miller):
-            if _is_in_miller_family(miller, equivalent_millers, symm_ops):
+            if _is_in_miller_family(miller, equivalent_set, affine_ops):
                 equivalent_millers.append(miller)
+                equivalent_set.add(miller)
 
             # Include larger Miller indices in the family of planes
             if (
                 all(max_idx > i for i in np.abs(miller))
-                and not in_coord_list(equivalent_millers, miller)
-                and _is_in_miller_family(max_idx * np.array(miller), equivalent_millers, symm_ops)
+                and miller not in equivalent_set
+                and _is_in_miller_family(max_idx * np.array(miller), equivalent_set, affine_ops)
             ):
-                equivalent_millers += [miller]
+                equivalent_millers.append(miller)
+                equivalent_set.add(miller)
 
     # Convert hkl to hkil if necessary
     if return_hkil and system in {"trigonal", "hexagonal"}:
@@ -2253,6 +2251,8 @@ def get_symmetrically_distinct_miller_indices(
 
     # Collect all unique hkl (stays sorted like candidate_hkl is)
     unique_hkl: list[tuple[int, int, int]] = []
+    unique_hkl_set: set[tuple[int, ...]] = set()
+    affine_ops = _stack_affine_matrices(rec_symm_ops)
     for hkl in candidate_hkl:
         # Non-reduced hkl indices are equal to their smaller form,
         # therefore check that gcd is 1 (gcd is always positive)
@@ -2262,8 +2262,9 @@ def get_symmetrically_distinct_miller_indices(
         # nonzero index is positive.
         if math.gcd(*hkl) != 1 or next(i for i in hkl if i != 0) < 0:
             continue
-        if not _is_in_miller_family(hkl, unique_hkl, rec_symm_ops):
+        if not _is_in_miller_family(hkl, unique_hkl_set, affine_ops):
             unique_hkl.append(hkl)
+            unique_hkl_set.add(hkl)
 
     # Transform primitive indices back to conventional, if requested
     # If the spacegroup is not centered, the matrix will not change the values
@@ -2287,21 +2288,81 @@ def get_symmetrically_distinct_miller_indices(
     return unique_hkl
 
 
+def _get_condensed_pbc_z_distances(frac_z: ArrayLike, height: float) -> NDArray[np.float64]:
+    """Pairwise distances between fractional z coordinates under periodic boundary
+    conditions, scaled by height, in condensed form (as from scipy's pdist/squareform).
+
+    Args:
+        frac_z (ArrayLike): Fractional z coordinates.
+        height (float): Length to scale the fractional distances by.
+
+    Returns:
+        NDArray: Distances for all pairs (i, j) with i < j, in row-major order.
+    """
+    frac_z = np.asarray(frac_z, dtype=np.float64)
+    idx_i, idx_j = np.triu_indices(len(frac_z), k=1)
+    z_dist = frac_z[idx_i] - frac_z[idx_j]
+    return np.abs(z_dist - np.round(z_dist)) * height
+
+
+def _stack_affine_matrices(symm_ops: Iterable[SymmOp]) -> NDArray[np.float64]:
+    """Stack the affine matrices of symmetry operations into an (n_ops, 4, 4) array."""
+    return np.array([op.affine_matrix for op in symm_ops], dtype=np.float64).reshape(-1, 4, 4)
+
+
 def _is_in_miller_family(
-    miller_index: tuple[int, int, int],
-    miller_list: Sequence[tuple[int, int, int]],
-    symm_ops: Iterable[SymmOp],
+    miller_index: tuple[int, int, int] | NDArray,
+    miller_set: AbstractSet[tuple[int, ...]],
+    affine_ops: NDArray[np.float64],
 ) -> bool:
     """Helper function to check if the given Miller index belongs
-    to the same family of any index in the provided list.
+    to the same family of any index in the provided set.
 
     Args:
         miller_index (tuple[int, int, int]): The Miller index to analyze.
-        miller_list (Sequence[tuple[int, int, int]]): Sequence of Miller indices.
-        symm_ops (Iterable[SymmOp]): Symmetry operations for a lattice,
-            used to define the indices family.
+        miller_set (AbstractSet[tuple[int, ...]]): Set of integer Miller indices.
+        affine_ops (NDArray): (n_ops, 4, 4) affine matrices of the symmetry operations
+            for a lattice (see _stack_affine_matrices), used to define the indices family.
     """
-    return any(in_coord_list(miller_list, op.operate(miller_index)) for op in symm_ops)
+    # Images of the Miller index under all operations at once (same as SymmOp.operate)
+    images = affine_ops[:, :3] @ np.append(miller_index, 1.0)
+    rounded = np.rint(images)
+    # Miller indices are integers, so only (near-)integer images can match a member of the set
+    is_integer = np.all(np.abs(images - rounded) < 1e-8, axis=1)
+    return any(tuple(hkl) in miller_set for hkl in rounded[is_integer].astype(int).tolist())
+
+
+def _transform_recp_symm_ops(
+    symm_ops: Iterable[SymmOp],
+    from_lattice: Lattice,
+    to_lattice: Lattice,
+) -> list[SymmOp]:
+    """Express reciprocal lattice symmetry operations (acting on hkl) in another lattice basis.
+
+    Both lattices must share the same Cartesian frame. Operations that do not map
+    the hkl of `to_lattice` onto integers (i.e. that are not symmetries of it) are dropped.
+
+    Args:
+        symm_ops (Iterable[SymmOp]): Operations acting on hkl in the basis of `from_lattice`.
+        from_lattice (Lattice): Lattice the operations are expressed in.
+        to_lattice (Lattice): Lattice to express the operations in.
+
+    Returns:
+        list[SymmOp]: Operations acting on hkl in the basis of `to_lattice`.
+    """
+    from_recp = from_lattice.reciprocal_lattice_crystallographic.matrix
+    to_recp = to_lattice.reciprocal_lattice_crystallographic.matrix
+    # Maps hkl in the basis of from_lattice to hkl in the basis of to_lattice
+    basis_change = np.linalg.solve(to_recp.T, from_recp.T)
+    inv_basis_change = np.linalg.inv(basis_change)
+
+    transformed_ops = []
+    for op in symm_ops:
+        rotation = basis_change @ op.rotation_matrix @ inv_basis_change
+        rounded_rotation = np.rint(rotation)
+        if np.allclose(rotation, rounded_rotation, atol=1e-5):
+            transformed_ops.append(SymmOp.from_rotation_and_translation(rounded_rotation, np.zeros(3)))
+    return transformed_ops
 
 
 def _index_transformation(transf: NDArray, index: tuple[int, int, int] | NDArray) -> NDArray[np.int_]:

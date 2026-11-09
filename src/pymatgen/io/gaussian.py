@@ -465,6 +465,7 @@ class GaussianInput:
             "input_parameters": self.input_parameters,
             "link0_parameters": self.link0_parameters,
             "dieze_tag": self.dieze_tag,
+            "gen_basis": self.gen_basis,
         }
 
     @classmethod
@@ -487,6 +488,8 @@ class GaussianInput:
             spin_multiplicity=dct["spin_multiplicity"],
             input_parameters=dct["input_parameters"],
             link0_parameters=dct["link0_parameters"],
+            dieze_tag=dct.get("dieze_tag", "#P"),
+            gen_basis=dct.get("gen_basis"),
         )
 
 
@@ -634,6 +637,36 @@ class GaussianOutput:
 
         bond_order_patt = re.compile(r"Wiberg bond index matrix in the NAO basis:")
 
+        # Literal substrings, at least one of which is required for any of the patterns in the
+        # "termination ... bond order" branch of the stage-2 parser to match. Checked once per line
+        # so that the vast majority of lines skip ~20 regex searches.
+        trigger_patt = re.compile(
+            "|".join(
+                re.escape(kw)
+                for kw in (
+                    "termination",
+                    "! Non-Optimized Parameters !",
+                    "Convergence failure",
+                    "alpha electrons",
+                    "Polarizable Continuum Model",
+                    "imaginary frequencies",
+                    "EUMP2",
+                    "ONIOM:",
+                    "E(",
+                    "orientation",
+                    "Optimization completed.",
+                    "eigenvalues --",
+                    "Mulliken",
+                    "Forces",
+                    "Harmonic",
+                    "Molecular Orbital Coefficients:",
+                    "Force constants in Cartesian coordinates:",
+                    "GINC-",
+                    "Wiberg bond index matrix in the NAO basis:",
+                )
+            )
+        )
+
         self.properly_terminated = self.is_pcm = self.is_spin = False
         self.pcm = self.hessian = self.title = None
         self.stationary_type = "Minimum"
@@ -651,6 +684,7 @@ class GaussianOutput:
         read_mulliken = read_eigen = num_basis_found = terminated = parse_forces = False
         read_mo = parse_hessian = standard_orientation = parse_bond_order = parse_freq = False
         read_coord = parse_stage = 0
+        mulliken_txt: list[str] = []
         eigen_txt = []
         forces = []
         frequencies = []
@@ -686,8 +720,7 @@ class GaussianOutput:
                         self.title = ""
                     elif self.title == "":
                         self.title = line.strip()
-                    elif charge_mul_patt.search(line):
-                        match = charge_mul_patt.search(line)
+                    elif match := charge_mul_patt.search(line):
                         self.charge = int(match[1])
                         self.spin_multiplicity = int(match[2])
                         parse_stage = 2
@@ -695,8 +728,7 @@ class GaussianOutput:
                     if self.is_pcm:
                         self._check_pcm(line)
 
-                    if "freq" in route_lower and thermo_patt.search(line):
-                        match = thermo_patt.search(line)
+                    if "freq" in route_lower and (match := thermo_patt.search(line)):
                         if match[1] == "Zero-point":
                             self.corrections["Zero-point"] = float(match[3])
                         else:
@@ -745,8 +777,7 @@ class GaussianOutput:
                             eigen_txt = []
 
                     # read molecular orbital coefficients
-                    if (not num_basis_found) and num_basis_func_patt.search(line):
-                        match = num_basis_func_patt.search(line)
+                    if (not num_basis_found) and (match := num_basis_func_patt.search(line)):
                         self.num_basis_func = int(match[1])
                         num_basis_found = True
                     elif read_mo:
@@ -849,7 +880,8 @@ class GaussianOutput:
                                     IR_intens = map(float, float_patt.findall(line))
                                     for ifreq, intens in zip(ifreqs, IR_intens, strict=True):
                                         frequencies[ifreq]["IR_intensity"] = intens
-                                else:
+                                elif "--" not in line:
+                                    # symmetry labels; skip other "Label --" rows (e.g. Raman activity, depolarization)
                                     syms = line.split()[:3]
                                     for ifreq, sym in zip(ifreqs, syms, strict=True):
                                         frequencies[ifreq]["symmetry"] = sym
@@ -889,34 +921,30 @@ class GaussianOutput:
                                 self.bond_orders[atom_idx, atom_jdx] = matrix[atom_idx][atom_jdx]
                         parse_bond_order = False
 
-                    elif termination_patt.search(line):
-                        match = termination_patt.search(line)
+                    elif not trigger_patt.search(line):
+                        # Fast path: the line contains none of the literal keywords
+                        # required by the patterns below, so none of them can match.
+                        pass
+                    elif match := termination_patt.search(line):
                         if match[1] == "Normal":
                             self.properly_terminated = True
                             terminated = True
-                    elif error_patt.search(line):
+                    elif match := error_patt.search(line):
                         error_defs = {
                             "! Non-Optimized Parameters !": "Optimization error",
                             "Convergence failure": "SCF convergence error",
                         }
-                        match = error_patt.search(line)
                         self.errors.append(error_defs[match[1]])
-                    elif num_elec_patt.search(line):
-                        match = num_elec_patt.search(line)
+                    elif match := num_elec_patt.search(line):
                         self.electrons = (int(match[1]), int(match[2]))
                     elif (not self.is_pcm) and pcm_patt.search(line):
                         self.is_pcm = True
                         self.pcm = {}
                     elif "freq" in route_lower and "opt" in route_lower and stat_type_patt.search(line):
                         self.stationary_type = "Saddle"
-                    elif mp2_patt.search(line):
-                        match = mp2_patt.search(line)
+                    elif match := mp2_patt.search(line):
                         self.energies.append(float(match[1].replace("D", "E")))
-                    elif oniom_patt.search(line):
-                        match = oniom_patt.matcher(line)
-                        self.energies.append(float(match[1]))
-                    elif scf_patt.search(line):
-                        match = scf_patt.search(line)
+                    elif (match := oniom_patt.search(line)) or (match := scf_patt.search(line)):
                         self.energies.append(float(match[1]))
                     elif std_orientation_patt.search(line):
                         standard_orientation = True
@@ -941,6 +969,7 @@ class GaussianOutput:
                         read_eigen = True
                     elif mulliken_patt.search(line):
                         read_mulliken = True
+                        mulliken_txt = []
                     elif not parse_forces and forces_on_patt.search(line):
                         parse_forces = True
                     elif freq_on_patt.search(line):
@@ -967,17 +996,13 @@ class GaussianOutput:
                         parse_bond_order = True
 
                     if read_mulliken:
-                        mulliken_txt = []
                         if not end_mulliken_patt.search(line):
                             mulliken_txt.append(line)
                         else:
-                            match = end_mulliken_patt.search(line)
                             mulliken_charges = {}
-                            for line in mulliken_txt:
-                                if mulliken_charge_patt.search(line):
-                                    match = mulliken_charge_patt.search(line)
-                                    dic = {int(match[1]): [match[2], float(match[3])]}
-                                    mulliken_charges.update(dic)
+                            for mulliken_line in mulliken_txt:
+                                if match := mulliken_charge_patt.search(mulliken_line):
+                                    mulliken_charges[int(match[1])] = [match[2], float(match[3])]
                             read_mulliken = False
                             self.Mulliken_charges = mulliken_charges
 
@@ -1027,19 +1052,16 @@ class GaussianOutput:
             line = file.readline()
             j_indices = [j + 5 for j in j_indices]
 
-    def _check_pcm(self, line):
-        energy_patt = re.compile(r"(Dispersion|Cavitation|Repulsion) energy\s+\S+\s+=\s+(\S*)")
-        total_patt = re.compile(r"with all non electrostatic terms\s+\S+\s+=\s+(\S*)")
-        parameter_patt = re.compile(r"(Eps|Numeral density|RSolv|Eps\(inf[inity]*\))\s+=\s*(\S*)")
+    _pcm_energy_patt = re.compile(r"(Dispersion|Cavitation|Repulsion) energy\s+\S+\s+=\s+(\S*)")
+    _pcm_total_patt = re.compile(r"with all non electrostatic terms\s+\S+\s+=\s+(\S*)")
+    _pcm_parameter_patt = re.compile(r"(Eps|Numeral density|RSolv|Eps\(inf[inity]*\))\s+=\s*(\S*)")
 
-        if energy_patt.search(line):
-            match = energy_patt.search(line)
+    def _check_pcm(self, line):
+        if match := self._pcm_energy_patt.search(line):
             self.pcm[f"{match[1]} energy"] = float(match[2])
-        elif total_patt.search(line):
-            match = total_patt.search(line)
+        elif match := self._pcm_total_patt.search(line):
             self.pcm["Total energy"] = float(match[1])
-        elif parameter_patt.search(line):
-            match = parameter_patt.search(line)
+        elif match := self._pcm_parameter_patt.search(line):
             self.pcm[match[1]] = float(match[2])
 
     def as_dict(self):
@@ -1194,6 +1216,8 @@ class GaussianOutput:
         """
         transitions = []
 
+        transition_pattern = re.compile(r"(\S+)\s+eV\s+(\S+)\s+nm\s+f\s*=\s*(\S+)")
+
         # read in file
         with zopen(self.filename, mode="rt", encoding="utf-8") as file:
             line = file.readline()
@@ -1203,8 +1227,10 @@ class GaussianOutput:
                     td = True
 
                 if td and re.search(r"^\sExcited State\s*\d", line):
-                    val = [float(v) for v in float_patt.findall(line)]
-                    transitions.append(tuple(val[:3]))
+                    match = transition_pattern.search(line)
+                    if match is None:
+                        raise ValueError(f"Could not parse line: {line.strip()}")
+                    transitions.append(tuple(float(value) for value in match.groups()))
                 line = file.readline()
         return transitions
 
@@ -1238,7 +1264,7 @@ class GaussianOutput:
         # sum of gaussian functions
         spectre = np.zeros(npts)
         for trans in transitions:
-            spectre += trans[2] * norm(eneval, trans[0], sigma)
+            spectre += trans[2] * norm.pdf(eneval, trans[0], sigma)
         spectre /= spectre.max()
         ax.plot(lambdaval, spectre, "r-", label="spectre")
 

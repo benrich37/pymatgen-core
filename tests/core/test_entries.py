@@ -262,6 +262,22 @@ class TestComputedEntry:
             assert entry == copy
             assert str(entry) == str(copy)
 
+        # editing the copy leaves the original unchanged:
+        entry = ComputedEntry(
+            "Fe2O3",
+            2.3,
+            energy_adjustments=[ConstantEnergyAdjustment(-1)],
+            parameters={"run_type": "GGA"},
+            data={"oxide_type": "oxide"},
+        )
+        copy = entry.copy()
+        copy.energy_adjustments.append(ConstantEnergyAdjustment(-2))
+        copy.parameters["run_type"] = "r2SCAN"
+        copy.data["oxide_type"] = "peroxide"
+        assert entry.energy == approx(1.3)
+        assert entry.parameters == {"run_type": "GGA"}
+        assert entry.data == {"oxide_type": "oxide"}
+
     def test_from_dict_null_fields(self):
         ce_dict = self.entry.as_dict()
         for k in (
@@ -451,6 +467,22 @@ class TestComputedStructureEntry:
         assert copy.structure is not self.entry.structure
         assert str(copy) == str(self.entry)
 
+        # editing the copy leaves the original unchanged:
+        entry = ComputedStructureEntry(
+            self.entry.structure,
+            -10,
+            energy_adjustments=[ConstantEnergyAdjustment(-1)],
+            parameters={"run_type": "GGA"},
+            data={"oxide_type": "oxide"},
+        )
+        copy = entry.copy()
+        copy.energy_adjustments.append(ConstantEnergyAdjustment(-2))
+        copy.parameters["run_type"] = "r2SCAN"
+        copy.data["oxide_type"] = "peroxide"
+        assert entry.energy == approx(-11)
+        assert entry.parameters == {"run_type": "GGA"}
+        assert entry.data == {"oxide_type": "oxide"}
+
     def test_eq(self):
         copy1 = self.entry.copy()
         copy2 = self.entry.copy()
@@ -588,6 +620,18 @@ class TestComputedStructureEntryExtra:
     def test_mismatching_composition(self, fe_bcc):
         with pytest.raises(ValueError, match="Mismatching composition provided"):
             ComputedStructureEntry(fe_bcc, -16.0, composition="FeO")
+
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_from_dict_none_fields(self, fe_bcc, legacy):
+        # ComputedEntry.from_dict accepts None parameters/data/energy_adjustments; this raised AttributeError
+        dct = ComputedStructureEntry(fe_bcc, -16.0).as_dict()
+        dct |= {"parameters": None, "data": None, "energy_adjustments": None}
+        if legacy:
+            dct["correction"] = -1.5
+        entry = ComputedStructureEntry.from_dict(dct)
+        assert entry.parameters == {}
+        assert entry.data == {}
+        assert entry.energy == approx(-17.5 if legacy else -16.0)
 
     def test_from_dict_legacy_correction(self, fe_bcc):
         dct = ComputedStructureEntry(

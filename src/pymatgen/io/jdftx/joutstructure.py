@@ -813,7 +813,7 @@ class JOutStructure(Structure):
             if coords_type == "cartesian":
                 forces *= 1 / bohr_to_ang  # Convert from Ha/Bohr to Ha/Ang
             elif coords_type == "lattice":
-                forces = np.linalg.solve(self.lattice.matrix, forces.T).T
+                forces = np.dot(forces, np.linalg.inv(self.lattice.matrix).T)
             elif coords_type == "contravariant":
                 forces = forces @ self.lattice.matrix / bohr_to_ang**2
             else:

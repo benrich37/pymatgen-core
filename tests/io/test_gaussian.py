@@ -481,6 +481,22 @@ class TestGaussianOutput:
         assert len(transitions) == 4
         assert transitions[0] == approx((3.9281, 315.64, 0.0054))
 
+    def test_td_numeric(self, tmp_path):
+        with open(f"{TEST_DIR}/so2_td.log", encoding="utf-8") as file:
+            content = file.read()
+
+        # Change label to a numeric one.
+        content = content.replace('Singlet-A"', "2.316-A", 1)
+
+        log_path = tmp_path / "so2_td_numeric.log"
+        log_path.write_text(content, encoding="utf-8")
+
+        gau = GaussianOutput(str(log_path))
+        transitions = gau.read_excitation_energies()
+
+        assert len(transitions) == 4
+        assert transitions[0] == approx((3.9281, 315.64, 0.0054))
+
     def test_multiple_parameters(self):
         """Check that input files with multi-parameter keywords
         and route cards with multiple lines can be parsed accurately.
@@ -519,3 +535,110 @@ class TestGaussianOutput:
         assert gout.title == "H4 C3 O3"
         assert gout.charge == 0
         assert gout.spin_multiplicity == 1
+
+    def test_mulliken_charges(self):
+        gau = GaussianOutput(f"{TEST_DIR}/methane.log")
+        # the last Mulliken block in the file is kept
+        assert gau.Mulliken_charges == {
+            1: ["C", approx(-0.793976)],
+            2: ["H", approx(0.198494)],
+            3: ["H", approx(0.198494)],
+            4: ["H", approx(0.198494)],
+            5: ["H", approx(0.198494)],
+        }
+
+    def test_spectre_plot(self):
+        gau = GaussianOutput(f"{TEST_DIR}/so2_td.log")
+        data, ax = gau.get_spectre_plot()
+        assert ax is not None
+        assert len(data["energies"]) == len(data["lambda"]) == len(data["xas"])
+        assert max(data["xas"]) == approx(1)
+
+    def test_oniom_energy(self, tmp_path):
+        with open(f"{TEST_DIR}/methane.log", encoding="utf-8") as file:
+            lines = file.readlines()
+        idx = next(ii for ii, line in enumerate(lines) if "Charge =" in line)
+        lines.insert(idx + 1, " ONIOM: extrapolated energy =  -40.123456789\n")
+        log_path = tmp_path / "oniom.log"
+        log_path.write_text("".join(lines), encoding="utf-8")
+
+        gau = GaussianOutput(str(log_path))
+        assert gau.energies[0] == approx(-40.123456789)
+
+    def test_raman_frequency_symmetries(self, tmp_path):
+        with open(f"{TEST_DIR}/H2O_gau_vib.out", encoding="utf-8") as file:
+            lines = file.readlines()
+        idx = next(ii for ii, line in enumerate(lines) if "IR Inten    --" in line)
+        lines[idx + 1 : idx + 1] = [
+            " Raman Activ --      2.1093                23.5345                 6.7584\n",  # codespell:ignore activ
+            " Depolar (P) --      0.6973                 0.1814                 0.3743\n",
+            " Depolar (U) --      0.8216                 0.3071                 0.5447\n",
+        ]
+        log_path = tmp_path / "raman.out"
+        log_path.write_text("".join(lines), encoding="utf-8")
+
+        gau = GaussianOutput(str(log_path))
+        assert [freq["symmetry"] for freq in gau.frequencies[0]] == ["A'", "A'", "A'"]
+        assert gau.frequencies[0][0]["IR_intensity"] == approx(97.3057)
+
+    def test_pcm_errors_and_energy_keywords(self, tmp_path):
+        # Synthetic log exercising branches not covered by the real test files: PCM block,
+        # MP2/ONIOM/SCF energies, error messages, saddle detection and error termination.
+        log = (
+            " %chk=test.chk\n"
+            " ----------------------------------\n"
+            " #P MP2/6-31G(d) opt freq scrf=(pcm)\n"
+            " ----------------------------------\n"
+            " (Enter /opt/g09/l101.exe)\n"
+            " ------\n"
+            " synth\n"
+            " ------\n"
+            " Charge =  0 Multiplicity = 1\n"
+            " Polarizable Continuum Model (PCM)\n"
+            " Eps          =   78.355300\n"
+            " RSolv        =    1.385000\n"
+            " Dispersion energy (a.u.) =   -0.0012345\n"
+            " Cavitation energy (a.u.) =    0.0034567\n"
+            " Repulsion energy (a.u.) =    0.0005678\n"
+            " After PCM corrections, the energy is with all non electrostatic terms (a.u.) = -76.4321\n"
+            "     5 alpha electrons        5 beta electrons\n"
+            " SCF Done:  E(RHF) =  -76.0107465     A.U. after   10 cycles\n"
+            " E2 =    -0.2010000000D+00 EUMP2 =    -0.76211746500D+02\n"
+            " ONIOM: extrapolated energy =  -76.300000000\n"
+            " Convergence failure -- run terminated.\n"
+            " ****** 1 imaginary frequencies (negative Signs) ******\n"
+            " ! Non-Optimized Parameters !\n"
+            " Error termination via Lnk1e in /opt/g09/l9999.exe\n"
+        )
+        log_path = tmp_path / "synth.log"
+        log_path.write_text(log, encoding="utf-8")
+
+        with pytest.warns(UserWarning, match="Termination error"):
+            gau = GaussianOutput(str(log_path))
+        assert gau.link0 == {"%chk": "test.chk"}
+        assert gau.is_pcm
+        assert gau.pcm == approx(
+            {
+                "Eps": 78.3553,
+                "RSolv": 1.385,
+                "Dispersion energy": -0.0012345,
+                "Cavitation energy": 0.0034567,
+                "Repulsion energy": 0.0005678,
+                "Total energy": -76.4321,
+            }
+        )
+        assert gau.electrons == (5, 5)
+        assert gau.energies == approx([-76.0107465, -76.2117465, -76.3])
+        assert gau.errors == ["SCF convergence error", "Optimization error"]
+        assert gau.stationary_type == "Saddle"
+        assert not gau.properly_terminated
+
+
+class TestGaussianInputSerialization:
+    def test_as_from_dict_keeps_dieze_tag_and_gen_basis(self):
+        mol = Molecule(["H", "H"], [[0, 0, 0], [0, 0, 0.74]])
+        gau_inp = GaussianInput(mol, functional="B3LYP", basis_set="Gen", dieze_tag="#N", gen_basis="H 0\n6-31G\n****")
+        round_tripped = GaussianInput.from_dict(gau_inp.as_dict())
+        assert round_tripped.dieze_tag == "#N"
+        assert round_tripped.gen_basis == "H 0\n6-31G\n****"
+        assert str(round_tripped) == str(gau_inp)

@@ -212,6 +212,16 @@ class Trajectory(MSONable):
         # Convert to position mode if not already
         self.to_positions()
 
+        # Accept numpy integers (e.g. from np.arange or np.argmin) like Python ints
+        if isinstance(frames, np.integer):
+            frames = int(frames)
+
+        # Boolean masks select the frames where the mask is True, as in numpy
+        if isinstance(frames, np.ndarray) and frames.dtype == bool:
+            if frames.shape != (len(self),):
+                raise IndexError(f"boolean index of shape {frames.shape} does not match {len(self)} frames")
+            frames = np.flatnonzero(frames).tolist()
+
         # For integer input, return the structure at that frame
         if isinstance(frames, int):
             if frames >= len(self):
@@ -444,15 +454,17 @@ class Trajectory(MSONable):
         # Ensure trajectory is in position form
         self.to_positions()
 
+        first_frame = self[0]
         if system is None:
-            system = f"{self[0].reduced_formula}"
+            system = f"{first_frame.reduced_formula}"
 
         lines = []
-        format_str = f"{{:.{significant_figures}f}}"
-        syms = [site.specie.symbol for site in self[0]]
-        site_symbols = [a[0] for a in itertools.groupby(syms)]
-        syms = [site.specie.symbol for site in self[0]]
-        n_atoms = [len(tuple(a[1])) for a in itertools.groupby(syms)]
+        syms = [site.specie.symbol for site in first_frame]
+        site_symbols = [sym for sym, _group in itertools.groupby(syms)]
+        n_atoms = [len(tuple(group)) for _sym, group in itertools.groupby(syms)]
+        # Format each site's three coords in one call instead of one float at a time
+        coord_fmt = " ".join([f"{{:.{significant_figures}f}}"] * 3)
+        species_strs = [str(specie) for specie in self.species]
 
         for idx, coords in enumerate(self.coords):
             # Only print out the info block if
@@ -466,9 +478,10 @@ class Trajectory(MSONable):
 
             lines.append(f"Direct configuration=     {idx + 1}")
 
-            for coord, specie in zip(coords, self.species, strict=True):
-                line = f"{' '.join(format_str.format(c) for c in coord)} {specie}"
-                lines.append(line)
+            lines.extend(
+                f"{coord_fmt.format(*coord)} {specie}"
+                for coord, specie in zip(coords.tolist(), species_strs, strict=True)
+            )
 
         xdatcar_str = "\n".join(lines) + "\n"
 
@@ -611,7 +624,7 @@ class Trajectory(MSONable):
         len2: int,
     ) -> tuple[np.ndarray, bool]:
         """Helper function to combine trajectory lattice."""
-        if lat1.ndim == lat2.ndim == 2:
+        if lat1.ndim == lat2.ndim == 2 and np.allclose(lat1, lat2):
             constant_lat = True
             lat = lat1
         else:
@@ -762,7 +775,7 @@ class Trajectory(MSONable):
                 `constant_lattice = None`.
             additional_fields (Sequence of str, defaults to ["temperature", "velocities"]) :
                 Optional other fields to save in the pymatgen .Trajectory.
-                Valid options are "temperature" and "velocities".
+                Valid options are "temperature" and "velocities" (stored as a site property in A/fs).
 
         Returns:
             pymatgen .Trajectory
@@ -784,11 +797,11 @@ class Trajectory(MSONable):
         converter = adaptor.get_structure if (is_pbc := any(trajectory[0].pbc)) else adaptor.get_molecule
 
         for atoms in trajectory:
-            site_properties = {}
-            if "velocities" in additional_fields:
-                site_properties["velocities"] = atoms.get_velocities()
-
-            structures.append(converter(atoms, site_properties=site_properties))  # type:ignore[arg-type]
+            # The adaptor converts ASE momenta into a "velocities" site property in A/fs
+            struct = converter(atoms)  # type:ignore[arg-type]
+            if "velocities" not in additional_fields and "velocities" in struct.site_properties:
+                struct.remove_site_property("velocities")
+            structures.append(struct)  # type:ignore[arg-type]
 
             if store_frame_properties and atoms.calc:
                 props = {v: atoms.calc.get_property(k) for k, v in property_map.items()}
@@ -802,11 +815,10 @@ class Trajectory(MSONable):
         if is_pbc:
             # Molecules have no lattice, so constant_lattice is only inferred for periodic trajectories
             if constant_lattice is None:
-                constant_lattice = all(
-                    np.all(np.abs(ref_struct.lattice.matrix - structures[j].lattice.matrix) < lattice_match_tol)
-                    for i, ref_struct in enumerate(structures)
-                    for j in range(i + 1, len(structures))
-                )
+                # Every pair of frames agrees to within the tolerance iff each matrix element's
+                # spread (max - min) over the frames does: O(M) instead of comparing all O(M^2) pairs
+                matrices = np.array([struct.lattice.matrix for struct in structures])
+                constant_lattice = len(structures) < 2 or bool(np.all(np.ptp(matrices, axis=0) < lattice_match_tol))
             return cls.from_structures(structures, constant_lattice=constant_lattice, frame_properties=frame_props)
         return cls.from_molecules(
             structures,  # type:ignore[arg-type]
@@ -860,7 +872,7 @@ class Trajectory(MSONable):
 
         frame_props = self.frame_properties or [{} for _ in range(len(self))]
         for idx, structure in enumerate(self):
-            atoms = adaptor.get_atoms(structure, msonable=False, velocities=structure.site_properties.get("velocities"))
+            atoms = adaptor.get_atoms(structure, msonable=False)
 
             props: dict[str, Any] = {k: frame_props[idx][v] for k, v in property_map.items() if v in frame_props[idx]}
 

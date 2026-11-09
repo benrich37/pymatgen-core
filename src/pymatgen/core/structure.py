@@ -43,7 +43,7 @@ from tabulate import tabulate
 # lazily inside the few methods that use them (merge_sites,
 # get_primitive_structure, rotate_sites, interpolate). Together they account
 # for ~85 ms of cold `from pymatgen.core import Structure` import time.
-from pymatgen.core.bonds import CovalentBond, get_bond_length
+from pymatgen.core.bonds import CovalentBond, bond_lengths, get_bond_length
 from pymatgen.core.composition import Composition
 from pymatgen.core.lattice import Lattice, get_points_in_spheres
 from pymatgen.core.operations import SymmOp
@@ -57,6 +57,7 @@ from pymatgen.core.units import Length, Mass
 # + symmetry.groups (~6-10 ms) on every `from pymatgen.core import Structure`.
 from pymatgen.util.coord import all_distances, get_angle, lattice_points_in_supercell
 from pymatgen.util.due import Doi, due
+from pymatgen.util.misc import is_np_dict_equal
 
 try:
     from typing import override  # Python 3.12+
@@ -94,6 +95,50 @@ FileFormats: TypeAlias = Literal[
 ]
 
 
+def _all_sites_in(sites: Sequence[Site], others: Sequence[Site]) -> bool:
+    """Equivalent to ``all(site in others for site in sites)``, but in O(N log N) instead of O(N^2).
+
+    Site equality requires np.allclose Cartesian coords, so each site is only compared (with ==, as
+    ``in`` does) against the sites of ``others`` found within a generous coordinate tolerance by a cKDTree.
+
+    Args:
+        sites: Sites that must all be present in others.
+        others: Sites to search.
+
+    Returns:
+        bool: True if every site in sites is equal to (or is) some site in others.
+    """
+    # Brute force is faster for a few sites
+    if len(sites) <= 4:
+        return all(site in others for site in sites)
+    try:
+        coords = np.array([site.coords for site in sites], dtype=np.float64)
+        other_coords = np.array([site.coords for site in others], dtype=np.float64)
+    except (AttributeError, TypeError, ValueError):
+        coords = other_coords = np.empty(0)
+    if (
+        len(others) == 0
+        or coords.shape != (len(sites), 3)
+        or other_coords.shape != (len(others), 3)
+        or not (np.isfinite(coords).all() and np.isfinite(other_coords).all())
+    ):
+        return all(site in others for site in sites)
+
+    from scipy.spatial import cKDTree
+
+    # np.allclose(a, b, atol) requires |a - b| <= atol + rtol * |b| (rtol = 1e-5) for each component.
+    # Use twice the largest such bound as search radius so no equal site can be missed.
+    atol = max(
+        getattr(cls, "position_atol", Site.position_atol) for cls in {Site, *map(type, sites), *map(type, others)}
+    )
+    radii = 2 * (atol + 1e-5 * np.abs(coords).max(axis=1))
+    candidates = cKDTree(other_coords).query_ball_point(coords, radii, p=np.inf)
+    return all(
+        any(others[idx] is site or others[idx] == site for idx in cand)
+        for site, cand in zip(sites, candidates, strict=True)
+    )
+
+
 class Neighbor(Site):
     """Simple Site subclass to contain a neighboring atom that skips all the unnecessary checks for speed. Can be
     used as a fixed-length tuple of size 3 to retain backwards compatibility with past use cases.
@@ -122,12 +167,15 @@ class Neighbor(Site):
             index: Index within structure.
             label: Label for the site. Defaults to None.
         """
-        self._species: Composition = species
-        self.coords: NDArray = coords
-        self.properties: dict = properties or {}
-        object.__setattr__(self, "nn_distance", nn_distance)
-        object.__setattr__(self, "index", index)
-        self._label = label
+        # Set the instance attributes directly, bypassing the slow Site.__setattr__
+        vars(self).update(
+            _species=species,
+            coords=coords,
+            properties=properties or {},
+            nn_distance=nn_distance,
+            index=index,
+            _label=label,
+        )
 
     def __len__(self) -> Literal[3]:
         """Make neighbor Tuple-like to retain backwards compatibility."""
@@ -190,14 +238,17 @@ class PeriodicNeighbor(PeriodicSite):
             image (tuple, optional): PeriodicImage. Defaults to (0, 0, 0).
             label (str, optional): Label for the site. Defaults to None.
         """
-        self._lattice = lattice
-        self._frac_coords = coords
-        self._species = species
-        self.properties = properties or {}
-        object.__setattr__(self, "nn_distance", nn_distance)
-        object.__setattr__(self, "index", index)
-        object.__setattr__(self, "image", image)
-        self._label = label
+        # Set the instance attributes directly, bypassing the slow Site.__setattr__
+        vars(self).update(
+            _lattice=lattice,
+            _frac_coords=coords,
+            _species=species,
+            properties=properties or {},
+            nn_distance=nn_distance,
+            index=index,
+            image=image,
+            _label=label,
+        )
 
     def __len__(self) -> Literal[4]:
         """Make neighbor Tuple-like to retain backwards compatibility."""
@@ -840,7 +891,7 @@ class SiteCollection(Sequence[SiteType], ABC, Generic[SiteType]):
         optimizer: str | Optimizer = "FIRE",
         steps: int = 500,
         fmax: float = 0.1,
-        stress_weight: float = 0.01,
+        stress_weight: float = 1 / 160.21766208,
         opt_kwargs: dict | None = None,
         return_trajectory: bool = False,
         verbose: bool = False,
@@ -856,8 +907,8 @@ class SiteCollection(Sequence[SiteType], ABC, Generic[SiteType]):
             steps (int): max number of steps for relaxation. Defaults to 500.
             fmax (float): total force tolerance for relaxation convergence.
                 Here fmax is a sum of force and stress forces. Defaults to 0.1.
-            stress_weight (float): the stress weight for relaxation with M3GNet.
-                Defaults to 0.01.
+            stress_weight (float): factor applied to the MatGL stress (in GPa) for relaxation. Defaults to
+                1 / 160.21766208, which converts GPa to eV/A^3, the stress unit ASE expects.
             opt_kwargs (dict): kwargs for the ASE optimizer class.
             return_trajectory (bool): Whether to return the trajectory of relaxation.
                 Defaults to False.
@@ -963,7 +1014,7 @@ class SiteCollection(Sequence[SiteType], ABC, Generic[SiteType]):
                 from matgl.ext.ase import PESCalculator
             except ImportError:
                 raise ImportError("matgl not installed. Try `pip install matgl`.")
-            calculator = "M3GNet-MP-2021.2.8-PES" if calculator.lower() == "m3gnet" else calculator
+            calculator = "M3GNet-PES-MatPES-r2SCAN-2025.2" if calculator.lower() == "m3gnet" else calculator
             potential = matgl.load_model(calculator)
             return PESCalculator(potential=potential, **params)
 
@@ -1121,7 +1172,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             return False
         if self.properties != other.properties:
             return False
-        return all(site in other for site in self)
+        return _all_sites_in(self.sites, other.sites)
 
     def __hash__(self) -> int:
         """Use the composition hash for now."""
@@ -1178,7 +1229,9 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 )
                 new_sites.append(periodic_site)
 
-        new_charge = self._charge * np.linalg.det(scale_matrix) if self._charge is not None else None
+        # Number of primitive cells in the supercell is |det|; a left-handed scaling matrix must not flip the charge
+        n_cells = round(abs(np.linalg.det(scale_matrix)))
+        new_charge = self._charge * n_cells if self._charge is not None else None
         return Structure.from_sites(new_sites, charge=new_charge, to_unit_cell=True).relabel_sites(ignore_uniq=True)
 
     def __rmul__(self, scaling_matrix):
@@ -1771,27 +1824,63 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         Returns:
             tuple: (center_indices, points_indices, offset_vectors, distances)
         """
-        neighbors = self.get_all_neighbors_py(
+        site_coords = np.array([site.coords for site in (self.sites if sites is None else sites)])
+        point_neighbors = get_points_in_spheres(
+            self.cart_coords,
+            site_coords,
             r=r,
-            include_index=True,
-            include_image=True,
-            sites=sites,
+            pbc=self.pbc,
             numerical_tol=numerical_tol,
+            lattice=self.lattice,
         )
         center_indices: list[int] = []
         points_indices: list[int] = []
         offsets: list[tuple] = []
         distances: list[float] = []
-        for idx, nns in enumerate(neighbors):
-            if len(nns) > 0:
-                for nn in nns:
-                    if exclude_self and idx == nn.index and nn.nn_distance <= numerical_tol:
-                        continue
-                    center_indices.append(idx)
-                    points_indices.append(nn.index)
-                    offsets.append(nn.image)
-                    distances.append(nn.nn_distance)
-        return np.array(center_indices), np.array(points_indices), np.array(offsets), np.array(distances)
+        for idx, nns in enumerate(point_neighbors):
+            for _, dist, index, image in nns:
+                center_indices.append(idx)
+                points_indices.append(index)
+                offsets.append(tuple(image))
+                distances.append(dist)
+        neighbor_list = (np.array(center_indices), np.array(points_indices), np.array(offsets), np.array(distances))
+        if not exclude_self:
+            return neighbor_list
+        keep = ~self._self_pair_mask(sites, neighbor_list[0], neighbor_list[1], neighbor_list[3], numerical_tol)
+        return tuple(arr[keep] for arr in neighbor_list)  # type:ignore[return-value]
+
+    def _self_pair_mask(
+        self,
+        sites: Sequence[Site] | None,
+        center_indices: NDArray[np.int_],
+        points_indices: NDArray[np.int_],
+        distances: NDArray[np.float64],
+        numerical_tol: float,
+    ) -> NDArray[np.bool_]:
+        """Mask of the neighbor-list pairs that pair a center site with itself.
+
+        With sites=None, the centers are the structure sites and a self pair is the zero-distance
+        pair of a site with its own index. Otherwise the position of a site in `sites` is unrelated
+        to its index in the structure, so a zero-distance pair is a self pair only if the structure
+        site is the center site itself: the same species, properties and Cartesian coordinates
+        (i.e. the zero image of that site), as in Site equality. An external site coincident with a
+        structure site of another species or properties, or a periodic image of a structure site,
+        is not its own neighbor.
+        """
+        is_zero = distances <= numerical_tol
+        if sites is None:
+            return is_zero & (center_indices == points_indices)
+        mask = np.zeros(len(distances), dtype=bool)
+        all_sites = self.sites
+        for idx in np.flatnonzero(is_zero):
+            csite = sites[center_indices[idx]]
+            psite = all_sites[points_indices[idx]]
+            mask[idx] = csite is psite or (
+                psite.species == csite.species
+                and np.allclose(psite.coords, csite.coords, atol=Site.position_atol)
+                and is_np_dict_equal(psite.properties, csite.properties)
+            )
+        return mask
 
     def get_neighbor_list(
         self,
@@ -1822,7 +1911,10 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 to be within r from the site. The default of 1e-8 should be
                 ok in most instances.
             exclude_self (bool): whether to exclude atom neighboring with itself within
-                numerical tolerance distance, default to True
+                numerical tolerance distance, default to True. If `sites` is given, a site
+                is only excluded as its own neighbor if it is equal to that structure site
+                (same species, properties and coordinates), not based on its position in `sites`.
+                An external site coincident with a structure site of another species is kept.
 
         Returns:
             tuple: (center_indices, points_indices, offset_vectors, distances)
@@ -1830,35 +1922,28 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         try:
             from pymatgen.optimization.neighbors import find_points_in_spheres
         except ImportError:
-            if sites is None:
-                return self._get_neighbor_list_py(r, None, exclude_self=exclude_self)
-            return self._get_neighbor_list_py(r, list(sites), exclude_self=exclude_self)
+            return self._get_neighbor_list_py(
+                r,
+                None if sites is None else list(sites),
+                numerical_tol=numerical_tol,
+                exclude_self=exclude_self,
+            )
 
-        else:
-            if sites is None:
-                sites = self.sites
-            site_coords = np.ascontiguousarray([site.coords for site in sites], dtype=float)
-            cart_coords = np.ascontiguousarray(self.cart_coords, dtype=float)
-            lattice_matrix = np.ascontiguousarray(self.lattice.matrix, dtype=float)
-            pbc = np.ascontiguousarray(self.pbc, dtype=np.int64)
-            center_indices, points_indices, images, distances = find_points_in_spheres(
-                cart_coords,
-                site_coords,
-                r=r,
-                pbc=pbc,
-                lattice=lattice_matrix,
-                tol=numerical_tol,
-            )
-            cond = np.array([True] * len(center_indices))
-            if exclude_self:
-                self_pair = (center_indices == points_indices) & (distances <= numerical_tol)
-                cond = ~self_pair
-            return (
-                center_indices[cond],
-                points_indices[cond],
-                images[cond],
-                distances[cond],
-            )
+        site_coords = np.ascontiguousarray(
+            [site.coords for site in (self.sites if sites is None else sites)], dtype=float
+        )
+        center_indices, points_indices, images, distances = find_points_in_spheres(
+            np.ascontiguousarray(self.cart_coords, dtype=float),
+            site_coords,
+            r=r,
+            pbc=np.ascontiguousarray(self.pbc, dtype=np.int64),
+            lattice=np.ascontiguousarray(self.lattice.matrix, dtype=float),
+            tol=numerical_tol,
+        )
+        if not exclude_self:
+            return center_indices, points_indices, images, distances
+        keep = ~self._self_pair_mask(sites, center_indices, points_indices, distances, numerical_tol)
+        return center_indices[keep], points_indices[keep], images[keep], distances[keep]
 
     def get_symmetric_neighbor_list(
         self,
@@ -1924,26 +2009,29 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 )
 
         # Get a list of neighbors up to distance r
-        bonds = self.get_neighbor_list(r)
+        bonds = self.get_neighbor_list(r, numerical_tol=numerical_tol, exclude_self=exclude_self)
 
         if unique:
-            redundant = []
-            # Compare all neighbors pairwise to find the pairs that connect the same
-            # two sites, but with an inverted vector (R=-R) that connects the two and add
-            # one of each pair to the redundant list.
-            for idx, (i, j, R, d) in enumerate(zip(*bonds, strict=True)):
-                if idx in redundant:
+            # Find the pairs of neighbors that connect the same two sites, but with an
+            # inverted vector (R=-R), and mark the second one of each pair as redundant.
+            # Bonds are indexed by (center, neighbor, image) to look up the reverse bond directly.
+            keys = [
+                (i, j, tuple(image))
+                for i, j, image in zip(bonds[0].tolist(), bonds[1].tolist(), bonds[2].tolist(), strict=True)
+            ]
+            bond_indices: dict[tuple, list[int]] = defaultdict(list)
+            for idx, key in enumerate(keys):
+                bond_indices[key].append(idx)
+            redundant = np.zeros(len(keys), dtype=bool)
+            for idx, (i, j, image) in enumerate(keys):
+                if redundant[idx]:
                     continue
-                for jdx, (i2, j2, R2, d2) in enumerate(zip(*bonds, strict=True)):
-                    bool1 = i == j2
-                    bool2 = j == i2
-                    bool3 = (-R2 == R).all()
-                    bool4 = np.allclose(d, d2, atol=numerical_tol)
-                    if bool1 and bool2 and bool3 and bool4:
-                        redundant.append(jdx)
+                for jdx in bond_indices.get((j, i, tuple(-x for x in image)), []):
+                    if np.allclose(bonds[3][idx], bonds[3][jdx], atol=numerical_tol):
+                        redundant[jdx] = True
 
             # Delete the redundant neighbors
-            m = ~np.isin(np.arange(len(bonds[0])), redundant)
+            m = ~redundant
             idcs_dist = np.argsort(bonds[3][m])
             bonds = (
                 bonds[0][m][idcs_dist],
@@ -2075,47 +2163,38 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             [[pymatgen.core.structure.PeriodicNeighbor], ...]: a list of
                 list of neighbors for each site in structure.
         """
+        # Pass the structure sites explicitly (rather than None) so that self exclusion is based on site
+        # equality: coincident identical sites, e.g. duplicates, are not listed as neighbors of each other.
         if sites is None:
             sites = self.sites
         center_indices, points_indices, images, distances = self.get_neighbor_list(
             r=r, sites=sites, numerical_tol=numerical_tol
         )
+        n_centers = len(sites)
         if len(points_indices) < 1:
-            return [[]] * len(sites)
+            return [[] for _ in range(n_centers)]
         f_coords = self.frac_coords[points_indices] + images
         neighbor_dict: dict[int, list] = defaultdict(list)
         lattice = self.lattice
-        atol = Site.position_atol
         all_sites = self.sites
         for cindex, pindex, image, f_coord, d in zip(
             center_indices, points_indices, images, f_coords, distances, strict=True
         ):
             psite = all_sites[pindex]
-            csite = sites[cindex]
-            if (
-                d > numerical_tol
-                or
-                # This simply compares the psite and csite. The reason why manual comparison is done is
-                # for speed. This does not check the lattice since they are always equal. Also, the or construct
-                # returns True immediately once one of the conditions are satisfied.
-                psite.species != csite.species
-                or (not np.allclose(psite.coords, csite.coords, atol=atol))
-                or (psite.properties != csite.properties)
-            ):
-                neighbor_dict[cindex].append(
-                    PeriodicNeighbor(
-                        species=psite.species,
-                        coords=f_coord,
-                        lattice=lattice,
-                        properties=psite.properties,
-                        nn_distance=d,
-                        index=pindex,
-                        image=tuple(image),
-                        label=psite.label,
-                    )
+            neighbor_dict[cindex].append(
+                PeriodicNeighbor(
+                    species=psite.species,
+                    coords=f_coord,
+                    lattice=lattice,
+                    properties=psite.properties,
+                    nn_distance=d,
+                    index=pindex,
+                    image=tuple(image),
+                    label=psite.label,
                 )
+            )
 
-        return [neighbor_dict[i] for i in range(len(sites))]
+        return [neighbor_dict[i] for i in range(n_centers)]
 
     def get_all_neighbors_py(
         self,
@@ -2385,7 +2464,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         new_site_props = self.site_properties
         if site_properties:
             new_site_props.update(site_properties)
-        props = self.properties
+        props = dict(self.properties)
         if properties:
             props.update(properties)
         if not sanitize:
@@ -2632,37 +2711,42 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         super_ftol = np.divide(tolerance, self.lattice.abc)
         super_ftol_2 = super_ftol * 2
 
-        def pbc_coord_intersection(fc1, fc2, tol):
-            """
-            Get the fractional coords in fc1 that have coordinates
-            within tolerance to some coordinate in fc2.
-            """
-            from scipy.spatial import cKDTree
+        from scipy.spatial import cKDTree
 
-            tol = np.asarray(tol, dtype=float)
-            scale = 1.0 / tol
-            boxsize = scale
+        # Coordinates are scaled by 1 / tolerance into a periodic box so that "within tolerance along
+        # every axis" becomes a Chebyshev distance < 1 in a periodic cKDTree.
+        box = 1.0 / super_ftol_2
+        # sparse_distance_matrix keeps pairs with distance <= max_distance, so use the largest float < 1
+        max_dist = np.nextafter(1.0, 0.0)
 
-            fc1_scaled = (fc1 % 1.0) * scale
-            fc2_scaled = (fc2 % 1.0) * scale
-
+        def to_box(fcoords: NDArray) -> NDArray:
+            scaled = (fcoords % 1.0) * box
             # cKDTree requires all coords strictly < boxsize
-            np.clip(fc1_scaled, 0, boxsize * (1 - 1e-15), out=fc1_scaled)
-            np.clip(fc2_scaled, 0, boxsize * (1 - 1e-15), out=fc2_scaled)
-
-            tree = cKDTree(fc2_scaled, boxsize=boxsize)
-            dist, _ = tree.query(fc1_scaled, p=np.inf, distance_upper_bound=1.0)
-            return fc1[np.isfinite(dist)]
+            return np.clip(scaled, 0, box * (1 - 1e-15), out=scaled)
 
         # Here we reduce the number of min_vecs by enforcing that every
-        # vector in min_vecs approximately maps each site onto a similar site.
+        # vector in min_vecs approximately maps each site onto a similar site,
+        # i.e. for every site f in a group, it must be close to group - group[f].
         # The subsequent processing is O(fu^3 * min_vecs) = O(n^4) if we do no
         # reduction.
         # This reduction is O(n^3) so usually is an improvement. Using double
-        # the tolerance because both vectors are approximate
+        # the tolerance because both vectors are approximate.
+        # The translations of many sites f are checked in one cKDTree query (chunked to bound memory).
         for group in sorted(grouped_frac_coords, key=len):
-            for frac_coords in group:
-                min_vecs = pbc_coord_intersection(min_vecs, group - frac_coords, super_ftol_2)
+            n_grp = len(group)
+            chunk = max(1, 2**18 // n_grp)
+            for start in range(0, n_grp, chunk):
+                if len(min_vecs) == 0:
+                    break
+                # Row f holds group - group[f]
+                translations = group[None, :, :] - group[start : start + chunk, None, :]
+                n_rows = len(translations)
+                vec_tree = cKDTree(to_box(min_vecs), boxsize=box)
+                trans_tree = cKDTree(to_box(translations.reshape(-1, 3)), boxsize=box)
+                pairs = vec_tree.sparse_distance_matrix(trans_tree, max_dist, p=np.inf, output_type="ndarray")
+                is_close = np.zeros((len(min_vecs), n_rows), dtype=bool)
+                is_close[pairs["i"], pairs["j"] // n_grp] = True
+                min_vecs = min_vecs[is_close.all(axis=1)]
 
         def get_hnf(form_units):
             """Get all possible distinct supercell matrices given a
@@ -3199,10 +3283,16 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             symprec (float): Tolerance for symmetry determination. Defaults to 0.01 A.
             **kwargs: Additional arguments passed to the respective backend's constructor.
                 For spglib, these are passed to SpacegroupAnalyzer (e.g. symprec, angle_tolerance).
-                For moyopy, these are passed to MoyoDataset constructor.
+                For moyopy, these are passed to MoyoDataset constructor. The setting defaults to
+                moyopy.Setting.spglib() so that both backends choose the same Hall setting; pass
+                setting=moyopy.Setting.standard() for the ITA standard setting.
 
         Returns:
-            MoyoDataset | SpglibDataset: Symmetry dataset from the chosen backend.
+            dict | MoyoDataset | SpglibDataset: The raw symmetry dataset from the chosen backend if
+                return_raw_dataset, else a dict with the keys "hall_number", "number", "international" (short
+                Hermann-Mauguin symbol), "site_symmetry_symbols", "wyckoffs", "orbits" and "std_origin_shift". All
+                but "std_origin_shift" agree between backends; the origin of the standardized cell is only unique up
+                to the symmetry-equivalent choices, and the backends may pick different ones.
 
         Raises:
             ImportError: If the requested backend is not installed.
@@ -3221,6 +3311,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
 
             # Convert structure to MoyoDataset format
             moyo_cell = moyopy.interface.MoyoAdapter.from_structure(cast("Structure", self))
+            kwargs.setdefault("setting", moyopy.Setting.spglib())
             dataset = moyopy.MoyoDataset(cell=moyo_cell, symprec=symprec, **kwargs)
 
         else:
@@ -3239,9 +3330,10 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             dictdata["orbits"] = dataset.crystallographic_orbits
             dictdata["std_origin_shift"] = dataset.origin_shift
         else:
-            from pymatgen.symmetry.groups import SpaceGroup
+            from moyopy import HallSymbolEntry
 
-            dictdata["international"] = SpaceGroup.from_int_number(dataset.number).symbol
+            # Short HM symbol of the Hall setting, in spglib's spelling ("P 2_1/c" -> "P2_1/c")
+            dictdata["international"] = HallSymbolEntry(dataset.hall_number).hm_short.replace(" ", "")
             dictdata["orbits"] = dataset.orbits
             dictdata["std_origin_shift"] = dataset.std_origin_shift
 
@@ -3348,7 +3440,7 @@ class IMolecule(SiteCollection[Site], MSONable):
             return False
         if self.properties != other.properties:
             return False
-        return all(site in other for site in self)
+        return _all_sites_in(self.sites, other.sites)
 
     def __hash__(self) -> int:
         """Use the composition hash for now."""
@@ -3406,7 +3498,13 @@ class IMolecule(SiteCollection[Site], MSONable):
         Returns:
             IMolecule
         """
-        return type(self).from_sites(self, properties=self.properties)
+        return type(self).from_sites(
+            self,
+            charge=self._charge,
+            spin_multiplicity=self._spin_multiplicity,
+            charge_spin_check=self._charge_spin_check,
+            properties=dict(self.properties),
+        )
 
     @classmethod
     def from_sites(
@@ -3441,10 +3539,11 @@ class IMolecule(SiteCollection[Site], MSONable):
         """
         if len(sites) < 1:
             raise ValueError(f"You need at least 1 site to make a {cls.__name__}")
-        props = defaultdict(list)
-        for site in sites:
-            for k, v in site.properties.items():
-                props[k].append(v)
+        props: dict[str, list] = {}
+        for idx, site in enumerate(sites):
+            for key, val in site.properties.items():
+                # Sites missing a property get None so values stay aligned with their sites
+                props.setdefault(key, [None] * len(sites))[idx] = val
         labels = [site.label for site in sites]
         return cls(
             [site.species for site in sites],
@@ -3506,11 +3605,45 @@ class IMolecule(SiteCollection[Site], MSONable):
         Returns:
             List of bonds
         """
-        bonds = []
-        for site1, site2 in itertools.combinations(self._sites, 2):
-            if CovalentBond.is_bonded(site1, site2, tol):
-                bonds.append(CovalentBond(site1, site2))
-        return bonds
+        sites = self._sites
+        if len(sites) < 2:
+            return []
+
+        # Same criterion as CovalentBond.is_bonded, i.e. distance < (1 + tol) * any tabulated bond
+        # length of the pair of (first) species symbols, but evaluated once per pair of symbols.
+        symbols = [next(iter(site.species)).symbol for site in sites]
+        uniq_symbols = sorted(set(symbols))
+        sym_to_idx = {sym: idx for idx, sym in enumerate(uniq_symbols)}
+        sym_idx = np.array([sym_to_idx[sym] for sym in symbols])
+        cutoffs = np.full((len(uniq_symbols),) * 2, -np.inf)
+        has_data = np.zeros_like(cutoffs, dtype=bool)
+        for (idx_a, sym_a), (idx_b, sym_b) in itertools.combinations_with_replacement(enumerate(uniq_symbols), 2):
+            if (key := (sym_a, sym_b)) in bond_lengths:
+                has_data[idx_a, idx_b] = has_data[idx_b, idx_a] = True
+                cutoffs[idx_a, idx_b] = cutoffs[idx_b, idx_a] = max(
+                    ((1 + tol) * length for length in bond_lengths[key].values()), default=-np.inf
+                )
+
+        if not has_data.all():
+            # Raise for the first pair of sites without bond data, as CovalentBond.is_bonded does
+            for idx in np.flatnonzero(~has_data[sym_idx].all(axis=1)):
+                if (no_data := ~has_data[sym_idx[idx], sym_idx[idx + 1 :]]).any():
+                    syms = sorted([symbols[idx], symbols[idx + 1 + int(np.argmax(no_data))]])
+                    raise ValueError(f"No bond data for elements {syms[0]} - {syms[1]}")
+
+        if cutoffs.max() <= 0:
+            return []
+
+        from scipy.spatial import cKDTree
+
+        # Candidate pairs from a cKDTree (with a small margin), then the exact check on each candidate
+        pairs = cKDTree(self.cart_coords).query_pairs(cutoffs.max() * (1 + 1e-6), output_type="ndarray")
+        pairs = pairs[np.lexsort((pairs[:, 1], pairs[:, 0]))]
+        return [
+            CovalentBond(sites[idx], sites[jdx])
+            for idx, jdx in pairs.tolist()
+            if sites[idx].distance(sites[jdx]) < cutoffs[sym_idx[idx], sym_idx[jdx]]
+        ]
 
     def get_zmatrix(self) -> str:
         """Get a z-matrix representation of the molecule."""
@@ -3718,6 +3851,12 @@ class IMolecule(SiteCollection[Site], MSONable):
 
         centered_coords = self.cart_coords - self.center_of_mass + offset
         rng = np.random.default_rng()
+        half_box = np.array([a, b, c]) / 2
+
+        def crosses_box(coords: NDArray, box_center: list[float]) -> bool:
+            # Each image has its own a x b x c sub-box centered on box_center
+            rel = coords - box_center
+            return bool(np.any(rel > half_box) or np.any(rel < -half_box))
 
         for i, j, k in itertools.product(
             list(range(images[0])),
@@ -3734,12 +3873,8 @@ class IMolecule(SiteCollection[Site], MSONable):
                     )
                     rot_mat = op.rotation_matrix
                     new_coords = np.dot(rot_mat, centered_coords.T).T + box_center
-                    if no_cross:
-                        x_max, x_min = max(new_coords[:, 0]), min(new_coords[:, 0])
-                        y_max, y_min = max(new_coords[:, 1]), min(new_coords[:, 1])
-                        z_max, z_min = max(new_coords[:, 2]), min(new_coords[:, 2])
-                        if x_max > a or x_min < 0 or y_max > b or y_min < 0 or z_max > c or z_min < 0:
-                            raise ValueError("Molecule crosses boundary of box")
+                    if no_cross and crosses_box(new_coords, box_center):
+                        raise ValueError("Molecule crosses boundary of box")
                     if not all_coords:
                         break
                     distances = lattice.get_all_distances(
@@ -3750,12 +3885,8 @@ class IMolecule(SiteCollection[Site], MSONable):
                         break
             else:
                 new_coords = centered_coords + box_center
-                if no_cross:
-                    x_max, x_min = max(new_coords[:, 0]), min(new_coords[:, 0])
-                    y_max, y_min = max(new_coords[:, 1]), min(new_coords[:, 1])
-                    z_max, z_min = max(new_coords[:, 2]), min(new_coords[:, 2])
-                    if x_max > a or x_min < 0 or y_max > b or y_min < 0 or z_max > c or z_min < 0:
-                        raise ValueError("Molecule crosses boundary of box")
+                if no_cross and crosses_box(new_coords, box_center):
+                    raise ValueError("Molecule crosses boundary of box")
             all_coords.extend(new_coords)
 
         site_props = {key: sequence * nimages for key, sequence in self.site_properties.items()}  # type: ignore[operator]
@@ -3861,7 +3992,13 @@ class IMolecule(SiteCollection[Site], MSONable):
         mol = dispatch_read_str(handler, input_string)
         if isinstance(mol, dict):  # pragma: no cover — defensive; readers should return Molecules
             return cls.from_dict(mol)
-        return cls.from_sites(mol, properties=mol.properties)
+        return cls.from_sites(
+            mol,
+            charge=mol.charge,
+            spin_multiplicity=mol.spin_multiplicity,
+            charge_spin_check=mol._charge_spin_check,
+            properties=mol.properties,
+        )
 
     @classmethod
     def from_file(cls, filename: PathLike) -> IMolecule | Molecule:  # type:ignore[override]
@@ -4026,8 +4163,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
             self.replace_species({idx: site})  # type: ignore[dict-item]
             return
         elif isinstance(idx, slice):
-            to_mod = self[idx]
-            indices = [ii for ii, site in enumerate(self) if site in to_mod]
+            indices = list(range(len(self))[idx])
         else:
             indices = list(idx)
 
@@ -4242,7 +4378,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
 
         # Pass value of functional group--either from user-defined or from
         # functional.json
-        if isinstance(func_group, Molecule):
+        if isinstance(func_group, IMolecule):
             fgroup = func_group
 
         else:
@@ -4261,8 +4397,9 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         except TypeError:
             bl = None
 
+        # Work on a copy so neither the caller's molecule nor the shared FunctionalGroups template is mutated
+        fgroup = Molecule.from_sites(fgroup)
         if bl is not None:
-            fgroup = fgroup.copy()
             vec = fgroup[0].coords - fgroup[1].coords
             vec /= np.linalg.norm(vec)
             fgroup[0] = "X", fgroup[1].coords + float(bl) * vec
@@ -4411,7 +4548,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
             Structure: self if inplace=True else new structure with strain applied.
         """
         strain_matrix = (1 + np.array(strain)) * np.eye(3)
-        new_lattice = Lattice(np.dot(self._lattice.matrix.T, strain_matrix).T)
+        new_lattice = Lattice(np.dot(self._lattice.matrix.T, strain_matrix).T, pbc=self._lattice.pbc)
         struct = self if inplace else self.copy()
         struct.lattice = new_lattice
         return struct
@@ -4537,8 +4674,9 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         Args:
             distance (float): The maximum distance for the translation of each site. The corresponding
                 random vector's magnitude will not exceed this distance.
-            min_distance (float | None): Minimum distance for the perturbation range. Defaults to None,
-                which means all perturbations are the same magnitude.
+            min_distance (float | None): Minimum distance for the perturbation range. Defaults to 0.0, i.e.
+                magnitudes are drawn uniformly from [0, distance]. None means all perturbations have
+                magnitude equal to distance.
             seed (int | None): Seed for the random number generator to ensure reproducibility. If None
                 (the default for numpy's generator), the generator will be initialized without a specific seed.
 
@@ -4597,6 +4735,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
                 site.to_unit_cell(in_place=True)
         struct.sites = supercell.sites
         struct.lattice = supercell.lattice
+        struct._charge = supercell._charge
 
         return struct
 
@@ -4692,12 +4831,12 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
 
     def relax(
         self,
-        calculator: str | Calculator = "TensorNet-MatPES-PBE-v2025.1-PES",
+        calculator: str | Calculator = "TensorNet-PES-MatPES-r2SCAN-2025.2",
         relax_cell: bool = True,
         optimizer: str | Optimizer = "FIRE",
         steps: int = 500,
         fmax: float = 0.1,
-        stress_weight: float = 0.01,
+        stress_weight: float = 1 / 160.21766208,
         opt_kwargs: dict | None = None,
         return_trajectory: bool = False,
         verbose: bool = False,
@@ -4706,15 +4845,16 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         """Perform a crystal structure relaxation using an ASE calculator.
 
         Args:
-            calculator: An ASE Calculator or a string from the following options: "TensorNet-MatPES-PBE-v2025.1-PES".
-                Defaults to 'TensorNet-MatPES-PBE-v2025.1-PES' universal potential.
+            calculator: An ASE Calculator or the name of a MatGL pre-trained potential, e.g.
+                "TensorNet-PES-MatPES-r2SCAN-2025.2". Defaults to the r2SCAN-level
+                "TensorNet-PES-MatPES-r2SCAN-2025.2" foundation potential.
             relax_cell (bool): whether to relax the lattice cell. Defaults to True.
             optimizer (str): name of the ASE optimizer class to use
             steps (int): max number of steps for relaxation. Defaults to 500.
             fmax (float): total force tolerance for relaxation convergence.
                 Here fmax is a sum of force and stress forces. Defaults to 0.1.
-            stress_weight (float): the stress weight for relaxation with M3GNet.
-                Defaults to 0.01.
+            stress_weight (float): factor applied to the MatGL stress (in GPa) for relaxation. Defaults to
+                1 / 160.21766208, which converts GPa to eV/A^3, the stress unit ASE expects.
             opt_kwargs (dict): kwargs for the ASE optimizer class.
             return_trajectory (bool): Whether to return the trajectory of relaxation.
                 Defaults to False.
@@ -4740,14 +4880,15 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
 
     def calculate(
         self,
-        calculator: str | Calculator = "TensorNet-MatPES-PBE-v2025.1-PES",
+        calculator: str | Calculator = "TensorNet-PES-MatPES-r2SCAN-2025.2",
         verbose: bool = False,
     ) -> Calculator:
         """Perform an ASE calculation.
 
         Args:
-            calculator: An ASE Calculator or a string from the following options: "TensorNet-MatPES-PBE-v2025.1-PES".
-                Defaults to 'TensorNet-MatPES-PBE-v2025.1-PES' universal potential.
+            calculator: An ASE Calculator or the name of a MatGL pre-trained potential, e.g.
+                "TensorNet-PES-MatPES-r2SCAN-2025.2". Defaults to the r2SCAN-level
+                "TensorNet-PES-MatPES-r2SCAN-2025.2" foundation potential.
             verbose (bool): whether to print stdout. Defaults to False.
 
         Returns:
@@ -4755,7 +4896,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         """
         return self._calculate(calculator, verbose=verbose)
 
-    def calc_property(self, prop: str, calculator="TensorNet-MatPES-PBE-v2025.1-PES", **kwargs) -> dict:
+    def calc_property(self, prop: str, calculator="TensorNet-PES-MatPES-r2SCAN-2025.2", **kwargs) -> dict:
         """Calculate the specified material property using the provided calculation method or default calculator.
 
         Dynamically maps the property to its corresponding calculation class and performs the computation.
@@ -4763,7 +4904,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         Args:
             prop (str): The material property to calculate. Expected values are "elastic", "phonon", or "eos".
             calculator (str): The specific calculator to use for the computation. Defaults to
-                "TensorNet-MatPES-PBE-v2025.1-PES".
+                "TensorNet-PES-MatPES-r2SCAN-2025.2".
             **kwargs: Additional keyword arguments passed to the calculation method.
 
         Returns:
@@ -4956,8 +5097,7 @@ class Molecule(IMolecule, MutableSequence[Site]):
             return
 
         elif isinstance(idx, slice):
-            to_mod = self[idx]
-            indices = [idx for idx, site in enumerate(self._sites) if site in to_mod]
+            indices = list(range(len(self))[idx])
 
         else:
             indices = list(idx)

@@ -247,7 +247,7 @@ class LobsterIn(UserDict, MSONable):
             dict[str, dict[str, Any]]: A dictionary with keys "Same" and "Different",
                 containing the same and differing parameters, respectively.
         """
-        same_params = {}
+        same_params: dict[str, Any] = {}
         diff_params = {}
 
         # Check self
@@ -268,6 +268,8 @@ class LobsterIn(UserDict, MSONable):
                 new_set2 = {value.strip().lower() for value in other[k1]}
                 if new_set1 != new_set2:
                     diff_params[k1] = {"lobsterin1": v1, "lobsterin2": other[k1]}
+                else:
+                    same_params[k1] = v1
 
             # Float/boolean keywords
             elif v1 != other[k1]:
@@ -442,7 +444,11 @@ class LobsterIn(UserDict, MSONable):
         for idx, name in enumerate(potcar_symbols):
             if name not in basis:
                 raise ValueError(
-                    f"Missing basis information for POTCAR symbol: {name}. Please provide the basis manually."
+                    f"Missing basis information for POTCAR symbol: {name}. The basis files shipped with pymatgen "
+                    "only cover the POTCAR symbols of the PBE_54 set, so symbols that only exist in older sets "
+                    "(e.g. W_pv, At_d, Cd_pv and Cd_sv from PBE_52) are not included. Please provide the basis "
+                    "manually, e.g. via dict_for_basis in standard_calculations_from_vasp_files, or pass your "
+                    "own address_basis_file."
                 )
             basis_functions.append(basis[name].split())
             list_forin.append(f"{atom_types_potcar[idx]} {basis[name]}")
@@ -876,10 +882,10 @@ class LobsterIn(UserDict, MSONable):
         elif option == "onlycobi":
             lobsterin_dict["skipdos"] = True
             lobsterin_dict["skipcohp"] = True
+            lobsterin_dict["skipcoop"] = True
             lobsterin_dict["skipPopulationAnalysis"] = True
             lobsterin_dict["skipGrossPopulation"] = True
             # LOBSTER-4.1.0
-            lobsterin_dict["skipcobi"] = True
             lobsterin_dict["skipMadelungEnergy"] = True
 
         elif option == "onlymadelung":

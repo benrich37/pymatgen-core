@@ -327,14 +327,35 @@ class TestEwaldMinimizerExtra:
         with pytest.raises(NotImplementedError, match="Complete algo not yet implemented"):
             EwaldMinimizer(matrix, [[0, 1, [0, 1], "X"]], algo=EwaldMinimizer.ALGO_COMPLETE)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=IndexError,
-        reason="minimize_matrix() skips the search for ALGO_TIME_LIMIT, leaving output_lists empty",
-    )
     def test_time_limit_algo(self, matrix):
+        # minimize_matrix() used to skip the search for ALGO_TIME_LIMIT, so __init__ raised IndexError
         e_min = EwaldMinimizer(matrix, [[0, 2, [0, 1, 2, 3], "X"]], algo=EwaldMinimizer.ALGO_TIME_LIMIT)
         assert e_min.minimized_sum == approx(brute_force_removal(matrix, 2, [0, 1, 2, 3]))
+
+    def test_multiple_manipulations_match_brute_force(self):
+        rng = np.random.default_rng(42)
+        matrix = rng.uniform(-5, 15, size=(10, 10))  # deliberately not symmetric
+        m_list = [[0.5, 2, [1, 3, 5, 7], "a"], [0, 1, [2, 8, 9], "b"]]
+        e_min = EwaldMinimizer(matrix, m_list, num_to_return=100)
+
+        sym = (matrix + matrix.T) / 2
+        energies = []
+        for half in combinations(m_list[0][2], 2):
+            for removed in combinations(m_list[1][2], 1):
+                scale = np.ones(len(matrix))
+                scale[list(half)] = 0.5
+                scale[list(removed)] = 0
+                energies.append((sym * np.outer(scale, scale)).sum())
+
+        # every ordering is returned, sorted by energy, with indices referring to the input matrix
+        assert len(e_min.output_lists) == len(energies)
+        assert [out[0] for out in e_min.output_lists] == approx(sorted(energies))
+        for matrix_sum, output in e_min.output_lists:
+            scale = np.ones(len(matrix))
+            for idx, species in output:
+                scale[idx] = 0.5 if species == "a" else 0
+            assert (sym * np.outer(scale, scale)).sum() == approx(matrix_sum)
+        assert e_min.minimized_sum == approx(min(energies))
 
     def test_best_case_time_limit(self, matrix):
         m_list = [[0, 2, [0, 1, 2, 3], "X"]]
@@ -364,3 +385,29 @@ class TestEwaldMinimizerExtra:
         assert EwaldMinimizer.get_next_index(matrix, [0, 1, sub, "X"], set(sub)) == sub[np.argmax(sums[sub])]
         # f == 1 picks the index with the smallest row sum
         assert EwaldMinimizer.get_next_index(matrix, [1, 1, sub, "X"], set(sub)) == sub[np.argmin(sums[sub])]
+
+
+def _nacl_oxi() -> Structure:
+    struct = Structure.from_spacegroup("Fm-3m", Lattice.cubic(5.6), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+    struct.add_oxidation_state_by_element({"Na": 1, "Cl": -1})
+    return struct
+
+
+def test_ewald_minimizer_does_not_mutate_m_list():
+    matrix = EwaldSummation(_nacl_oxi()).total_energy_matrix
+    m_list = [[0.0, 2, [0, 1, 2, 3], None]]
+    EwaldMinimizer(matrix, m_list, num_to_return=2)
+    # the recursion used to remove indices from the caller's index list
+    assert m_list == [[0.0, 2, [0, 1, 2, 3], None]]
+
+
+def test_compute_sub_structure_uncharged_site():
+    struct = _nacl_oxi()
+    struct.replace(0, Species("Na", 0))
+    ewald = EwaldSummation(struct)
+    # used to raise ZeroDivisionError for the uncharged site
+    assert ewald.compute_sub_structure(struct) == approx(ewald.total_energy_matrix.sum())
+    charged = struct.copy()
+    charged.replace(0, Species("Na", 1))
+    with pytest.raises(ValueError, match="charges site 0, which is uncharged in the original structure"):
+        ewald.compute_sub_structure(charged)

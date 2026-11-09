@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import warnings
 from glob import glob
@@ -686,10 +687,19 @@ from    to  to_image
         assert empty.diff(copy.deepcopy(empty))["dist"] == approx(0.0)
 
     def test_get_subgraphs_as_molecules_twice(self):
+        # repeated calls used to raise RuntimeError("Supercell spacegroup is not None")
         sg = copy.deepcopy(self.mos2_sg)
         assert sg.get_subgraphs_as_molecules() == []
-        with pytest.raises(RuntimeError, match="Supercell spacegroup is not None"):
-            sg.get_subgraphs_as_molecules()
+        assert sg.get_subgraphs_as_molecules() == []
+
+        struct = Structure.from_file(f"{TEST_FILES_DIR}/cif/H6PbCI3N_mp-977013_symmetrized.cif")
+        struct_graph = StructureGraph.from_local_env_strategy(struct, MinimumDistanceNN())
+        first = struct_graph.get_subgraphs_as_molecules()
+        assert [mol.formula for mol in first] == ["H3 C1"]
+        assert [mol.formula for mol in struct_graph.get_subgraphs_as_molecules()] == ["H3 C1"]
+        # the result reflects edges removed after the first call (no stale cached supercell)
+        struct_graph.graph.remove_edges_from(list(struct_graph.graph.edges))
+        assert len(struct_graph.get_subgraphs_as_molecules()) == len(struct.composition)
 
     def test_get_subgraphs_as_molecules_use_weights(self):
         struct = Structure.from_file(f"{TEST_FILES_DIR}/cif/H6PbCI3N_mp-977013_symmetrized.cif")
@@ -1473,3 +1483,234 @@ class TestMoleculeGraph:
         fake_graphviz["popen"].returncode = 2
         with pytest.raises(RuntimeError, match="fdp exited with return code 2"):
             mg.draw_graph_to_file(f"{tmp_path}/co.pdf")
+
+
+@pytest.fixture
+def nacl_cubic() -> Structure:
+    return Structure(Lattice.cubic(3), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+
+
+@pytest.mark.parametrize("scale", [(2, 1, 1), (1, 2, 1), (2, 2, 1), (3, 1, 1)])
+def test_structure_graph_mul_periodic_edge_images(scale):
+    # every edge of the supercell graph must connect sites at the original bond length; reversed
+    # periodic edges used to get the negated *unit cell* image instead of the supercell image
+    struct = Structure(
+        Lattice.from_parameters(3, 3.5, 4, 80, 95, 100), ["Na", "Cl"], [[0.1, 0.2, 0.3], [0.6, 0.55, 0.4]]
+    )
+    sg = StructureGraph.from_empty_graph(struct)
+    sg.add_edge(0, 1, to_jimage=(-1, 1, 0))
+    bond_length = struct[0].distance(struct[1], jimage=(-1, 1, 0))
+
+    supercell_sg = sg * scale
+    assert supercell_sg.graph.number_of_edges() == scale[0] * scale[1] * scale[2]
+    for u, v, data in supercell_sg.graph.edges(data=True):
+        dist = supercell_sg.structure[u].distance(supercell_sg.structure[v], jimage=data["to_jimage"])
+        assert dist == approx(bond_length)
+
+
+def test_structure_graph_eq_different_structures(nacl_cubic):
+    other = nacl_cubic.copy()
+    other.replace_species({"Na": "K"})
+    sg1 = StructureGraph.from_local_env_strategy(nacl_cubic, MinimumDistanceNN())
+    sg2 = StructureGraph.from_local_env_strategy(other, MinimumDistanceNN())
+    assert sg1 != sg2  # used to raise ValueError from list.index
+    assert sg1 == copy.deepcopy(sg1)
+
+
+def test_structure_graph_zero_weight(nacl_cubic):
+    sg = StructureGraph.from_empty_graph(nacl_cubic, edge_weight_name="J", edge_weight_units="eV")
+    sg.add_edge(0, 1, to_jimage=(0, 0, 0), weight=0.0)
+    assert sg.graph.get_edge_data(0, 1)[0]["weight"] == 0.0
+
+
+def test_molecule_graph_zero_weight_and_no_duplicates():
+    mol = Molecule(["C", "O"], [[0, 0, 0], [0, 0, 1.2]])
+    mg = MoleculeGraph.from_empty_graph(mol, edge_weight_name="w", edge_weight_units="")
+    mg.add_edge(0, 1, weight=0.0)
+    assert mg.graph.get_edge_data(0, 1)[0]["weight"] == 0.0
+    # duplicate edges are never added, whether or not a warning is requested
+    mg.add_edge(0, 1, weight=1.0, warn_duplicates=False)
+    mg.add_edge(1, 0, weight=1.0, warn_duplicates=False)
+    assert mg.graph.number_of_edges() == 1
+
+
+def test_structure_graph_add_edge_auto_image_reversed_indices(nacl_cubic):
+    # from_index > to_index without to_jimage used to raise TypeError (None - None)
+    sg = StructureGraph.from_empty_graph(nacl_cubic)
+    with pytest.warns(UserWarning, match="Please specify to_jimage"):
+        sg.add_edge(1, 0)
+    ref = StructureGraph.from_empty_graph(nacl_cubic)
+    with pytest.warns(UserWarning, match="Please specify to_jimage"):
+        ref.add_edge(0, 1)
+    assert sg.graph.number_of_edges() == ref.graph.number_of_edges() == 8
+    assert sg == ref
+    # the 8 Cl neighbors of Na are found with distinct images (rounding +-0.5 offsets gave (0, 0, 0) for all)
+    images = {data["to_jimage"] for _, _, data in ref.graph.edges(data=True)}
+    assert len(images) == 8
+    for image in images:
+        assert nacl_cubic[0].distance(nacl_cubic[1], jimage=image) == approx(3 * 3**0.5 / 2)
+
+
+def test_structure_graph_break_alter_edge_wrong_image(nacl_cubic):
+    sg = StructureGraph.from_empty_graph(nacl_cubic)
+    sg.add_edge(0, 1, to_jimage=(0, 0, 0))
+    sg.add_edge(0, 1, to_jimage=(-1, 0, 0))
+    # an image without an edge must not silently alter/remove another edge
+    with pytest.raises(ValueError, match=r"cannot be altered; no edge exists with to_jimage=\(1, 0, 0\)"):
+        sg.alter_edge(0, 1, to_jimage=(1, 0, 0), new_weight=2.0)
+    with pytest.raises(ValueError, match="Edge cannot be broken between 0 and 1"):
+        sg.break_edge(0, 1, to_jimage=(1, 0, 0))
+    assert sg.graph.number_of_edges() == 2
+    assert all("weight" not in data for _, _, data in sg.graph.edges(data=True))
+    # images given as lists are matched too
+    sg.alter_edge(0, 1, to_jimage=[-1, 0, 0], new_weight=2.0)
+    sg.break_edge(0, 1, to_jimage=[0, 0, 0])
+    assert [data for _, _, data in sg.graph.edges(data=True)] == [{"to_jimage": (-1, 0, 0), "weight": 2.0}]
+
+
+def test_structure_graph_substitute_group_graph_dict_not_mutated():
+    struct = Structure(Lattice.cubic(10), ["C", "H", "H"], [[0.5, 0.5, 0.5], [0.5, 0.5, 0.61], [0.5, 0.5, 0.39]])
+    graph_dict = {(0, 1): {"weight": 0.5, "to_jimage": (0, 0, 0)}, (0, 2): {"weight": 0.5}, (0, 3): {"weight": 0.5}}
+    for _ in range(2):
+        sg = StructureGraph.from_empty_graph(struct.copy())
+        sg.add_edge(0, 1, to_jimage=(0, 0, 0))
+        sg.add_edge(0, 2, to_jimage=(0, 0, 0))
+        # a "to_jimage" entry used to be passed twice to networkx (TypeError)
+        sg.substitute_group(1, "methyl", MinimumDistanceNN, graph_dict=graph_dict)
+        weights = [data.get("weight") for _, _, data in sg.graph.edges(data=True)]
+        assert weights.count(0.5) == 3
+    assert graph_dict[0, 2] == {"weight": 0.5}
+
+
+def test_molecule_graph_substitute_group_inputs_not_mutated():
+    methyl = FunctionalGroups["methyl"]
+    mol_graph = MoleculeGraph.from_edges(methyl, {(0, 1): {"weight": 1}, (0, 2): {"weight": 1}, (0, 3): {"weight": 1}})
+    ch2 = Molecule(["C", "H", "H"], [[0, 0, 0], [0, 0, 1.1], [0, 0, -1.1]])
+    results = []
+    for _ in range(2):
+        mg = MoleculeGraph.from_edges(ch2.copy(), {(0, 1): {"weight": 1}, (0, 2): {"weight": 1}})
+        mg.substitute_group(1, mol_graph, MinimumDistanceNN)
+        results.append(sorted((u, v, data.get("weight")) for u, v, data in mg.graph.edges(data=True)))
+    # the weights of the functional group edges are used on every call
+    assert results[0] == results[1]
+    assert [weight for *_, weight in results[0]].count(1) == 5
+    assert all(data["weight"] == 1 for _, _, data in mol_graph.graph.edges(data=True))
+
+
+def test_build_unique_fragments_keeps_edge_weights():
+    mol = Molecule(["H", "O", "O", "H"], [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    mg = MoleculeGraph.from_edges(mol, {(0, 1): {"weight": 1.0}, (1, 2): {"weight": 2.0}, (2, 3): {"weight": 3.0}})
+    fragments = mg.build_unique_fragments()
+    # the O-O fragment (original sites 1, 2) used to lose its weight
+    (o2,) = fragments["O2 E1"]
+    assert [data["weight"] for _, _, data in o2.graph.edges(data=True)] == [2.0]
+
+
+def test_structure_graph_supercell_and_sort_use_python_ints():
+    # supercell node indices and the images of edges reversed by sort() used to be numpy ints,
+    # making as_dict() not JSON serializable and printing as "(np.int64(0), ...)"
+    struct = Structure(Lattice.cubic(4.17), ["Ni", "O"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+    sg = StructureGraph.from_local_env_strategy(struct, MinimumDistanceNN()) * 2
+    json.dumps(sg.as_dict())
+    sg.sort(key=lambda site: -site.frac_coords[0])
+    json.dumps(sg.as_dict())
+    assert "np.int64" not in str(sg)
+    for u, v, data in sg.graph.edges(data=True):
+        assert type(u) is int
+        assert type(v) is int
+        assert all(type(img) is int for img in data["to_jimage"])
+
+
+def test_structure_graph_sort_keeps_bonds():
+    struct = Structure.from_file(f"{TEST_FILES_DIR}/cif/LiFePO4.cif")
+    sg = StructureGraph.from_local_env_strategy(struct, CutOffDictNN({("P", "O"): 1.7, ("Fe", "O"): 2.3}))
+
+    def bonds(struct_graph):
+        return sorted(
+            (
+                *sorted((struct_graph.structure[u].species_string, struct_graph.structure[v].species_string)),
+                round(struct_graph.structure[u].distance(struct_graph.structure[v], jimage=data["to_jimage"]), 6),
+            )
+            for u, v, data in struct_graph.graph.edges(data=True)
+        )
+
+    ref_bonds = bonds(sg)
+    sorted_sg = copy.deepcopy(sg)
+    sorted_sg.sort(key=lambda site: (site.species_string, site.frac_coords[2]), reverse=True)
+    assert [site.species_string for site in sorted_sg.structure] == sorted(
+        (site.species_string for site in struct), reverse=True
+    )
+    assert bonds(sorted_sg) == ref_bonds
+    assert all(u <= v for u, v in sorted_sg.graph.edges())
+    assert sorted_sg == sg
+
+
+def test_structure_graph_get_connected_sites_images_and_copies():
+    struct = Structure(
+        Lattice.cubic(3), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]], site_properties={"magmom": [[1, 0, 0], [0, 0, 2]]}
+    )
+    struct[1].label = "Cl1"
+    sg = StructureGraph.from_empty_graph(struct)
+    sg.add_edge(0, 1, to_jimage=(1, 0, 0))
+    bond_length = struct[0].distance(struct[1], jimage=(1, 0, 0))
+
+    (conn,) = sg.get_connected_sites(0, jimage=(0, 1, 0))
+    assert (conn.index, conn.jimage, conn.weight) == (1, (1, 1, 0), None)
+    assert conn.site.frac_coords == approx([1.5, 1.5, 0.5])
+    assert conn.site.label == "Cl1"
+    assert conn.site.properties == {"magmom": [0, 0, 2]}
+    assert conn.dist == approx(bond_length)
+    # connected sites are copies, changing them leaves the structure untouched
+    conn.site.properties["magmom"][2] = 5
+    assert struct[1].properties["magmom"] == [0, 0, 2]
+
+    # the reverse direction of the edge
+    (conn,) = sg.get_connected_sites(1)
+    assert (conn.index, conn.jimage) == (0, (-1, 0, 0))
+    assert conn.site.frac_coords == approx([-1, 0, 0])
+    assert conn.dist == approx(bond_length)
+
+
+def test_structure_graph_get_subgraphs_as_molecules_skips_translated_copies():
+    # all but one of the copies of each molecule in the 3x3x3 supercell are lattice translations
+    struct = Structure.from_file(f"{TEST_FILES_DIR}/cif/LiFePO4.cif")
+    sg = StructureGraph.from_local_env_strategy(struct, CutOffDictNN({("P", "O"): 1.7}))
+    molecules = sg.get_subgraphs_as_molecules()
+    assert sorted(mol.formula for mol in molecules) == ["Fe1", "Li1", "P1 O4"]
+
+
+def test_from_edges_inputs_not_mutated(nacl_cubic):
+    edges = {(0, 1, (0, 0, 0), (1, 0, 0)): {"weight": 1.5, "order": 2}}
+    sg = StructureGraph.from_edges(nacl_cubic, edges)
+    assert edges == {(0, 1, (0, 0, 0), (1, 0, 0)): {"weight": 1.5, "order": 2}}
+    assert sg.graph.get_edge_data(0, 1)[0] == {"to_jimage": (1, 0, 0), "weight": 1.5, "order": 2}
+
+    mol = Molecule(["C", "O"], [[0, 0, 0], [0, 0, 1.2]])
+    mol_edges = {(0, 1): {"weight": 2.0, "order": 2}}
+    mg = MoleculeGraph.from_edges(mol, mol_edges)
+    assert mol_edges == {(0, 1): {"weight": 2.0, "order": 2}}
+    assert mg.graph.get_edge_data(0, 1)[0] == {"weight": 2.0, "order": 2}
+
+
+def test_split_molecule_subgraphs_alterations_not_mutated():
+    mol = Molecule(["H", "O", "O", "H"], [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    mg = MoleculeGraph.from_edges(mol, {(0, 1): {"weight": 1.0}, (1, 2): {"weight": 2.0}, (2, 3): {"weight": 3.0}})
+    alterations = {(0, 1): {"weight": 5.0, "order": 2}}
+    for _ in range(2):
+        frag_0, frag_1 = mg.split_molecule_subgraphs([(1, 2)], alterations=alterations)
+        # the weight used to be popped from alterations, so a second call did not alter the weight
+        assert [data for _, _, data in frag_0.graph.edges(data=True)] == [{"weight": 5.0, "order": 2}]
+        assert [data for _, _, data in frag_1.graph.edges(data=True)] == [{"weight": 3.0}]
+    assert alterations == {(0, 1): {"weight": 5.0, "order": 2}}
+    assert mg.graph.number_of_edges() == 3
+
+
+def test_molecule_graph_draw_graph_to_file_diff(fake_graphviz, tmp_path):
+    # MoleculeGraph edges have no to_jimage, highlighting a diff used to raise KeyError
+    mol = Molecule(["C", "O", "H"], [[0, 0, 0], [1.2, 0, 0], [-1, 0, 0]])
+    mg = MoleculeGraph.from_edges(mol, {(0, 1): None, (0, 2): None})
+    other = MoleculeGraph.from_edges(mol, {(0, 1): None, (1, 2): None})
+    mg.draw_graph_to_file(f"{tmp_path}/mg.pdf", diff=other)
+    (graph,) = fake_graphviz["graphs"]
+    assert graph.edges[0, 1, 0]["color_uv"] == "#000000"
+    assert graph.edges[0, 2, 0]["color_uv"] == "#ff0000"

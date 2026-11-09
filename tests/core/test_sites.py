@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import pickle
 
 import numpy as np
@@ -7,7 +8,8 @@ import pytest
 from numpy.testing import assert_allclose
 from pytest import approx
 
-from pymatgen.core import Composition, Element, Lattice, PeriodicSite, Site, Species
+from pymatgen.core import Composition, Element, Lattice, PeriodicSite, Site, Species, Structure
+from pymatgen.core.sites import _lazy_site_dict, _LazySiteDict, _sites_pairwise_unequal
 from pymatgen.electronic_structure.core import Magmom
 from pymatgen.util.testing import MatSciTest
 
@@ -77,6 +79,13 @@ class TestSite(MatSciTest):
 
         with pytest.raises(ValueError, match="Species occupancies sum to more than 1"):
             self.disordered_site.species = {"Cu": 0.5, "Gd": 0.6}
+
+    def test_from_dict_does_not_alias_properties(self):
+        dct = self.propertied_site.as_dict()
+        site = Site.from_dict(dct)
+        site.properties["magmom"] = 0
+        assert self.propertied_site.properties["magmom"] == approx(5.1)
+        assert dct["properties"]["magmom"] == approx(5.1)
 
 
 class TestPeriodicSite(MatSciTest):
@@ -188,6 +197,22 @@ class TestPeriodicSite(MatSciTest):
         )
         assert site_0 != site_1
 
+    def test_from_dict_does_not_alias_properties(self):
+        site = PeriodicSite("Fe", [0, 0, 0], self.lattice, properties={"magmom": 5})
+        dct = site.as_dict()
+        new_site = PeriodicSite.from_dict(dct)
+        new_site.properties["magmom"] = 0
+        assert site.properties["magmom"] == 5
+        assert dct["properties"]["magmom"] == 5
+
+    def test_init_does_not_alias_coords(self):
+        frac_coords = np.array([0.1, 0.2, 0.3])
+        site = PeriodicSite("Fe", frac_coords, self.lattice)
+        frac_coords[0] = 0.9
+        assert_allclose(site.frac_coords, [0.1, 0.2, 0.3])
+        site.a = 0.5
+        assert_allclose(frac_coords, [0.9, 0.2, 0.3])
+
     def test_as_from_dict(self):
         dct = self.site2.as_dict()
         site = PeriodicSite.from_dict(dct)
@@ -293,6 +318,138 @@ class TestPeriodicSite(MatSciTest):
         okay = PeriodicSite("H", np.zeros((3,)), Lattice.cubic(1))
         with pytest.raises(ValueError, match="coordinates"):
             okay.coords = np.zeros((2,))
+
+    @pytest.mark.parametrize(
+        ("pbc", "expected"),
+        [((True, True, True), [0.25, 0.65, 0.46]), ((True, False, True), [0.25, -2.35, 0.46])],
+    )
+    @pytest.mark.parametrize("skip_checks", [False, True])
+    def test_init_to_unit_cell(self, pbc, expected, skip_checks):
+        lattice = Lattice(self.lattice.matrix, pbc=pbc)
+        coords = np.array([1.25, -2.35, 4.46])
+        site = PeriodicSite("Fe", coords, lattice, to_unit_cell=True, skip_checks=skip_checks)
+        assert_allclose(site.frac_coords, expected)
+        assert site.frac_coords.dtype == np.float64
+        # Wrapping must not alias or mutate the caller's array
+        assert not np.shares_memory(site.frac_coords, coords)
+        assert_allclose(coords, [1.25, -2.35, 4.46])
+        # Integer input coords are wrapped into a float array too
+        int_site = PeriodicSite("Fe", [1, -2, 4], lattice, to_unit_cell=True)
+        assert_allclose(int_site.frac_coords, [0, 0 if pbc[1] else -2, 0])
+        assert int_site.frac_coords.dtype == np.float64
+
+    @pytest.mark.parametrize(
+        "offset",
+        [0, 1e-6, 9.9e-6, 1e-5, 1.1e-5, 1e-4, -1e-4, 1.2, np.nan, np.inf, -np.inf],
+    )
+    def test_equality_matches_allclose(self, offset):
+        """Site equality must keep the np.allclose(atol=Site.position_atol) coordinate semantics."""
+        for coords in ([0.0, 3.5, 4.5], [np.inf, 3.5, 4.5], [np.nan, 3.5, 4.5]):
+            ref = PeriodicSite("Fe", coords, Lattice.cubic(1))
+            other = PeriodicSite("Fe", np.add(coords, [offset, 0, 0]), Lattice.cubic(1))
+            expected = bool(np.allclose(ref.coords, other.coords, atol=Site.position_atol))
+            assert (ref == other) is expected
+            assert (other == ref) is bool(np.allclose(other.coords, ref.coords, atol=Site.position_atol))
+
+            site_ref = Site("Fe", coords)
+            site_other = Site("Fe", np.add(coords, [offset, 0, 0]))
+            assert (site_ref == site_other) is bool(np.allclose(site_ref.coords, site_other.coords, atol=1e-5))
+
+        # Coordinates match but species or lattice differ
+        assert PeriodicSite("Fe", [0, 0, 0], Lattice.cubic(1)) != PeriodicSite("Co", [0, 0, 0], Lattice.cubic(1))
+        assert PeriodicSite("Fe", [0, 0, 0], Lattice.cubic(1)) != PeriodicSite("Fe", [0, 0, 0], Lattice.cubic(2))
+        assert Site("Fe", [0, 0, 0]) != Site("Co", [0, 0, 0])
+
+    def test_hash_consistent_with_tolerant_eq(self):
+        # Sites differing only by float noise compare equal, so they must hash equal and find each other in dicts
+        lattice = Lattice.cubic(5)
+        site = PeriodicSite("Fe", [0.1, 0.2, 0.3], lattice, properties={"magmom": 2})
+        noisy = PeriodicSite("Fe", [0.1 + 1e-9, 0.2 - 1e-9, 0.3], lattice, properties={"magmom": 2})
+        assert site == noisy
+        assert hash(site) == hash(noisy)
+        assert {site: 1}[noisy] == 1
+        assert Site("Fe", [0, 0, 1]) == Site("Fe", [0, 0, 1 + 1e-9])
+        assert hash(Site("Fe", [0, 0, 1])) == hash(Site("Fe", [0, 0, 1 + 1e-9]))
+
+
+class TestLazySiteDict:
+    def setup_method(self):
+        self.struct = Structure(Lattice.cubic(3), ["Si"], [[0, 0, 0]]) * (3, 3, 3)
+        self.struct.append("O", [0.5, 0.5, 0.5])
+        self.values = [{"idx": idx} for idx in range(len(self.struct))]
+
+    def test_sites_pairwise_unequal(self):
+        sites = list(self.struct)
+        assert _sites_pairwise_unequal(sites)
+        assert _sites_pairwise_unequal(sites[:1])
+        assert _sites_pairwise_unequal([])
+        # The same site twice, or an equal site within the coordinate tolerance
+        assert not _sites_pairwise_unequal([*sites, sites[5]])
+        near = PeriodicSite("Si", sites[5].frac_coords + 1e-8, self.struct.lattice)
+        assert near == sites[5]
+        assert not _sites_pairwise_unequal([*sites, near])
+        # Same position but different species or properties are unequal sites
+        other_species = PeriodicSite("Ge", sites[5].frac_coords, self.struct.lattice)
+        assert _sites_pairwise_unequal([*sites, other_species])
+        # Non-finite coordinates are conservatively reported as possibly equal
+        assert not _sites_pairwise_unequal([Site("Fe", [np.inf, 0, 0]), Site("Fe", [0, 0, 0])])
+        # Equality is only one-directional near the relative-tolerance edge: still detected
+        site_a, site_b = Site("Fe", [1e3, 0, 0]), Site("Fe", [1e3 + 0.01001005, 0, 0])
+        assert (site_a == site_b) != (site_b == site_a)
+        assert not _sites_pairwise_unequal([site_a, site_b])
+
+    def test_matches_dict(self):
+        sites = list(self.struct)
+        ref = dict(zip(sites, self.values, strict=True))
+        lazy = _lazy_site_dict(self.struct, self.values)
+        assert isinstance(lazy, _LazySiteDict)
+        assert len(lazy) == len(ref)
+        assert list(lazy) == list(ref)
+        assert all(key is ref_key for key, ref_key in zip(lazy, ref, strict=True))
+        assert list(lazy.items()) == list(ref.items())
+        assert list(lazy.values()) == list(ref.values())
+        for site in sites:
+            assert lazy[site] is ref[site]
+        assert lazy._dict is None  # identity lookups do not build the dict
+
+        # Lookups by equal but non-identical sites (float noise) give the same values as the plain dict
+        copies = [PeriodicSite(s.species, s.frac_coords + 1e-10, s.lattice) for s in sites]
+        assert all(lazy[copy] is ref[copy] for copy in copies)
+        missing = PeriodicSite("Fe", [0.1, 0.1, 0.1], self.struct.lattice)
+        with pytest.raises(KeyError):
+            lazy[missing]
+        assert missing not in lazy
+
+        # Once the dict is handed out it is the source of truth, and it is built only once
+        dct = lazy.to_dict()
+        assert dct == ref
+        assert lazy.to_dict() is dct
+        dct[sites[3]] = "new"
+        del dct[sites[4]]
+        assert lazy[sites[3]] == "new"
+        assert sites[4] not in lazy
+        assert len(lazy) == len(ref) - 1
+        assert dict(lazy.items()) == dct
+
+    def test_fallback_to_dict(self):
+        sites = list(self.struct)
+        # Duplicate sites collapse exactly as in a plain dict
+        dup = _lazy_site_dict([*sites, sites[2]], [*self.values, "dup"])
+        assert type(dup) is dict
+        assert dup == dict(zip([*sites, sites[2]], [*self.values, "dup"], strict=True))
+        # Non-site keys
+        assert _lazy_site_dict(["a", "b"], [1, 2]) == {"a": 1, "b": 2}
+        with pytest.raises(ValueError, match="Got 2 sites but 1 values"):
+            _lazy_site_dict(sites[:2], [1])
+
+    def test_pickle_and_copy(self):
+        lazy = _lazy_site_dict(self.struct, self.values)
+        lazy[self.struct[0]]  # build the identity index
+        for clone in (pickle.loads(pickle.dumps(lazy)), copy.deepcopy(lazy)):
+            assert clone._index is None
+            assert list(clone.items()) == list(lazy.items())
+            for site in clone:
+                assert clone[site] == lazy[site]
 
 
 def get_distance_and_image_old(site1, site2, jimage=None):

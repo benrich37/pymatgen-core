@@ -180,8 +180,9 @@ class NwTask(MSONable):
         self.basis_set_option = basis_set_option
 
         self.operation = operation
-        self.theory_directives = theory_directives or {}
-        self.alternate_directives = alternate_directives or {}
+        # copy so that later in-place updates (e.g. in dft_task) do not mutate the caller's dicts
+        self.theory_directives = dict(theory_directives or {})
+        self.alternate_directives = dict(alternate_directives or {})
 
     def __str__(self) -> str:
         bset_spec = []
@@ -479,7 +480,7 @@ class NwInput(MSONable):
         spin_multiplicity: float | None = None
         title: str | None = None
         basis_set: dict[str, str] | None = None
-        basis_set_option: str | None = None
+        basis_set_option: str = "cartesian"  # NWChem default
         mol: Molecule | None = None
         theory_directives: dict[str, dict[str, str]] = {}
         geom_options: list[str] | None = None
@@ -531,6 +532,10 @@ class NwInput(MSONable):
                 title = line[5:].strip().strip('"')
 
             elif tokens[0].lower() == "basis":
+                # read the basis_set_option, e.g. "basis spherical"
+                for token in tokens[1:]:
+                    if token.lower() in {"cartesian", "spherical"}:
+                        basis_set_option = token.lower()
                 # Parse basis sets
                 line = lines.pop(0).strip()
                 basis_set = {}
@@ -540,9 +545,6 @@ class NwInput(MSONable):
                     line = lines.pop(0).strip()
 
             elif tokens[0].lower() in NwTask.theories:
-                # read the basis_set_option
-                if len(tokens) > 1:
-                    basis_set_option = tokens[1]
                 # Parse theory directives.
                 theory = tokens[0].lower()
                 line = lines.pop(0).strip()
@@ -764,6 +766,8 @@ class NwOutput:
             "dft optimize failed": "Geometry optimization failed",
         }
 
+        error_patt = re.compile("|".join(map(re.escape, error_defs)))
+
         def fort2py(x: str) -> str:
             return x.replace("D", "e")
 
@@ -788,7 +792,7 @@ class NwOutput:
         species: list = []
         coords: list = []
         lattice: list = []
-        errors = []
+        errors: list[str] = []
         basis_set = {}
         bset_header: list = []
         parse_geom = False
@@ -800,9 +804,8 @@ class NwOutput:
         time: str | int = 0
 
         for line in output.split("\n"):
-            for e, v in error_defs.items():
-                if line.find(e) != -1:
-                    errors.append(v)
+            if error_patt.search(line):
+                errors.extend(v for e, v in error_defs.items() if e in line)
             if parse_time and (match := time_patt.search(line)):
                 time = match[1]
                 parse_time = False
@@ -907,21 +910,24 @@ class NwOutput:
                         parse_proj_hess = False
 
             else:
-                if match := energy_patt.search(line):
-                    energies.append(Energy(float(match[1]), "Ha").to("eV"))
-                    parse_time = True
-                    continue
+                # The cheap substring checks below are necessary conditions for the
+                # corresponding regexes and let most lines skip the regex searches.
+                if "energy" in line:
+                    if match := energy_patt.search(line):
+                        energies.append(Energy(float(match[1]), "Ha").to("eV"))
+                        parse_time = True
+                        continue
 
-                if match := energy_gas_patt.search(line):
-                    cosmo_scf_energy = energies[-1]
-                    energies[-1] = {}
-                    energies[-1]["cosmo scf"] = cosmo_scf_energy
-                    energies[-1] |= {"gas phase": Energy(float(match[1]), "Ha").to("eV")}
+                    if match := energy_gas_patt.search(line):
+                        cosmo_scf_energy = energies[-1]
+                        energies[-1] = {}
+                        energies[-1]["cosmo scf"] = cosmo_scf_energy
+                        energies[-1] |= {"gas phase": Energy(float(match[1]), "Ha").to("eV")}
 
-                if match := energy_sol_patt.search(line):
-                    energies[-1] |= {"sol phase": Energy(float(match[1]), "Ha").to("eV")}
+                    if match := energy_sol_patt.search(line):
+                        energies[-1] |= {"sol phase": Energy(float(match[1]), "Ha").to("eV")}
 
-                if match := preamble_patt.search(line):
+                if ":" in line and (match := preamble_patt.search(line)):
                     val: int | str
                     try:
                         val = int(match[2])
@@ -964,7 +970,7 @@ class NwOutput:
                     job_type = line.strip()
                     if job_type == "NWChem DFT Module" and "COSMO solvation results" in output:
                         job_type += " COSMO"
-                elif match := corrections_patt.search(line):
+                elif "correction to" in line and (match := corrections_patt.search(line)):
                     corrections[match[1]] = FloatWithUnit(float(match[2]), "kJ mol^-1").to("eV atom^-1")
 
         if frequencies:

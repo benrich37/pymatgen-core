@@ -718,6 +718,19 @@ class TestTrajectoryMethods(MatSciTest):
         assert isinstance(sliced, Trajectory)
         assert_allclose(sliced.coords, np.array(SI_COORDS)[[2, 0]])
 
+    def test_boolean_mask_index(self, struct_traj):
+        """Boolean masks used to raise TypeError when indexing frame/site properties."""
+        struct_traj.frame_properties = [{"energy": float(idx)} for idx in range(3)]
+        struct_traj.site_properties = [{"magmom": [idx, idx]} for idx in range(3)]
+        sliced = struct_traj[np.array([True, False, True])]
+        assert isinstance(sliced, Trajectory)
+        assert_allclose(sliced.coords, np.array(SI_COORDS)[[0, 2]])
+        assert sliced.frame_properties == [{"energy": 0.0}, {"energy": 2.0}]
+        assert sliced.site_properties == [{"magmom": [0, 0]}, {"magmom": [2, 2]}]
+
+        with pytest.raises(IndexError, match="boolean index of shape"):
+            struct_traj[np.array([True, False])]
+
     def test_get_structure(self, struct_traj, mol_traj):
         struct = struct_traj.get_structure(1)
         assert isinstance(struct, Structure)
@@ -777,6 +790,28 @@ class TestTrajectoryMethods(MatSciTest):
         assert first.constant_lattice is False
         assert_allclose(first.lattice, expected)
         assert first[4].lattice.a == pytest.approx(expected[4][0][0])
+
+    def test_extend_different_constant_lattices(self):
+        traj_1 = Trajectory(species=SI_SPECIES, coords=SI_COORDS, lattice=LATTICE)
+        other_lattice = np.eye(3) * 5.0
+        traj_2 = Trajectory(species=SI_SPECIES, coords=SI_COORDS, lattice=other_lattice)
+        traj_1.extend(traj_2)
+        assert traj_1.constant_lattice is False
+        assert_allclose(traj_1[0].lattice.matrix, LATTICE)
+        assert_allclose(traj_1[-1].lattice.matrix, other_lattice)
+
+    def test_extend_same_constant_lattice(self):
+        traj_1 = Trajectory(species=SI_SPECIES, coords=SI_COORDS, lattice=LATTICE)
+        traj_2 = Trajectory(species=SI_SPECIES, coords=SI_COORDS, lattice=LATTICE)
+        traj_1.extend(traj_2)
+        assert traj_1.constant_lattice is True
+        assert_allclose(traj_1.lattice, LATTICE)
+
+    def test_numpy_integer_index(self, struct_traj, mol_traj):
+        struct = struct_traj[np.int64(1)]
+        assert isinstance(struct, Structure)
+        assert_allclose(struct.frac_coords, SI_COORDS[1])
+        assert isinstance(mol_traj[np.arange(3)[2]], Molecule)
 
     def test_extend_frame_props_none_first(self):
         props = [{"energy": float(idx)} for idx in range(3)]
@@ -875,7 +910,10 @@ class TestTrajectoryAse(MatSciTest):
         assert traj[1].lattice.a == pytest.approx(3.1)
         assert [frame["energy"] for frame in traj.frame_properties] == [-1.0, -2.0]
         assert all(frame["temperature"] > 0 for frame in traj.frame_properties)
-        assert_allclose(traj[0].site_properties["velocities"], np.full((2, 3), 0.01))
+        # ASE velocities are converted to A/fs
+        from ase import units
+
+        assert_allclose(traj[0].site_properties["velocities"], np.full((2, 3), 0.01 * units.fs))
 
     def test_from_ase_property_map(self):
         filename = f"{self.tmp_path}/si.traj"
@@ -901,11 +939,46 @@ class TestTrajectoryAse(MatSciTest):
         traj = Trajectory.from_ase(filename)
         assert traj.constant_lattice is False
 
+    @pytest.mark.parametrize(
+        ("scales", "expected"),
+        [
+            ((3.0,), True),
+            ((3.0, 3.0, 3.0), True),
+            # Every pair of frames within lattice_match_tol=1e-6
+            ((3.0, 3.0 + 5e-7, 3.0 - 4e-7), True),
+            # Each frame within tol of the first, but frames 2 and 3 are 1.2e-6 apart
+            ((3.0, 3.0 + 6e-7, 3.0 - 6e-7), False),
+            ((3.0, 3.0, 3.1), False),
+        ],
+    )
+    def test_from_ase_infer_constant_lattice(self, scales, expected):
+        filename = f"{self.tmp_path}/si.traj"
+        _write_ase_traj(filename, pbc=True, scales=scales)
+        traj = Trajectory.from_ase(filename, additional_fields=None)
+        assert traj.constant_lattice is expected
+        assert len(traj) == len(scales)
+
     def test_from_ase_molecule_infer_lattice(self):
         filename = f"{self.tmp_path}/co.traj"
         _write_ase_traj(filename, pbc=False)
         traj = Trajectory.from_ase(filename, additional_fields=None)
         assert traj.lattice is None
+
+    def test_velocities_round_trip_and_opt_out(self):
+        velocities = [[0.01, 0.0, -0.02], [0.0, 0.03, 0.0]]  # A/fs
+        traj = Trajectory(
+            species=SI_SPECIES,
+            coords=SI_COORDS[:1],
+            lattice=LATTICE,
+            site_properties={"velocities": velocities},
+        )
+        ase_file = f"{self.tmp_path}/vel.traj"
+        traj.to_ase(ase_traj_file=ase_file)
+
+        roundtrip = Trajectory.from_ase(ase_file, store_frame_properties=False)
+        assert_allclose(roundtrip[0].site_properties["velocities"], velocities)
+        opt_out = Trajectory.from_ase(ase_file, store_frame_properties=False, additional_fields=None)
+        assert "velocities" not in opt_out[0].site_properties
 
     def test_from_ase_without_calculator(self):
         filename = f"{self.tmp_path}/si.traj"

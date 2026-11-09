@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pymatgen.core.lattice import Lattice
 
     # Don't import at runtime to avoid circular import
-    from pymatgen.core.operations import SymmOp  # noqa: TC004
+    from pymatgen.core.operations import SymmOp
 
     CrystalSystem: TypeAlias = Literal[
         "cubic",
@@ -51,6 +51,8 @@ if TYPE_CHECKING:
 
 
 SYMM_DATA = loadfn(os.path.join(os.path.dirname(__file__), "symm_data.json"))
+# space group number -> numbers of its maximal subgroups
+_MAXIMAL_SUBGROUPS: dict[int, list[int]] = {int(k): v for k, v in SYMM_DATA["maximal_subgroups"].items()}
 
 PG_ABBREV_MAP = {
     "2/m2/m2/m": "mmm",
@@ -80,8 +82,10 @@ class SymmetryGroup(Sequence, Stringify, ABC):
         """The set of symmetry operations associated with the group."""
 
     def __contains__(self, item: object) -> bool:
+        from pymatgen.core.operations import SymmOp
+
         if not isinstance(item, SymmOp):
-            return NotImplemented
+            return False
 
         return any(np.allclose(i.affine_matrix, item.affine_matrix) for i in self.symmetry_ops)
 
@@ -264,13 +268,10 @@ class PointGroup(SymmetryGroup):
         """
         symbol = re.sub(r" ", "", sg_symbol)
 
-        symm_ops = loadfn(os.path.join(os.path.dirname(__file__), "symm_ops.json"))  # get short symbol if possible
-        for spg in symm_ops:
-            if symbol in [
-                spg["hermann_mauguin"],
-                spg["universal_h_m"],
-                spg["hermann_mauguin_u"],
-            ]:
+        # Get short symbol if possible. The space-free symbol can only match hermann_mauguin_u, since the
+        # hermann_mauguin and universal_h_m symbols in symm_ops.json all contain spaces.
+        for spg in SpaceGroup.SYMM_OPS:
+            if symbol == spg["hermann_mauguin_u"]:
                 symbol = spg["short_h_m"]
 
         if not symbol[0].isupper():
@@ -294,7 +295,7 @@ class SpaceGroup(SymmetryGroup):
     """A SpaceGroup.
 
     Attributes:
-        symbol (str): Full International or Hermann-Mauguin Symbol.
+        symbol (str): Hermann-Mauguin symbol, abbreviated for standard settings.
         int_number (int): International number.
         generators (list): List of generator matrices. Note that 4x4 matrices are used for Space Groups.
         order (int): Order of Space Group.
@@ -339,8 +340,6 @@ class SpaceGroup(SymmetryGroup):
                 (please note that the setting is not contained in the symbol
                 attribute anymore).
         """
-        from pymatgen.core.operations import SymmOp
-
         if int_symbol.endswith("H"):
             self.hexagonal = True
             if not int_symbol.endswith(":H"):
@@ -358,7 +357,9 @@ class SpaceGroup(SymmetryGroup):
         elif int_symbol in SpaceGroup.full_sg_mapping:
             int_symbol = SpaceGroup.full_sg_mapping[int_symbol]
 
-        self._symmetry_ops: set[SymmOp] | None
+        self._symmetry_ops: set[SymmOp] | None = None
+        # xyz strings of the tabulated symmetry operations, parsed lazily in symmetry_ops
+        self._symops_xyz: list[str] | None = None
 
         for spg in SpaceGroup.SYMM_OPS:
             if int_symbol in [
@@ -366,8 +367,10 @@ class SpaceGroup(SymmetryGroup):
                 spg["universal_h_m"],
                 spg["hermann_mauguin_u"],
             ]:
-                ops = [SymmOp.from_xyz_str(s) for s in spg["symops"]]
                 self.symbol = spg["hermann_mauguin_u"]
+                # universal_h_m is unique per tabulated setting (basis, origin and :H/:R choice), so it
+                # identifies the group for __eq__/__hash__ independently of the spelling used to construct it.
+                self._setting_symbol: str = spg["universal_h_m"]
                 if int_symbol in SpaceGroup.sg_encoding:
                     self.full_symbol = SpaceGroup.sg_encoding[int_symbol]["full_symbol"]
                     self.point_group = SpaceGroup.sg_encoding[int_symbol]["point_group"]
@@ -383,8 +386,10 @@ class SpaceGroup(SymmetryGroup):
                     )
                     self.point_group = spg["point_group"]
                 self.int_number = spg["number"]
-                self.order = len(ops)
-                self._symmetry_ops = {*ops}
+                self.order = len(spg["symops"])
+                # Building the set of SymmOps is slow (SymmOp.__hash__ is a constant, so each insertion
+                # compares against every member) and many uses only need the symbol or number.
+                self._symops_xyz = spg["symops"]
                 break
         else:
             if int_symbol not in SpaceGroup.sg_encoding:
@@ -393,6 +398,7 @@ class SpaceGroup(SymmetryGroup):
             data = SpaceGroup.sg_encoding[int_symbol]
 
             self.symbol = int_symbol
+            self._setting_symbol = int_symbol
             # TODO: Support different origin choices.
             enc = list(data["enc"])
             inversion = int(enc.pop(0))
@@ -413,7 +419,10 @@ class SpaceGroup(SymmetryGroup):
             self.int_number = data["int_number"]
             self.order = data["order"]
 
-            self._symmetry_ops = None
+        for short_symbol, full_symbol in SpaceGroup.abbrev_sg_mapping.items():
+            if self.symbol == full_symbol:
+                self.symbol = short_symbol
+                break
 
     def _generate_full_symmetry_ops(self) -> np.ndarray:
         symm_ops = np.array(self.generators)
@@ -453,11 +462,11 @@ class SpaceGroup(SymmetryGroup):
         int_number = None
         if int_symbol in SpaceGroup.abbrev_sg_mapping:
             symbols.append(SpaceGroup.abbrev_sg_mapping[int_symbol])
-            int_number = SpaceGroup.sg_encoding[int_symbol]["int_number"]
+            int_number = SpaceGroup.sg_encoding[SpaceGroup.abbrev_sg_mapping[int_symbol]]["int_number"]
 
         elif int_symbol in SpaceGroup.full_sg_mapping:
             symbols.append(SpaceGroup.full_sg_mapping[int_symbol])
-            int_number = SpaceGroup.sg_encoding[int_symbol]["int_number"]
+            int_number = SpaceGroup.sg_encoding[SpaceGroup.full_sg_mapping[int_symbol]]["int_number"]
 
         else:
             for spg in SpaceGroup.SYMM_OPS:
@@ -481,7 +490,10 @@ class SpaceGroup(SymmetryGroup):
         from pymatgen.core.operations import SymmOp
 
         if self._symmetry_ops is None:
-            self._symmetry_ops = {SymmOp(m) for m in self._generate_full_symmetry_ops()}
+            if self._symops_xyz is not None:
+                self._symmetry_ops = {SymmOp.from_xyz_str(s) for s in self._symops_xyz}
+            else:
+                self._symmetry_ops = {SymmOp(m) for m in self._generate_full_symmetry_ops()}
         return self._symmetry_ops
 
     def get_orbit(self, p: ArrayLike, tol: float = 1e-5) -> list[np.ndarray]:
@@ -497,10 +509,13 @@ class SpaceGroup(SymmetryGroup):
             list[array]: Orbit for point.
         """
         orbit: list[np.ndarray] = []
-        for o in self.symmetry_ops:
+        symm_ops = self.symmetry_ops
+        found = np.empty((len(symm_ops), 3))
+        for o in symm_ops:
             pp = o.operate(p)
             pp = np.mod(np.round(pp, decimals=10), 1)
-            if not in_array_list(orbit, pp, tol=tol):
+            if not in_fractional_array_list(found[: len(orbit)], pp, tol=tol):
+                found[len(orbit)] = pp
                 orbit.append(pp)
         return orbit
 
@@ -521,10 +536,14 @@ class SpaceGroup(SymmetryGroup):
         orbit: list[np.ndarray] = [np.array(p, dtype=float)]
         identity = SymmOp.from_rotation_and_translation(np.eye(3), np.zeros(3))
         generators: list[SymmOp] = [identity]
-        for o in self.symmetry_ops:
+        symm_ops = self.symmetry_ops
+        found = np.empty((len(symm_ops) + 1, 3))
+        found[0] = orbit[0]
+        for o in symm_ops:
             pp = o.operate(p)
             pp = np.mod(np.round(pp, decimals=10), 1)
-            if not in_array_list(orbit, pp, tol=tol):
+            if not in_fractional_array_list(found[: len(orbit)], pp, tol=tol):
+                found[len(orbit)] = pp
                 orbit.append(pp)
                 generators.append(o)
         return orbit, generators
@@ -619,14 +638,15 @@ class SpaceGroup(SymmetryGroup):
             bool: True if this space group is a subgroup of the supplied group.
         """
         if not isinstance(supergroup, SpaceGroup):
-            return NotImplemented
+            return False
 
-        if len(supergroup.symmetry_ops) < len(self.symmetry_ops) and supergroup.point_group != self.point_group:
+        # order is the number of symmetry operations, without building the (slow) set of them
+        if supergroup.order < self.order and supergroup.point_group != self.point_group:
             return False
 
         groups = [{supergroup.int_number}]
-        all_groups = [supergroup.int_number]
-        max_subgroups = {int(k): v for k, v in SYMM_DATA["maximal_subgroups"].items()}
+        all_groups = {supergroup.int_number}
+        max_subgroups = _MAXIMAL_SUBGROUPS
         while True:
             new_sub_groups = set()
             for i in groups[-1]:
@@ -641,7 +661,7 @@ class SpaceGroup(SymmetryGroup):
                 break
 
             groups.append(new_sub_groups)
-            all_groups.extend(new_sub_groups)
+            all_groups.update(new_sub_groups)
         return False
 
     def is_supergroup(self, subgroup: SymmetryGroup) -> bool:
@@ -676,6 +696,17 @@ class SpaceGroup(SymmetryGroup):
         if not hexagonal and int_number in (146, 148, 155, 160, 161, 166, 167):
             symbol += ":R"
         return cls(symbol)
+
+    def __eq__(self, other: object) -> bool:
+        """Two space groups are equal if they are the same tabulated setting, regardless of
+        whether they were constructed from the short, full or setting-qualified symbol.
+        """
+        if not isinstance(other, SpaceGroup):
+            return NotImplemented
+        return self._setting_symbol == other._setting_symbol
+
+    def __hash__(self) -> int:
+        return hash(self._setting_symbol)
 
     def __repr__(self) -> str:
         symbol = self.symbol
@@ -739,3 +770,27 @@ def in_array_list(array_list: list[np.ndarray] | np.ndarray, arr: np.ndarray, to
     if not tol:
         return any(np.all(array_list == arr[None, :], axes))
     return any(np.sum(np.abs(array_list - arr[None, :]), axes) < tol)
+
+
+def in_fractional_array_list(array_list: np.ndarray, arr: np.ndarray, tol: float = 1e-5) -> bool:
+    """Like `in_array_list`, for fractional coordinates.
+
+    Two coordinates that differ by almost a full lattice vector, such as
+    0.999999 and 0.0, are the same point of the unit cell. The distance used
+    is therefore the L1 norm of the per-axis minimum image difference.
+
+    Args:
+        array_list (array): An (n, 3) array of fractional coordinates.
+        arr (array): The fractional coordinates to look for.
+        tol (float): The tolerance. Defaults to 1e-5. If 0, an exact match is done.
+
+    Returns:
+        bool: True if arr is in array_list.
+    """
+    if len(array_list) == 0:
+        return False
+    diff = np.abs(array_list - arr[None, :])
+    if not tol:
+        return bool(np.any(np.all(diff == 0, axis=1)))
+    diff %= 1
+    return bool(np.any(np.sum(np.minimum(diff, 1 - diff), axis=1) < tol))

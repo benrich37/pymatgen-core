@@ -7,6 +7,7 @@ from __future__ import annotations
 import collections
 import collections.abc
 import math
+import numbers
 import os
 import re
 import string
@@ -275,6 +276,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         """
         if not isinstance(other, type(self) | dict):
             return NotImplemented
+        if isinstance(other, dict):
+            # a plain dict may be keyed by str symbols, which never match Element keys
+            try:
+                other = Composition(other, allow_negative=True)
+            except (ValueError, TypeError):
+                return False
 
         # elements with amounts < Composition.amount_tolerance don't show up
         # in the el_map, so checking len enables us to only check one
@@ -295,10 +302,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         if not isinstance(other, type(self)):
             return NotImplemented
 
+        # read each key's own amount: self[el] sums every key sharing a symbol
         for el in sorted(set(self.elements + other.elements)):
-            if other[el] - self[el] >= type(self).amount_tolerance:
+            self_amt, other_amt = self._data.get(el, 0), other._data.get(el, 0)
+            if other_amt - self_amt >= type(self).amount_tolerance:
                 return False
-            if self[el] - other[el] >= type(self).amount_tolerance:
+            if self_amt - other_amt >= type(self).amount_tolerance:
                 return True
         return True
 
@@ -310,7 +319,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             return NotImplemented
 
         new_el_map: dict[SpeciesLike, float] = defaultdict(float)
-        new_el_map.update(self)
+        # update from items(), not the mapping: self[key] sums every key that shares
+        # an element symbol (e.g. H and D, or Fe and Fe3+)
+        new_el_map.update(self.items())
         for key, val in other.items():
             new_el_map[get_el_sp(key)] += val
         return type(self)(new_el_map, allow_negative=self.allow_negative)
@@ -328,7 +339,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             return NotImplemented
 
         new_el_map: dict[SpeciesLike, float] = defaultdict(float)
-        new_el_map.update(self)
+        new_el_map.update(self.items())  # items(), not the mapping: see __add__
         for key, val in other.items():
             new_el_map[get_el_sp(key)] -= val
         return type(self)(new_el_map, allow_negative=self.allow_negative)
@@ -337,16 +348,16 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         """Multiply a Composition by an integer or a float.
         Fe2O3 * 4 -> Fe8O12.
         """
-        if not isinstance(other, int | float):
+        if not isinstance(other, numbers.Real):
             return NotImplemented
-        return type(self)({el: self[el] * other for el in self}, allow_negative=self.allow_negative)
+        return type(self)({el: amt * other for el, amt in self.items()}, allow_negative=self.allow_negative)
 
     __rmul__ = __mul__
 
     def __truediv__(self, other: object) -> Self:
-        if not isinstance(other, int | float):
+        if not isinstance(other, numbers.Real):
             return NotImplemented
-        return type(self)({el: self[el] / other for el in self}, allow_negative=self.allow_negative)
+        return type(self)({el: amt / other for el, amt in self.items()}, allow_negative=self.allow_negative)
 
     __div__ = __truediv__
 
@@ -389,10 +400,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             rtol (float): Relative tolerance
             atol (float): Absolute tolerance
         """
+        # compare key by key: self[sp] sums every key sharing a symbol, which would
+        # make H + D look like H2
         sps = set(self.elements + other.elements)
         for sp in sps:
-            a = self[sp]
-            b = other[sp]
+            a = self._data.get(sp, 0)
+            b = other._data.get(sp, 0)
             tol = atol + rtol * (abs(a) + abs(b)) / 2
             if abs(b - a) > tol:
                 return False
@@ -615,8 +628,17 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         Returns:
             float: Weight fraction for element el in Composition.
         """
-        el_mass = get_el_sp(el).atomic_mass
-        return float(el_mass * abs(self[el]) / self.weight)
+        sp = get_el_sp(el)
+        if isinstance(sp, Species):
+            return float(sp.atomic_mass * abs(self._data.get(sp, 0)) / self.weight)
+        # an Element matches every key with the same symbol (as in __getitem__), so weigh
+        # each key by its own mass: D and H share a symbol but not a mass
+        symbol = getattr(sp, "symbol", sp)
+        el_weight = 0.0
+        for key, amt in self.items():
+            if getattr(key, "symbol", key) == symbol:
+                el_weight += key.atomic_mass * abs(amt)
+        return float(el_weight / self.weight)
 
     def contains_element_type(self, category: str) -> bool:
         """Check if Composition contains any elements matching a given category.
@@ -638,7 +660,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         if "block" in category:
             return category[0] in [el.block for el in self.elements]
 
-        return any(getattr(el, f"is_{category}") for el in self.elements)
+        # Element names the rare-earth predicate is_rare_earth, not is_rare_earth_metal
+        attr = "is_rare_earth" if category == "rare_earth_metal" else f"is_{category}"
+        return any(getattr(el, attr) for el in self.elements)
 
     @staticmethod
     def _parse_formula(formula: str, strict: bool = True) -> dict[str, float]:
@@ -669,9 +693,10 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         prototyping formulas. For example, all stoichiometric perovskites have
         anonymized_formula ABC3.
         """
+        # reduce the element amounts, not the per-key ones: Fe2+ Fe3+ O2 is Fe2O2 -> FeO
         reduced = self.element_composition
-        if all(val == int(val) for val in self.values()):
-            reduced /= math.gcd(*(int(i) for i in self.values()))
+        if all(val == int(val) for val in reduced.values()):
+            reduced /= math.gcd(*(int(i) for i in reduced.values()))
 
         anon = ""
         for elem, amt in zip(string.ascii_uppercase, sorted(reduced.values()), strict=False):
@@ -795,8 +820,18 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         return self.as_reduced_dict()
 
     def as_weight_dict(self) -> dict[str, float]:
-        """Get a dict of element symbols mapped to weight fractions, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}."""
-        return {str(el): self.get_wt_fraction(el) for el in self.elements}
+        """Get a dict of element symbols mapped to weight fractions, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}.
+
+        Keys are str(el), so keys sharing an element symbol collapse onto one entry: for
+        an isotope such as D (whose symbol is "H") the "H" entry holds the combined H + D
+        fraction. As a result,
+        Composition.from_weight_dict() does not round-trip such compositions.
+        """
+        weight = self.weight
+        dct: dict[str, float] = defaultdict(float)
+        for el, amt in self.items():
+            dct[str(el)] += float(el.atomic_mass * abs(amt) / weight)
+        return dict(dct)
 
     @property
     @deprecated(as_weight_dict, deadline=(2026, 4, 4))
@@ -902,14 +937,18 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 will be raised. Set to -1 to just reduce fully. If set to a
                 number less than -1, the formula will be fully reduced but a
                 ValueError will be thrown if the number of atoms in the reduced
-                formula is greater than abs(max_sites).
+                formula is greater than abs(max_sites). With a nonzero
+                target_charge, the formula is only shrunk while its charge stays
+                a whole number (Fe36O48 with target_charge=-4 shrinks to Fe9O12
+                with charge -1, not Fe3O4 with charge -1/3). The limits above
+                still apply.
 
         Returns:
             list[dict]: each dict reports an element symbol and average
                 oxidation state across all sites in that composition. If the
                 composition is not charge balanced, an empty list is returned.
         """
-        if len(self.elements) == 1:
+        if len(self.elements) == 1 and target_charge == 0:
             return ({self.elements[0].symbol: 0.0},)
         return self._get_oxi_state_guesses(all_oxi_states, max_sites, oxi_states_override, target_charge)[0]
 
@@ -924,7 +963,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         Returns:
             Composition: New object with elements remapped according to elem_map.
         """
-        # Drop inapplicable substitutions
+        # Drop inapplicable substitutions (on a copy: don't mutate the caller's dict)
         invalid_elems = [key for key in elem_map if key not in self]
         if invalid_elems:
             warnings.warn(
@@ -932,8 +971,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 f"Problematic element = {invalid_elems}; {self}",
                 stacklevel=2,
             )
-        for elem in invalid_elems:
-            elem_map.pop(elem)
+        elem_map = {key: val for key, val in elem_map.items() if key not in invalid_elems}
 
         # Start with elements that remain unchanged (not in elem_map)
         new_comp = {elem: amount for elem, amount in self.as_dict().items() if elem not in elem_map}
@@ -997,7 +1035,11 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 will be raised. Set to -1 to just reduce fully. If set to a
                 number less than -1, the formula will be fully reduced but a
                 ValueError will be thrown if the number of atoms in the reduced
-                formula is greater than abs(max_sites).
+                formula is greater than abs(max_sites). With a nonzero
+                target_charge, the formula is only shrunk while its charge stays
+                a whole number (Fe36O48 with target_charge=-4 shrinks to Fe9O12
+                with charge -1, not Fe3O4 with charge -1/3). The limits above
+                still apply.
 
         Returns:
             Composition, where the elements are assigned oxidation states based
@@ -1058,7 +1100,11 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 will be raised. Set to -1 to just reduce fully. If set to a
                 number less than -1, the formula will be fully reduced but a
                 ValueError will be thrown if the number of atoms in the reduced
-                formula is greater than abs(max_sites).
+                formula is greater than abs(max_sites). With a nonzero
+                target_charge, the formula is only shrunk while its charge stays
+                a whole number (Fe36O48 with target_charge=-4 shrinks to Fe9O12
+                with charge -1, not Fe3O4 with charge -1/3). The limits above
+                still apply.
 
         Returns:
             list[dict]: Each dict maps the element symbol to a list of
@@ -1082,6 +1128,28 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             if comp.num_atoms > max_sites:
                 raise ValueError(f"Composition {comp} cannot accommodate max_sites setting!")
 
+        # target_charge refers to self, so restate it on the composition searched. Multiplying
+        # first keeps an integer result exact for the == check below.
+        scaled_target_charge = target_charge * comp.num_atoms / self.num_atoms
+        if max_sites and comp != self and scaled_target_charge != round(scaled_target_charge):
+            # Only shrink as far as the charge stays a whole number. k copies of the reduced
+            # formula carry a whole-number charge when k is a multiple of step.
+            reduced_comp, factor = self.get_reduced_composition_and_factor()
+            if float(target_charge).is_integer() and float(factor).is_integer():
+                step = int(factor) // math.gcd(int(factor), int(target_charge))
+                k = step
+                if max_sites > 0:  # as many copies as fit in max_sites
+                    k = max(1, int(max_sites / (step * reduced_comp.num_atoms))) * step
+                comp = reduced_comp * k
+            else:
+                comp = self.copy()
+            if max_sites != -1 and comp.num_atoms > abs(max_sites):
+                raise ValueError(
+                    f"Composition {self} cannot be reduced to {abs(max_sites)} sites or fewer with "
+                    f"target_charge={target_charge}. The smallest composition that works is {comp}."
+                )
+            scaled_target_charge = target_charge * comp.num_atoms / self.num_atoms
+
         # Load prior probabilities of oxidation states, used to rank solutions
         if type(self).oxi_prob is None:
             all_data = loadfn(f"{MODULE_DIR}/icsd_bv.yaml")
@@ -1095,13 +1163,15 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         # (taking into account nsites for that particular element)
         el_amt = comp.get_el_amt_dict()
         elements = list(el_amt)
-        el_sums: list = []  # matrix: dim1= el_idx, dim2=possible sums
-        el_sum_scores: defaultdict = defaultdict(set)  # dict of el_idx, sum -> score
-        el_best_oxid_combo: dict = {}  # dict of el_idx, sum -> oxid combo with best score
-        for idx, el in enumerate(elements):
-            el_sum_scores[idx] = {}
-            el_best_oxid_combo[idx] = {}
-            el_sums.append([])
+        oxi_prob = type(self).oxi_prob
+        # per element: possible oxidation-state sum -> score of its best combo (in order of first appearance)
+        el_sum_scores: list[dict[float, float]] = []
+        el_best_oxid_combo: list[dict[float, tuple]] = []  # per element: sum -> oxid combo with best score
+        for el in elements:
+            sum_scores: dict[float, float] = {}
+            best_oxid_combo: dict[float, tuple] = {}
+            el_sum_scores.append(sum_scores)
+            el_best_oxid_combo.append(best_oxid_combo)
             if oxi_states_override.get(el):
                 oxids: list | tuple = oxi_states_override[el]
             elif all_oxi_states:
@@ -1109,22 +1179,22 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             else:
                 oxids = Element(el).icsd_oxidation_states or Element(el).common_oxidation_states
 
+            # Probability of each oxidation state, looked up once rather than per combo
+            prob = {oxi: oxi_prob.get(Species(el, oxi), 0) for oxi in oxids}  # type: ignore[union-attr]
+
             # Get all possible combinations of oxidation states
             # and sum each combination
             for oxid_combo in combinations_with_replacement(oxids, int(el_amt[el])):
-                # List this sum as a possible option
                 oxid_sum = sum(oxid_combo)
-                if oxid_sum not in el_sums[idx]:
-                    el_sums[idx].append(oxid_sum)
-
                 # Determine how probable is this combo?
-                score = sum(type(self).oxi_prob.get(Species(el, o), 0) for o in oxid_combo)  # type: ignore[union-attr]
+                score = sum(map(prob.__getitem__, oxid_combo))
 
                 # If it is the most probable combo for a certain sum,
                 # store the combination
-                if oxid_sum not in el_sum_scores[idx] or score > el_sum_scores[idx].get(oxid_sum, 0):
-                    el_sum_scores[idx][oxid_sum] = score
-                    el_best_oxid_combo[idx][oxid_sum] = oxid_combo
+                if oxid_sum not in sum_scores or score > sum_scores[oxid_sum]:
+                    sum_scores[oxid_sum] = score
+                    best_oxid_combo[oxid_sum] = oxid_combo
+        el_sums = [list(sum_scores) for sum_scores in el_sum_scores]  # possible sums for each element
 
         # Determine which combination of oxidation states for each element
         # is the most probable
@@ -1133,7 +1203,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         all_scores = []  # will contain a score for each solution
         for x in product(*el_sums):
             # Each x is a trial of one possible oxidation sum for each element
-            if sum(x) == target_charge:  # charge balance condition
+            if sum(x) == scaled_target_charge:  # charge balance condition
                 el_sum_sol = dict(zip(elements, x, strict=True))  # element->oxid_sum
                 # Normalize oxid_sum by amount to get avg oxid state
                 sol = {el: v / el_amt[el] for el, v in el_sum_sol.items()}

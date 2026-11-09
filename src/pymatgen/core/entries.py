@@ -83,11 +83,7 @@ class Entry(MSONable, ABC):
                 Composition, including a {symbol: amt} dict, a string formula, and others.
             energy (float): Energy of the entry.
         """
-        if isinstance(composition, Composition):
-            self._composition = composition
-        else:
-            self._composition = Composition(composition)
-        # self._composition = Composition(composition)
+        self._composition = composition if isinstance(composition, Composition) else Composition(composition)
         self._energy = energy
 
     @property
@@ -671,9 +667,9 @@ class ComputedEntry(Entry):
         return ComputedEntry(
             composition=self.composition,
             energy=self.uncorrected_energy,
-            energy_adjustments=self.energy_adjustments,
-            parameters=self.parameters,
-            data=self.data,
+            energy_adjustments=self.energy_adjustments.copy(),
+            parameters=self.parameters.copy(),
+            data=self.data.copy(),
             entry_id=self.entry_id,
         )
 
@@ -716,11 +712,8 @@ class ComputedStructureEntry(ComputedEntry):
             entry_id: An optional id to uniquely identify the entry.
         """
         if composition:
-            if isinstance(composition, Composition):
-                pass
-            else:
+            if not isinstance(composition, Composition):
                 composition = Composition(composition)
-            # composition = Composition(composition)
             if (
                 composition.get_integer_formula_and_factor()[0]
                 != structure.composition.get_integer_formula_and_factor()[0]
@@ -769,8 +762,8 @@ class ComputedStructureEntry(ComputedEntry):
                 struct,
                 dct["energy"],
                 correction=dct["correction"],
-                parameters={k: MontyDecoder().process_decoded(v) for k, v in dct.get("parameters", {}).items()},
-                data={k: MontyDecoder().process_decoded(v) for k, v in dct.get("data", {}).items()},
+                parameters={k: MontyDecoder().process_decoded(v) for k, v in (dct.get("parameters") or {}).items()},
+                data={k: MontyDecoder().process_decoded(v) for k, v in (dct.get("data") or {}).items()},
                 entry_id=dct.get("entry_id"),
             )
         # this is the preferred / modern way of instantiating ComputedEntry
@@ -781,9 +774,10 @@ class ComputedStructureEntry(ComputedEntry):
             dct["energy"],
             composition=dct.get("composition"),
             correction=0,
-            energy_adjustments=[MontyDecoder().process_decoded(e) for e in dct.get("energy_adjustments", {})],
-            parameters={k: MontyDecoder().process_decoded(v) for k, v in dct.get("parameters", {}).items()},
-            data={k: MontyDecoder().process_decoded(v) for k, v in dct.get("data", {}).items()},
+            # None values must be handled as in ComputedEntry.from_dict
+            energy_adjustments=[MontyDecoder().process_decoded(e) for e in (dct.get("energy_adjustments") or [])],
+            parameters={k: MontyDecoder().process_decoded(v) for k, v in (dct.get("parameters") or {}).items()},
+            data={k: MontyDecoder().process_decoded(v) for k, v in (dct.get("data") or {}).items()},
             entry_id=dct.get("entry_id"),
         )
 
@@ -816,9 +810,9 @@ class ComputedStructureEntry(ComputedEntry):
             structure=self.structure.copy(),
             energy=self.uncorrected_energy,
             composition=self.composition,
-            energy_adjustments=self.energy_adjustments,
-            parameters=self.parameters,
-            data=self.data,
+            energy_adjustments=self.energy_adjustments.copy(),
+            parameters=self.parameters.copy(),
+            data=self.data.copy(),
             entry_id=self.entry_id,
         )
 

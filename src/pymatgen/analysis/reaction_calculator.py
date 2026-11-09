@@ -74,22 +74,26 @@ class BalancedReaction(MSONable):
             if abs(coeff) > self.TOLERANCE:
                 self._all_comp += [key]
                 self._coeffs += [coeff]
+        self._els = sorted({el for comp in self._all_comp for el in comp.elements})
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, type(self)):
             return NotImplemented
-        for comp in self._all_comp:
+        for comp in {*self._all_comp, *other._all_comp}:
+            coeff1 = self.get_coeff(comp) if comp in self._all_comp else 0
             coeff2 = other.get_coeff(comp) if comp in other._all_comp else 0
-            if abs(self.get_coeff(comp) - coeff2) > self.TOLERANCE:
+            if abs(coeff1 - coeff2) > self.TOLERANCE:
                 return False
         return True
 
     def __hash__(self) -> int:
-        # Necessity for hash method is unclear (see gh-3673)
+        # Necessity for hash method is unclear (see gh-3673). Only hash the
+        # compositions taking part in the net reaction so that hashing is
+        # consistent with __eq__ and works for subclasses (e.g. Reaction)
+        # that never set reactants_coeffs/products_coeffs.
         return hash(
-            (
-                frozenset(self.reactants_coeffs.items()),
-                frozenset(self.products_coeffs.items()),
+            frozenset(
+                comp for comp, coeff in zip(self._all_comp, self._coeffs, strict=True) if abs(coeff) > self.TOLERANCE
             )
         )
 
@@ -342,23 +346,23 @@ class Reaction(BalancedReaction):
         )
         best_soln = None
         balanced = False
+        expected_signs = np.array([-1] * len(self._input_reactants) + [+1] * len(self._input_products))
 
         for constraints in chain(product_constraints, reactant_constraints):
             n_constr = len(constraints)
 
-            comp_and_constraints = np.append(comp_matrix, np.zeros((n_constr, self._num_comp)), axis=0)
+            comp_and_constraints = np.zeros((self._num_elems + n_constr, self._num_comp))
+            comp_and_constraints[: self._num_elems] = comp_matrix
+            # arbitrarily fix coeffs of the constrained compositions to 1
+            comp_and_constraints[self._num_elems + np.arange(n_constr), constraints] = 1
             b = np.zeros((self._num_elems + n_constr, 1))
             b[-n_constr:] = 1 if min(constraints) >= first_product_idx else -1
 
-            for num, idx in enumerate(constraints):
-                comp_and_constraints[self._num_elems + num, idx] = 1
-                # arbitrarily fix coeff to 1
-
             coeffs = np.matmul(np.linalg.pinv(comp_and_constraints), b)
 
-            if np.allclose(np.matmul(comp_matrix, coeffs), np.zeros((self._num_elems, 1))):
+            # same as np.allclose(comp_matrix @ coeffs, 0) (atol=1e-8) without its overhead
+            if (np.abs(np.matmul(comp_matrix, coeffs)) <= 1e-8).all():
                 balanced = True
-                expected_signs = np.array([-1] * len(self._input_reactants) + [+1] * len(self._input_products))
                 num_errors = np.sum(np.multiply(expected_signs, coeffs.T) < self.TOLERANCE)
 
                 if num_errors == 0:

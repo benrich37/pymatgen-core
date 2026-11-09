@@ -431,6 +431,21 @@ def test_ordered_flag():
     assert not tag_object.is_equal_to(value, tag_object, tag_object.read(tag, "Mn -3 3 O 0"))
 
 
+def test_type_fix_failure_warning_message():
+    """A value whose type can't be fixed warns with the real message (once the literal "warning"), unless silenced."""
+    message = (
+        "Could not fix the typing for tag 'tag' expecting type <class 'int'> of value abc with type <class 'str'>!"
+    )
+    with pytest.warns(Warning, match=re.escape(message)):
+        IntTag().validate_value_type("tag", "abc", try_auto_type_fix=True)
+    message = "Could not fix the typing for tag 'tag' expecting type <class 'str'> of value (unstringable value)!"
+    with pytest.warns(Warning, match=re.escape(message)):
+        StrTag().validate_value_type("tag", Unstringable(), try_auto_type_fix=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        IntTag().validate_value_type("tag", "abc", try_auto_type_fix=True, warn_user=False)
+
+
 def test_tagcontainer_validation():
     tag = "barbie"
     repeatable_str_subtag = "ken"

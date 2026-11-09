@@ -14,6 +14,7 @@ import orjson
 import pytest
 from matplotlib import rc
 from matplotlib.backend_bases import KeyEvent, ResizeEvent
+from matplotlib.colors import to_rgba
 from numpy.testing import assert_allclose
 from pytest import approx
 
@@ -192,39 +193,43 @@ class TestBSPlotter(MatSciTest):
 
 
 class TestBSPlotterProjected:
-    def setup_method(self):
+    # The projected dot plots draw one Line2D per point and are slow, so the checks are split into
+    # separate tests that pytest-xdist can spread across workers, sharing one class-level plotter.
+    @classmethod
+    def setup_class(cls):
         with open(f"{BAND_TEST_DIR}/Cu2O_361_bandstructure.json", "rb") as file:
-            self.bs_Cu2O = BandStructureSymmLine.from_dict(orjson.loads(file.read()))
-        self.plotter_Cu2O = BSPlotterProjected(self.bs_Cu2O)
+            cls.bs_Cu2O = BandStructureSymmLine.from_dict(orjson.loads(file.read()))
+        cls.plotter_Cu2O = BSPlotterProjected(cls.bs_Cu2O)
 
-        with open(f"{TEST_FILES_DIR}/electronic_structure/boltztrap2/PbTe_bandstructure.json", "rb") as file:
-            self.bs_PbTe = BandStructureSymmLine.from_dict(orjson.loads(file.read()))
+    def teardown_method(self):
+        plt.close("all")
 
     def test_orbitals_sum_orbitals_without_sum_morbs(self):
         assert self.plotter_Cu2O._Orbitals_SumOrbitals({"Cu": ["dxy"]}, None) == ({"Cu": ["dxy"]}, None)
 
-    def test_methods(self):
+    def test_elt_projected_plots(self):
         # Minimal baseline testing for get_plot. not a true test. Just checks that
         # it can actually execute.
         self.plotter_Cu2O.get_elt_projected_plots()
         self.plotter_Cu2O.get_elt_projected_plots_color()
-        axes = self.plotter_Cu2O.get_projected_plots_dots({"Cu": ["d", "s"], "O": ["p"]})
-        assert len(axes) == 4, f"{len(axes)=}"
-        assert len(axes[0].get_lines()) == 4903, f"{len(axes[0].get_lines())=}"
-        assert len(axes[-1].get_lines()) == 0, f"{len(axes[-1].get_lines())=}"
 
-        # Test if a plot with a single column works
-        axes = self.plotter_Cu2O.get_projected_plots_dots({"Cu": ["d", "s"]})
-        assert len(axes) == 2, f"{len(axes)=}"
+    @pytest.mark.parametrize(
+        ("dictio", "n_axes", "n_lines_last"),
+        [
+            ({"Cu": ["d", "s"], "O": ["p"]}, 4, 0),
+            # single column
+            ({"Cu": ["d", "s"]}, 2, 4903),
+            # single row
+            ({"Cu": ["d"], "O": ["p"]}, 2, 4903),
+        ],
+    )
+    def test_projected_plots_dots(self, dictio, n_axes, n_lines_last):
+        axes = self.plotter_Cu2O.get_projected_plots_dots(dictio)
+        assert len(axes) == n_axes, f"{len(axes)=}"
         assert len(axes[0].get_lines()) == 4903, f"{len(axes[0].get_lines())=}"
-        assert len(axes[-1].get_lines()) == 4903, f"{len(axes[-1].get_lines())=}"
+        assert len(axes[-1].get_lines()) == n_lines_last, f"{len(axes[-1].get_lines())=}"
 
-        # Test if a plot with a single row works
-        axes = self.plotter_Cu2O.get_projected_plots_dots({"Cu": ["d"], "O": ["p"]})
-        assert len(axes) == 2, f"{len(axes)=}"
-        assert len(axes[0].get_lines()) == 4903, f"{len(axes[0].get_lines())=}"
-        assert len(axes[-1].get_lines()) == 4903, f"{len(axes[-1].get_lines())=}"
-
+    def test_projected_plots_dots_patom_pmorb(self):
         axs = self.plotter_Cu2O.get_projected_plots_dots_patom_pmorb(
             {"Cu": ["dxy", "s", "px"], "O": ["px", "py", "pz"]},
             {"Cu": [3, 5], "O": [1]},
@@ -235,6 +240,7 @@ class TestBSPlotterProjected:
         assert len(axs[0].get_lines()) == 4903
         assert axs[0].get_ylim() == approx((-4.0, 4.5047))
 
+    def test_projected_plots_dots_patom_pmorb_num_column(self):
         # Test if num_column other than 2 works correctly
         axs_col = self.plotter_Cu2O.get_projected_plots_dots_patom_pmorb(
             {"Cu": ["dxy", "s", "px"], "O": ["px", "py", "pz"]}, {"Cu": [3, 5], "O": [1]}, num_column=3
@@ -243,11 +249,14 @@ class TestBSPlotterProjected:
         assert axs_spec.rowspan.start == 0
         assert axs_spec.colspan.start == 2
 
+    def test_no_projections_raises(self):
+        with open(f"{TEST_FILES_DIR}/electronic_structure/boltztrap2/PbTe_bandstructure.json", "rb") as file:
+            bs_PbTe = BandStructureSymmLine.from_dict(orjson.loads(file.read()))
         with pytest.raises(
             ValueError,
             match="Can't plot projections on a band structure without projections data",
         ):
-            BSPlotterProjected(self.bs_PbTe)
+            BSPlotterProjected(bs_PbTe)
 
 
 class TestBSDOSPlotter:
@@ -437,6 +446,63 @@ class TestBoltztrapPlotter:
         x_lo, x_hi = ax.get_xlim()
         assert x_lo <= -1
         assert x_hi >= 1
+
+    def test_plot_doping_labels(self):
+        ax = self.plotter.plot_seebeck_mu()
+        expected = [
+            f"${dop_type}$=10$^{{{math.log10(self.bz.doping[dop_type][idx])}}}$" for dop_type in "np" for idx in (0, -1)
+        ]
+        # the labels used to have an unbalanced "$" and were rendered verbatim
+        assert [text.get_text() for text in ax.texts] == expected
+
+    @pytest.mark.parametrize(
+        "method", ["plot_seebeck_temp", "plot_conductivity_temp", "plot_power_factor_temp", "plot_zt_temp"]
+    )
+    def test_plot_temp_doping_unit_label(self, method):
+        ax = getattr(self.plotter, method)(output="average")
+        labels = [text.get_text() for text in ax.get_legend().get_texts()]
+        # f-string "{-3}" used to collapse to "cm^-3", which superscripts only the minus sign
+        assert labels == [f"{dop} $cm^{{-3}}$" for dop in self.bz.doping["n"]]
+
+    @pytest.mark.parametrize("output", ["average", "tensor"])
+    @pytest.mark.parametrize("method", ["plot_seebeck_eff_mass_mu", "plot_complexity_factor_mu"])
+    def test_plot_mu_outside_gap_multiple_temps(self, method, output):
+        mu_steps = np.linspace(-1, 2, 31)
+        lambdas = []
+
+        def get_values(output, temp, Lambda):
+            lambdas.append(Lambda)
+            values = np.full(len(mu_steps), temp * Lambda)
+            return values if output == "average" else np.column_stack([values, 2 * values, 3 * values])
+
+        bz = SimpleNamespace(
+            mu_steps=mu_steps,
+            mu_doping={"p": {300: [0.2], 600: [0.3]}, "n": {300: [0.8], 600: [0.7]}},
+            get_seebeck_eff_mass=get_values,
+            get_complexity_factor=get_values,
+        )
+        ax = getattr(BoltztrapPlotter(bz), method)(temps=(300, 600), output=output, Lambda=1.5)
+        assert lambdas == [1.5, 1.5]  # Lambda used to be ignored by plot_seebeck_eff_mass_mu
+
+        n_curves = 1 if output == "average" else 3
+        lines = ax.get_lines()
+        assert len(lines) == 4 * n_curves
+        for temp_idx in range(2):
+            # the part below and above the gap of each curve share the same color, for every temperature
+            below = lines[2 * temp_idx * n_curves : (2 * temp_idx + 1) * n_curves]
+            above = lines[(2 * temp_idx + 1) * n_curves : (2 * temp_idx + 2) * n_curves]
+            assert [line.get_color() for line in below] == [line.get_color() for line in above]
+            assert all(max(line.get_xdata()) <= bz.mu_doping["p"][(300, 600)[temp_idx]][0] for line in below)
+            assert all(min(line.get_xdata()) >= bz.mu_doping["n"][(300, 600)[temp_idx]][0] for line in above)
+
+        legend = ax.get_legend()
+        if output == "average":
+            expected = ["300K", "600K"]
+        else:
+            expected = [f"{dim}_{temp}K" for temp in (300, 600) for dim in "xyz"]
+        assert [text.get_text() for text in legend.get_texts()] == expected
+        colors = [handle.get_color() for handle in legend.legend_handles]
+        assert len(set(colors)) == len(colors)
 
     def test_plot_seebeck_mu_first_point(self):
         ax = self.plotter.plot_seebeck_mu()
@@ -786,6 +852,13 @@ class TestDosPlotterOptions:
         assert ax.get_ylabel() == "Density of states (states/eV)"
         assert [text.get_text() for text in ax.get_legend().get_texts()] == ["total"]
 
+    def test_energy_window_without_data(self):
+        plotter = DosPlotter()
+        plotter.add_dos("total", self.dos)
+        # no DOS point inside the energy window: used to raise ValueError (min of an empty list)
+        ax = plotter.get_plot(xlim=(1e3, 1e3 + 1))
+        assert ax.get_xlim() == approx((1e3, 1e3 + 1))
+
     def test_norm_vol_labels(self):
         dos = Dos(self.dos.efermi, self.dos.energies, self.dos.densities, norm_vol=1.0)
         plotter = DosPlotter(zero_at_efermi=False)
@@ -1036,6 +1109,11 @@ class TestBSPlotterProjectedExtra:
             bs = BandStructureSymmLine.from_dict(orjson.loads(file.read()))
         with pytest.raises(ValueError, match="Can only plot binary and ternary compounds, got 4 elements"):
             BSPlotterProjected(bs).get_elt_projected_plots_color()
+
+    def test_elt_projected_plots_color_single_element(self, bs_n2):
+        # used to fail deep inside matplotlib with an invalid 1-component color
+        with pytest.raises(ValueError, match="Can only plot binary and ternary compounds, got 1 elements"):
+            BSPlotterProjected(bs_n2).get_elt_projected_plots_color()
 
     def test_elt_projected_plots_color_metal_ylim(self, bs_spin_metal):
         ax = BSPlotterProjected(bs_spin_metal).get_elt_projected_plots_color(zero_to_efermi=True)
@@ -1370,6 +1448,45 @@ class TestBSPlotterProjectedExtra:
         with pytest.raises(ValueError, match="invalid 'num_column'"):
             plotter.get_projected_plots_dots_patom_pmorb({"Cu": ["s"]}, {"Cu": [3]}, num_column="2")
 
+    def test_orbitals_sum_orbitals_subshell_after_expanded_element(self):
+        # a stale loop variable (last orbital of Cu) used to make the O subshell check fail
+        dictio, sum_morbs = BSPlotterProjected._Orbitals_SumOrbitals(
+            {"Cu": ["s", "d"], "O": ["p"]}, {"Cu": ["d"], "O": ["p"]}
+        )
+        assert dictio["O"] == sum_morbs["O"] == ["px", "py", "pz"]
+        assert sum_morbs["Cu"] == ["dxy", "dyz", "dxz", "dx2_y2", "dz2"]
+
+    def test_patom_pmorb_does_not_mutate_inputs(self, bs_cu2o):
+        args = (
+            {"Cu": ["s", "d"], "O": ["p"]},
+            {"Cu": ["all"], "O": [1, 2]},
+            {"Cu": ["all"]},
+            {"Cu": ["d"], "O": ["p"]},
+        )
+        orig = copy.deepcopy(args)
+        plotter = BSPlotterProjected(bs_cu2o)
+        axes = plotter.get_projected_plots_dots_patom_pmorb(*args, selected_branches=[1])
+        assert [ax.get_title() for ax in axes] == ["Cu all s", "Cu all d", "O 1 p", "O 2 p"]
+        assert args == orig
+        # same inputs give the same plot again
+        axes = plotter.get_projected_plots_dots_patom_pmorb(*args, selected_branches=[1])
+        assert [ax.get_title() for ax in axes] == ["Cu all s", "Cu all d", "O 1 p", "O 2 p"]
+
+    def test_vbm_cbm_marker_with_ylim(self, bs_cu2o):
+        plotter = BSPlotterProjected(bs_cu2o)
+        data = plotter.bs_plot_data()
+        n_markers = len(data["vbm"]) + len(data["cbm"])
+        axes = [
+            *plotter.get_projected_plots_dots({"Cu": ["s"]}, ylim=(-2, 2), vbm_cbm_marker=True),
+            plotter.get_elt_projected_plots(ylim=(-2, 2), vbm_cbm_marker=True)[0, 0],
+            *plotter.get_projected_plots_dots_patom_pmorb(
+                {"Cu": ["s"]}, {"Cu": [3]}, ylim=(-2, 2), vbm_cbm_marker=True
+            ),
+        ]
+        for ax in axes:
+            assert ax.get_ylim() == approx((-2, 2))
+            assert len(ax.collections) == n_markers
+
     def test_patom_pmorb_plot_metal(self, bs_c_metal):
         plotter = BSPlotterProjected(bs_c_metal)
         axes = plotter.get_projected_plots_dots_patom_pmorb({"C": ["s"]}, {"C": [1]}, selected_branches=[1])
@@ -1463,6 +1580,19 @@ class TestBSDOSPlotterExtra:
         bs_ax, dos_ax = plotter.get_plot(band_struct, dos)
         assert bs_ax.get_legend() is None
         assert dos_ax.get_legend() is None
+
+    def test_quaternary_elements_legend_without_rgb(self, bs_cu2o):
+        # used to raise IndexError: only 3 legend colors were defined
+        structure = bs_cu2o.structure.copy()
+        structure[2] = "Ag"
+        structure[3] = "Au"
+        bs = _truncate_bands(bs_cu2o, [0, 1, 2, 3], structure=structure)
+        bs_ax = BSDOSPlotter(rgb_legend=False).get_plot(bs)
+        legend = bs_ax.get_legend()
+        assert [text.get_text() for text in legend.get_texts()] == [el.symbol for el in structure.elements]
+        # CMYK mapping of _get_colordata: 1st element yellow, 2nd cyan, 3rd magenta, 4th black
+        expected = [to_rgba(color) for color in ("yellow", "cyan", "magenta", "black")]
+        assert [to_rgba(handle.get_color()) for handle in legend.legend_handles] == expected
 
 
 class FakeMlab:

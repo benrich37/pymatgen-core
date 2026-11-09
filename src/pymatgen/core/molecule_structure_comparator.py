@@ -238,13 +238,14 @@ class MoleculeStructureComparator(MSONable):
         Returns:
             List[tuple[int, int]]: bonded atom pairs.
         """
-        n_atoms = len(mol)
+        # compare element symbols, so that oxidation-state-decorated molecules work too
+        symbols = [sp.symbol for sp in mol.species]
         if self.ignore_ionic_bond:
-            covalent_atoms = [idx for idx, sp in enumerate(mol.species) if sp.symbol not in self.ionic_element_list]
+            covalent_atoms = [idx for idx, symbol in enumerate(symbols) if symbol not in self.ionic_element_list]
         else:
-            covalent_atoms = list(range(n_atoms))
+            covalent_atoms = list(range(len(mol)))
 
-        unavailable_elements = set(mol.composition.as_dict()) - set(self.covalent_radius)
+        unavailable_elements = set(symbols) - set(self.covalent_radius)
         if unavailable_elements:
             raise ValueError(f"The covalent radius for element {unavailable_elements} is not available")
 
@@ -268,25 +269,23 @@ class MoleculeStructureComparator(MSONable):
         if pairs.size == 0:
             return []
 
-        atoms = np.asarray(covalent_atoms)
-
         pair_dists = np.linalg.norm(
             coords[pairs[:, 0]] - coords[pairs[:, 1]],
             axis=1,
         )
 
-        bond_13 = self.get_13_bonds(self.priority_bonds)
+        # sets for O(1) membership tests in the loop below
+        priority_bonds = set(self.priority_bonds)
+        bond_13 = set(self.get_13_bonds(self.priority_bonds))
 
         bonds = []
 
-        for (i_local, j_local), dist in zip(pairs, pair_dists, strict=True):
-            i = atoms[i_local]
-            j = atoms[j_local]
-            pair = (i, j)
+        for (i_local, j_local), dist in zip(pairs.tolist(), pair_dists, strict=True):
+            pair = (i, j) = (covalent_atoms[i_local], covalent_atoms[j_local])
 
-            cap = self.covalent_radius[mol.sites[i].specie.symbol] + self.covalent_radius[mol.sites[j].specie.symbol]
+            cap = self.covalent_radius[symbols[i]] + self.covalent_radius[symbols[j]]
 
-            if pair in self.priority_bonds:
+            if pair in priority_bonds:
                 cap *= 1 + self.priority_cap
             elif pair in bond_13:
                 cap *= 1 + self.bond_13_cap
@@ -295,14 +294,14 @@ class MoleculeStructureComparator(MSONable):
 
             if (
                 self.ignore_halogen_self_bond
-                and pair not in self.priority_bonds
-                and mol.sites[i].specie.symbol in self.halogen_list
-                and mol.sites[j].specie.symbol in self.halogen_list
+                and pair not in priority_bonds
+                and symbols[i] in self.halogen_list
+                and symbols[j] in self.halogen_list
             ):
                 cap *= 0.1
 
             if dist <= cap:
-                bonds.append(tuple(int(x) for x in pair))
+                bonds.append(pair)
 
         return bonds
 
@@ -316,6 +315,8 @@ class MoleculeStructureComparator(MSONable):
             "covalent_radius": self.covalent_radius,
             "priority_bonds": self.priority_bonds,
             "priority_cap": self.priority_cap,
+            "ignore_ionic_bond": self.ignore_ionic_bond,
+            "bond_13_cap": self.bond_13_cap,
         }
 
     @classmethod
@@ -333,4 +334,6 @@ class MoleculeStructureComparator(MSONable):
             covalent_radius=dct["covalent_radius"],
             priority_bonds=dct["priority_bonds"],
             priority_cap=dct["priority_cap"],
+            ignore_ionic_bond=dct.get("ignore_ionic_bond", True),
+            bond_13_cap=dct.get("bond_13_cap", 0.05),
         )

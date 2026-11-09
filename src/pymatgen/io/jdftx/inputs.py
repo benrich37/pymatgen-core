@@ -803,8 +803,8 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             list[str]: Tags that differ between the two JDFTXInfile objects.
         """
-        if exclude_tags is None:
-            exclude_tags = []
+        # Copy to avoid mutating the caller's list
+        exclude_tags = [] if exclude_tags is None else list(exclude_tags)
         if exclude_tag_categories is None:
             exclude_tag_categories = []
         if ensure_include_tags is None:

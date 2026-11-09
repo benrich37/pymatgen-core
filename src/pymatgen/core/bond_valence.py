@@ -225,13 +225,13 @@ class BVAnalyzer:
         # Perform symmetry determination and get sites grouped by symmetry.
         if self.symm_tol:
             finder = SpacegroupAnalyzer(structure, self.symm_tol)
-            symm_structure = finder.get_symmetrized_structure()
-            equi_sites = symm_structure.equivalent_sites
+            equi_indices = finder.get_symmetrized_structure().equivalent_indices
         else:
-            equi_sites = [[site] for site in structure]
+            equi_indices = [[idx] for idx in range(len(structure))]
 
         # Sort the equivalent sites by decreasing electronegativity.
-        equi_sites = sorted(equi_sites, key=lambda sites: -sites[0].species.average_electroneg)
+        equi_indices = sorted(equi_indices, key=lambda indices: -structure[indices[0]].species.average_electroneg)
+        equi_sites = [[structure[idx] for idx in indices] for indices in equi_indices]
 
         # Get a list of valences and probabilities for each symmetrically distinct site.
         valences = []
@@ -243,6 +243,10 @@ class BVAnalyzer:
                 prob = self._calc_site_probabilities(test_site, nn)
                 all_prob.append(prob)
                 val = list(prob)
+                if not val or max(prob.values()) <= 0:
+                    raise ValueError(
+                        f"Valences cannot be assigned! No probable oxidation state for {test_site.species_string}."
+                    )
                 # Sort valences in order of decreasing probability.
                 val = sorted(val, key=lambda v: -prob[v])
                 # Retain probabilities that are at least 1/100 of highest prob.
@@ -258,6 +262,8 @@ class BVAnalyzer:
                 vals = []
                 for elem, _ in get_z_ordered_elmap(test_site.species):
                     val = list(prob[elem.symbol])
+                    if not val or max(prob[elem.symbol].values()) <= 0:
+                        raise ValueError(f"Valences cannot be assigned! No probable oxidation state for {elem.symbol}.")
                     # Sort valences in order of decreasing probability.
                     val = sorted(val, key=lambda v: -prob[elem.symbol][v])
                     # Retain probabilities that are at least 1/100 of highest prob.
@@ -406,22 +412,22 @@ class BVAnalyzer:
         _recurse()
 
         if self._best_vset:
+            # Map the valences of the groups of equivalent sites back to the site indices
+            # (by index: sites only hash by element, so a site-keyed dict is O(N^2)).
             if structure.is_ordered:
-                assigned = {}
-                for val, sites in zip(self._best_vset, equi_sites, strict=True):
-                    for site in sites:
-                        assigned[site] = val
-
-                return [int(assigned[site]) for site in structure]
-            assigned = {}
-            new_best_vset = [[] for _ in equi_sites]
+                site_valences = [0] * len(structure)
+                for val, indices in zip(self._best_vset, equi_indices, strict=True):
+                    for idx in indices:
+                        site_valences[idx] = int(val)
+                return site_valences
+            new_best_vset = [[] for _ in equi_indices]
             for ival, val in enumerate(self._best_vset):
                 new_best_vset[attrib[ival]].append(val)
-            for val, sites in zip(new_best_vset, equi_sites, strict=True):
-                for site in sites:
-                    assigned[site] = val
-
-            return [[int(frac_site) for frac_site in assigned[site]] for site in structure]
+            site_frac_valences: list[list[int]] = [[] for _ in structure]
+            for vals, indices in zip(new_best_vset, equi_indices, strict=True):
+                for idx in indices:
+                    site_frac_valences[idx] = [int(frac_val) for frac_val in vals]
+            return site_frac_valences
         raise ValueError("Valences cannot be assigned!")
 
     def get_oxi_state_decorated_structure(self, structure: Structure) -> Structure:

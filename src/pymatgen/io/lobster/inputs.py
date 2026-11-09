@@ -213,7 +213,7 @@ class Lobsterin(UserDict, MSONable):
         Returns:
             dict: {"Same": same_params, "Different": diff_params}
         """
-        same_params = {}
+        same_params: dict[str, Any] = {}
         diff_params = {}
 
         # Check self
@@ -234,6 +234,8 @@ class Lobsterin(UserDict, MSONable):
                 new_set2 = {value.strip().lower() for value in other[k1]}
                 if new_set1 != new_set2:
                     diff_params[k1] = {"lobsterin1": v1, "lobsterin2": other[k1]}
+                else:
+                    same_params[k1] = v1
 
             # Float/boolean keywords
             elif v1 != other[k1]:
@@ -369,10 +371,14 @@ class Lobsterin(UserDict, MSONable):
         Args:
             structure (Structure): Structure object
             potcar_symbols: list of potcar symbols
-            address_basis_file (PathLike): path to the basis file
+            address_basis_file (PathLike): path to the basis file. Defaults to the bundled
+                BASIS_PBE_54_standard.yaml, which covers the PBE_54 POTCAR symbols only.
 
         Returns:
             basis
+
+        Raises:
+            ValueError: If the POSCAR does not match the POTCAR or if basis information is missing.
         """
         if address_basis_file is None:
             address_basis_file = f"{MODULE_DIR}/lobster_basis/BASIS_PBE_54_standard.yaml"
@@ -389,7 +395,11 @@ class Lobsterin(UserDict, MSONable):
         for idx, name in enumerate(potcar_symbols):
             if name not in basis:
                 raise ValueError(
-                    f"Missing basis information for POTCAR symbol: {name}. Please provide the basis manually."
+                    f"Missing basis information for POTCAR symbol: {name}. The basis files shipped with pymatgen "
+                    "only cover the POTCAR symbols of the PBE_54 set, so symbols that only exist in older sets "
+                    "(e.g. W_pv, At_d, Cd_pv and Cd_sv from PBE_52) are not included. Please provide the basis "
+                    "manually, e.g. via dict_for_basis in standard_calculations_from_vasp_files, or pass your "
+                    "own address_basis_file."
                 )
             basis_functions.append(basis[name].split())
             list_forin.append(f"{atom_types_potcar[idx]} {basis[name]}")
@@ -820,10 +830,10 @@ class Lobsterin(UserDict, MSONable):
         elif option == "onlycobi":
             lobsterin_dict["skipdos"] = True
             lobsterin_dict["skipcohp"] = True
+            lobsterin_dict["skipcoop"] = True
             lobsterin_dict["skipPopulationAnalysis"] = True
             lobsterin_dict["skipGrossPopulation"] = True
             # LOBSTER-4.1.0
-            lobsterin_dict["skipcobi"] = True
             lobsterin_dict["skipMadelungEnergy"] = True
 
         elif option == "onlymadelung":

@@ -90,8 +90,24 @@ class GruneisenParameter(MSONable):
         Returns:
             The average Gruneisen parameter
         """
+        return self._average_gruneisen(t=t, squared=squared, limit_frequencies=limit_frequencies)
+
+    def _average_gruneisen(
+        self,
+        t: float | None,
+        squared: bool,
+        limit_frequencies: Literal["debye", "acoustic"] | None,
+        acoustic_debye_temp: float | None = None,
+    ) -> float:
+        """Implementation of average_gruneisen.
+
+        The acoustic Debye temperature requires rebuilding the phonopy total DOS, so it is
+        evaluated at most once here, and callers that already have it can pass it in.
+        """
+        if acoustic_debye_temp is None and (t is None or limit_frequencies == "debye"):
+            acoustic_debye_temp = self.acoustic_debye_temp
         if t is None:
-            t = self.acoustic_debye_temp
+            t = acoustic_debye_temp
 
         w = self.frequencies  # in THz
         wdkt = w * const.tera / (const.value("Boltzmann constant in Hz/K") * t)
@@ -110,10 +126,11 @@ class GruneisenParameter(MSONable):
             gamma = gamma**2  # (ruff-preview) noqa: PLR6104
 
         if limit_frequencies == "debye":
-            acoustic_debye_freq = self.acoustic_debye_temp * const.value("Boltzmann constant in Hz/K") / const.tera
+            acoustic_debye_freq = acoustic_debye_temp * const.value("Boltzmann constant in Hz/K") / const.tera  # type: ignore[operator]
             ind = np.where((w >= 0) & (w <= acoustic_debye_freq))
         elif limit_frequencies == "acoustic":
-            w_acoustic = w[:, :3]
+            # w has shape (n_bands, n_qpoints): the acoustic modes are the first three bands
+            w_acoustic = w[:3]
             ind = np.where(w_acoustic >= 0)
         elif limit_frequencies is None:
             ind = np.where(w >= 0)
@@ -123,7 +140,8 @@ class GruneisenParameter(MSONable):
         weights = self.multiplicities
         if weights is None:
             raise ValueError("Multiplicities are not defined.")
-        g = np.dot(weights[ind[0]], np.multiply(cv, gamma)[ind]).sum() / np.dot(weights[ind[0]], cv[ind]).sum()
+        # multiplicities are per q-point, i.e. along the second axis
+        g = np.dot(weights[ind[1]], np.multiply(cv, gamma)[ind]).sum() / np.dot(weights[ind[1]], cv[ind]).sum()
 
         if squared:
             g = np.sqrt(g)
@@ -159,9 +177,12 @@ class GruneisenParameter(MSONable):
         if self.structure is None:
             raise ValueError("Structure is not defined.")
         average_mass = np.mean([s.specie.atomic_mass for s in self.structure]) * amu_to_kg
+        acoustic_debye_temp = None
         if theta_d is None:
-            theta_d = self.acoustic_debye_temp
-        mean_g = self.average_gruneisen(t=theta_d, squared=squared, limit_frequencies=limit_frequencies)
+            theta_d = acoustic_debye_temp = self.acoustic_debye_temp
+        mean_g = self._average_gruneisen(
+            t=theta_d, squared=squared, limit_frequencies=limit_frequencies, acoustic_debye_temp=acoustic_debye_temp
+        )
 
         f1 = 0.849 * 3 * (4 ** (1 / 3)) / (20 * np.pi**3 * (1 - 0.514 * mean_g**-1 + 0.228 * mean_g**-2))
         f2 = (const.k * theta_d / const.hbar) ** 2
@@ -194,13 +215,15 @@ class GruneisenParameter(MSONable):
     @property
     def phdos(self) -> PhononDos:
         """The phonon DOS (re)constructed from the gruneisen.yaml file."""
-        return PhononDos(self.tdos.frequency_points, self.tdos.dos)
+        tdos = self.tdos
+        return PhononDos(tdos.frequency_points, tdos.dos)
 
     @property
     def debye_temp_limit(self) -> float:
         """Debye temperature in K. Adapted from apipy."""
-        f_mesh = self.tdos.frequency_points * const.tera
-        dos = self.tdos.dos
+        tdos = self.tdos
+        f_mesh = tdos.frequency_points * const.tera
+        dos = tdos.dos
 
         i_a = UnivariateSpline(f_mesh, dos * f_mesh**2, s=0).integral(f_mesh[0], f_mesh[-1])
         i_b = UnivariateSpline(f_mesh, dos, s=0).integral(f_mesh[0], f_mesh[-1])

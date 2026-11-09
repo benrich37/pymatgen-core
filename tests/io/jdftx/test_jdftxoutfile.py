@@ -620,3 +620,43 @@ def test_to_jdftxinfile_with_latt_scale(tmp_path: Path, latt_scale: str):
     outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
     restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
     _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)
+
+
+def test_forces_in_lattice_coordinates():
+    """Forces printed in (covariant) lattice coordinates must be converted with inv(R^T) to Cartesian.
+
+    noeigstats.out is a two-atom Si cell with a non-symmetric lattice matrix where the residual forces are printed in
+    lattice coordinates. By symmetry, the Cartesian force on each atom must lie along the Si-Si bond.
+    """
+    jout = JDFTXOutfile.from_file(noeigstats_outfile_path)
+    structure = jout.structure
+    force_lattice = np.array(
+        [
+            [-0.001029086579454, -0.001017871569470, -0.001000410553100],
+            [0.001050974414728, 0.001046953088279, 0.001046523989185],
+        ]
+    )
+    expected = force_lattice @ np.linalg.inv(structure.lattice.matrix).T * Ha_to_eV
+    assert jout.forces == pytest.approx(expected)
+    bond = structure.cart_coords[0] - structure.cart_coords[1]
+    cos_angle = np.dot(jout.forces[0], bond) / np.linalg.norm(jout.forces[0]) / np.linalg.norm(bond)
+    assert cos_angle == pytest.approx(-1, abs=1e-3)
+
+
+def test_trajectory_does_not_mutate_slices():
+    """Building the combined trajectory must not extend the first slice's trajectory in place."""
+    jout = JDFTXOutfile.from_file(example_latmin_outfile_path)
+    assert len(jout.slices) > 1
+    slice_lens = [len(slc.trajectory) for slc in jout.slices]
+    assert len(jout.trajectory) == sum(slice_lens)
+    assert slice_lens[0] == len(jout.slices[0].jstrucs)
+    assert jout.trajectory is not jout.slices[0].trajectory
+
+
+def test_as_dict_with_none_slice():
+    """Slices that failed to parse are stored as None and must not break as_dict."""
+    jout = JDFTXOutfile.from_file(example_sp_outfile_path)
+    jout_with_none = JDFTXOutfile(slices=[None, *jout.slices])
+    dct = jout_with_none.as_dict()
+    assert dct["slices"][0] is None
+    assert len(dct["slices"]) == 2

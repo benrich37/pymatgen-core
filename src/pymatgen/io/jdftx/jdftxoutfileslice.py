@@ -295,7 +295,7 @@ class JDFTXOutfileSlice:
     parsable_pseudos: ClassVar[list[str]] = ["GBRV", "SG15"]
     has_parsable_pseudo: bool = False
 
-    _total_electrons_backup: int | None = None
+    _total_electrons_backup: float | None = None
     total_electrons: float | None = None
     _mu_backup: float | None = None
 
@@ -994,7 +994,7 @@ class JDFTXOutfileSlice:
             if _val is not None and np.isnan(_val):
                 nval = None
             elif _val is not None:
-                nval = int(_val)
+                nval = float(_val)
             else:
                 nval = None
             self._total_electrons_backup = nval
@@ -1009,7 +1009,7 @@ class JDFTXOutfileSlice:
             if _val is not None and np.isnan(_val):
                 mval = None
             elif _val is not None:
-                mval = float(_val)
+                mval = float(_val) * Ha_to_eV
             else:
                 mval = None
             self._mu_backup = mval

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 import re
 import warnings
 
@@ -157,6 +158,11 @@ class TestPhononDos(MatSciTest):
         assert self.dos != 2 * self.dos
         assert 2 * self.dos == self.dos + self.dos
 
+        # different grid lengths used to raise ValueError from np.allclose broadcasting
+        assert PhononDos([0, 1, 2], [1, 2, 3]) != PhononDos([0, 1], [1, 2])
+        # same densities on a different frequency grid are not the same DOS
+        assert PhononDos([0, 1, 2], [1, 2, 3]) != PhononDos([0, 2, 4], [1, 2, 3])
+
     def test_mae(self):
         assert self.dos.mae(self.dos) == 0
         assert self.dos.mae(self.dos + 1) == 1
@@ -271,6 +277,25 @@ class TestCompletePhononDos(MatSciTest):
         json_str = orjson.dumps(self.cdos.as_dict(), option=orjson.OPT_SERIALIZE_NUMPY).decode()
         assert json_str is not None
         self.assert_msonable(self.cdos)
+
+    def test_pdos_site_keyed_dict(self):
+        struct = self.cdos.structure * (2, 2, 2)
+        densities = [np.full(len(self.cdos.frequencies), idx, dtype=float) for idx in range(len(struct))]
+        cdos = CompletePhononDos(struct, self.cdos, dict(zip(struct, densities, strict=True)))
+        assert cdos.get_site_dos(struct[5]).densities[0] == 5
+        assert cdos.as_dict()["pdos"] == [dens.tolist() for dens in densities]
+        na_indices = [idx for idx, site in enumerate(struct) if site.specie == Element.Na]
+        assert cdos.get_element_dos()[Element.Na].densities[0] == sum(na_indices)
+        # pdos is a plain dict keyed by the given sites; edits to it are seen by the methods
+        assert type(cdos.pdos) is dict
+        assert all(key is site for key, site in zip(cdos.pdos, struct, strict=True))
+        cdos.pdos[struct[5]] = np.zeros(len(self.cdos.frequencies))
+        assert cdos.get_site_dos(struct[5]).densities[0] == 0
+        # Equal but non-identical sites still work as keys
+        struct_copy = struct.copy()
+        assert struct_copy[3] is not struct[3]
+        assert cdos.get_site_dos(struct_copy[3]).densities[0] == 3
+        assert pickle.loads(pickle.dumps(cdos)).as_dict() == cdos.as_dict()
 
     def test_str(self):
         assert str(self.cdos).startswith(

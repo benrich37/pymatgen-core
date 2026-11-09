@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ from monty.serialization import loadfn
 from numpy.testing import assert_allclose
 from pytest import approx
 
+from pymatgen.core import Lattice, Structure
 from pymatgen.core.operations import SymmOp
 from pymatgen.core.tensors import SquareTensor, Tensor, TensorCollection, TensorMapping, itertools, symmetry_reduce
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -299,6 +301,29 @@ class TestTensor(MatSciTest):
         empty[tkey] = 1
         assert empty[tkey] == 1
 
+    def test_tensor_mapping_del_missing_key(self):
+        # del of a missing key raised TypeError from list.pop(None)
+        mapping = TensorMapping([np.eye(3)], [1])
+        with pytest.raises(KeyError, match="not found in mapping"):
+            del mapping[np.zeros((3, 3))]
+        assert len(mapping) == 1
+        del mapping[np.eye(3)]
+        assert len(mapping) == 0
+
+    def test_hash(self):
+        # ndarray.tostring was removed in NumPy 2.3
+        assert hash(Tensor(np.eye(3))) == hash(Tensor(np.eye(3)))
+        assert hash(Tensor(np.eye(3))) != hash(Tensor(2 * np.eye(3)))
+
+    @pytest.mark.parametrize("c_length", [3.0, 6.0])
+    def test_get_ieee_rotation_tetragonal_c_along_x3(self, c_length):
+        # IEEE: c || x3 for tetragonal. With c < a the unsorted lengths were compared and the
+        # b axis ended up along x3.
+        struct = Structure(Lattice.tetragonal(4.0, c_length), ["Si", "Si"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+        rotation = Tensor.get_ieee_rotation(struct)
+        assert rotation.is_rotation(include_improper=False)
+        assert_allclose(np.abs(rotation @ struct.lattice.matrix[2]), [0, 0, c_length], atol=1e-8)
+
     def test_populate(self):
         toec_path = TEST_FILES_DIR / "core" / "elasticity" / "test_toec_data.json"
         if not toec_path.exists():
@@ -340,6 +365,51 @@ class TestTensor(MatSciTest):
             new[idx] = et.voigt[idx]
         new = Tensor.from_voigt(new).populate(sn)
         assert_allclose(new, et, atol=1e-2)
+
+    def test_populate_without_precond(self):
+        # Regression: with precond=False the guess was never seeded from the input, so a zero tensor came back
+        sn = self.get_structure("Sn")
+        vtens = np.zeros((6, 6))
+        vtens[0, 0], vtens[0, 1], vtens[3, 3] = 259.31, 160.71, 73.48
+        et = Tensor.from_voigt(vtens)
+        populated = et.populate(sn, prec=1e-3, precond=False)
+        assert_allclose(populated, et.populate(sn, prec=1e-3), atol=1e-2)
+        assert populated.voigt[1, 1] == approx(259.31, abs=1e-2)
+        assert populated.voigt[5, 5] == approx(73.48, abs=1e-2)
+
+    @pytest.mark.parametrize("rank", range(1, 7))
+    def test_voigt_conversion_matches_voigt_dict(self, rank):
+        # Pins the vectorized voigt / from_voigt to the get_voigt_dict loop they replaced
+        rng = np.random.default_rng(rank)
+        tensor = Tensor(rng.standard_normal((3,) * rank))
+        voigt_dict = Tensor.get_voigt_dict(rank)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Tensor is not symmetric")
+            voigt = tensor.voigt
+        expected = np.zeros(voigt.shape)
+        for ind, v_ind in voigt_dict.items():
+            expected[v_ind] = tensor[ind]
+        assert_allclose(voigt, expected, rtol=0, atol=0)
+
+        voigt_input = rng.standard_normal(voigt.shape)
+        expected = np.zeros((3,) * rank)
+        for ind, v_ind in voigt_dict.items():
+            expected[ind] = voigt_input[v_ind]
+        from_voigt = Tensor.from_voigt(voigt_input)
+        assert type(from_voigt) is Tensor
+        assert from_voigt.rank == rank
+        assert_allclose(from_voigt, expected, rtol=0, atol=0)
+
+    @pytest.mark.parametrize("rank", range(1, 7))
+    def test_transform_matches_symm_op(self, rank):
+        rng = np.random.default_rng(rank)
+        tensor = Tensor(rng.standard_normal((3,) * rank))
+        for symm_op in SpacegroupAnalyzer(self.get_structure("Sn")).get_symmetry_operations(cartesian=True)[:6]:
+            assert_allclose(tensor.transform(symm_op), symm_op.transform_tensor(np.asarray(tensor)), atol=1e-12)
+        # fit_to_structure is the average over the structure's Cartesian symmetry operations
+        symm_ops = SpacegroupAnalyzer(self.get_structure("Sn"), 0.1).get_symmetry_operations(cartesian=True)
+        expected = np.mean([symm_op.transform_tensor(np.asarray(tensor)) for symm_op in symm_ops], axis=0)
+        assert_allclose(tensor.fit_to_structure(self.get_structure("Sn")), expected, atol=1e-12)
 
     def test_from_values_indices(self):
         sn = self.get_structure("Sn")
@@ -549,6 +619,13 @@ class TestSquareTensor(MatSciTest):
         assert not self.symm_sqtensor.is_rotation()
         assert self.low_val_2.is_rotation()
         assert not self.low_val_2.is_rotation(tol=1e-8)
+
+    def test_is_rotation_improper(self):
+        # include_improper=False was ignored because det was always abs()'d
+        inversion = SquareTensor(-np.eye(3))
+        assert inversion.is_rotation()
+        assert not inversion.is_rotation(include_improper=False)
+        assert self.rotation.is_rotation(include_improper=False)
 
     def test_refine_rotation(self):
         assert_allclose(self.rotation, self.rotation.refine_rotation())

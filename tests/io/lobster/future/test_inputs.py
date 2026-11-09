@@ -349,6 +349,11 @@ class TestLobsterIn(MatSciTest):
             potcar_symbols=potcar_names,
         ) == ["Ga 3d 4p 4s ", "As 4p 4s "]
 
+        # W_pv only exists in the PBE_52 POTCAR set, which the bundled PBE_54 basis files do not cover
+        bcc_w = Structure(np.eye(3) * 3.16, ["W", "W"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+        with pytest.raises(ValueError, match=r"POTCAR symbol: W_pv.*only cover the POTCAR symbols of the PBE_54"):
+            lobsterin1.get_basis(bcc_w, potcar_symbols=["W_pv"])
+
     def test_get_all_possible_basis_functions(self):
         potcar = Potcar.from_file(f"{VASP_IN_DIR}/POTCAR_Fe3O4.gz")
         potcar_names = [name["symbol"] for name in potcar.spec]
@@ -579,6 +584,29 @@ class TestLobsterIn(MatSciTest):
         new_lobsterin = LobsterIn.from_dict(self.LobsterIn.as_dict())
         assert new_lobsterin == self.LobsterIn
         new_lobsterin.to_json()
+
+
+def test_standard_settings_onlycobi():
+    """'onlycobi' must compute COBIs only, i.e. skip COOPs but not COBIs."""
+    lobsterin = LobsterIn.standard_calculations_from_vasp_files(
+        f"{VASP_IN_DIR}/POSCAR_Fe3O4",
+        f"{VASP_IN_DIR}/INCAR.lobster",
+        dict_for_basis={"Fe": "3d 4p 4s", "O": "2s 2p"},
+        option="onlycobi",
+    )
+    assert "skipcobi" not in lobsterin
+    assert lobsterin["skipcohp"]
+    assert lobsterin["skipcoop"]
+    assert lobsterin["skipdos"]
+
+
+def test_diff_same_list_keywords():
+    """Identical list keywords must be reported under 'Same'."""
+    settings = {"basisfunctions": ["Fe 3d 4s", "O 2p 2s"], "cohpstartenergy": -15.0}
+    diff = LobsterIn(settings).diff(LobsterIn(settings))
+    assert diff["Different"] == {}
+    assert diff["Same"]["basisfunctions"] == settings["basisfunctions"]
+    assert diff["Same"]["cohpstartenergy"] == approx(-15.0)
 
 
 class TestUtils(MatSciTest):

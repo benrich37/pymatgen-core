@@ -7,6 +7,7 @@ import math
 import warnings
 from fractions import Fraction
 from itertools import groupby, product
+from operator import itemgetter
 from string import ascii_lowercase
 from typing import TYPE_CHECKING, cast
 
@@ -17,7 +18,7 @@ from monty.json import MSONable
 
 from pymatgen.command_line.enumlib_caller import EnumError, EnumlibAdaptor
 from pymatgen.command_line.mcsqs_caller import run_mcsqs
-from pymatgen.core import DummySpecies, Element, Species, Structure, get_el_sp
+from pymatgen.core import DummySpecies, Element, Lattice, Species, Structure, get_el_sp
 from pymatgen.core.adsorption import AdsorbateSiteFinder
 from pymatgen.core.bond_valence import BVAnalyzer
 from pymatgen.core.energy_models import SymmetryModel
@@ -216,7 +217,8 @@ class MultipleSubstitutionTransformation:
         outputs = []
         for charge, el_list in self.substitution_dict.items():
             sign = "+" if charge > 0 else "-"
-            dummy_sp = f"X{charge}{sign}"
+            # use the magnitude of the charge so that negative charges give e.g. "X2-", not "X-2-"
+            dummy_sp = f"X{abs(charge)}{sign}"
             mapping = {
                 self.sp_to_replace: {
                     self.sp_to_replace: 1 - self.r_fraction,
@@ -232,8 +234,7 @@ class MultipleSubstitutionTransformation:
                 dummy_structure = OrderDisorderedStructureTransformation().apply_transformation(dummy_structure)  # type:ignore[assignment]
 
             for el in el_list:
-                sign = "+" if charge > 0 else "-"
-                st = SubstitutionTransformation({f"X{charge}+": f"{el}{charge}{sign}"})
+                st = SubstitutionTransformation({dummy_sp: f"{el}{abs(charge)}{sign}"})
                 new_structure = st.apply_transformation(dummy_structure)
                 outputs.append({"structure": new_structure})
         return outputs
@@ -302,8 +303,8 @@ class EnumerateStructureTransformation(AbstractTransformation):
                 this parameter.
             sort_criteria (str or callable): Sort by Ewald energy ("ewald", must have oxidation states and slow) or
                 M3GNet relaxed energy ("m3gnet_relax", which is the most accurate but most expensive and provides
-                pre-relaxed structures - needs m3gnet package installed) or by M3GNet static energy ("m3gnet_static")
-                or by number of sites ("nsites", the fastest, the default). The expense of m3gnet_relax or m3gnet_static
+                pre-relaxed structures - needs matgl installed) or by M3GNet static energy ("m3gnet")
+                or by number of sites ("nsites", the fastest, the default). The expense of m3gnet_relax or m3gnet
                 can be worth it if it significantly reduces the number of structures to be considered. m3gnet_relax
                 speeds up the subsequent DFT calculations. Alternatively, a callable can be supplied that returns a
                 (Structure, energy) tuple.
@@ -370,11 +371,14 @@ class EnumerateStructureTransformation(AbstractTransformation):
             )
             structures = [structure.copy()]
 
-        if self.max_disordered_sites:
+        if structures is not None:
+            # ordered structure: nothing to enumerate
+            max_cell_sizes: Iterable[int] = []
+        elif self.max_disordered_sites:
             n_disordered = sum(1 for site in structure if not site.is_ordered)
             if n_disordered > self.max_disordered_sites:
                 raise ValueError(f"Too many disordered sites! ({n_disordered} > {self.max_disordered_sites})")
-            max_cell_sizes: Iterable[int] = range(
+            max_cell_sizes = range(
                 self.min_cell_size,
                 math.floor(self.max_disordered_sites / n_disordered) + 1,
             )
@@ -413,11 +417,11 @@ class EnumerateStructureTransformation(AbstractTransformation):
             from matgl.ext.ase import M3GNetCalculator, Relaxer
 
             if self.sort_criteria == "m3gnet_relax":
-                potential = matgl.load_model("M3GNet-MP-2021.2.8-PES")
+                potential = matgl.load_model("M3GNet-PES-MatPES-r2SCAN-2025.2")
                 m3gnet_model = Relaxer(potential=potential)
             elif self.sort_criteria == "m3gnet":
-                potential = matgl.load_model("M3GNet-MP-2021.2.8-PES")
-                m3gnet_model = M3GNetCalculator(potential=potential, stress_weight=0.01)
+                potential = matgl.load_model("M3GNet-PES-MatPES-r2SCAN-2025.2")
+                m3gnet_model = M3GNetCalculator(potential=potential, stress_weight=1 / 160.21766208)
 
         def _get_stats(struct):
             if callable(self.sort_criteria):
@@ -457,7 +461,9 @@ class EnumerateStructureTransformation(AbstractTransformation):
 
             return {"num_sites": len(struct), "structure": struct}
 
-        all_structures = Parallel(n_jobs=self.n_jobs)(delayed(_get_stats)(struct) for struct in structures)
+        # A worker pool for a single structure (e.g. ordered input) is pure overhead
+        n_jobs = self.n_jobs if len(structures) > 1 else 1
+        all_structures = Parallel(n_jobs=n_jobs)(delayed(_get_stats)(struct) for struct in structures)
 
         def sort_func(struct):
             return (
@@ -751,32 +757,30 @@ class MagOrderingTransformation(AbstractTransformation):
         if not structure.is_ordered:
             raise RuntimeError("Something went wrong with enumeration.")
 
-        sites_to_remove = []
         logger.debug(f"Dummy species structure:\n{structure}")
-        for idx, site in enumerate(structure):
-            if isinstance(site.specie, DummySpecies):
-                sites_to_remove.append(idx)
-                spin = getattr(site.specie, "spin", 0)
-                neighbors = structure.get_neighbors(
-                    site,
-                    0.05,  # arbitrary threshold, needs to be << any bond length
-                    # but >> floating point precision issues
-                    include_index=True,
-                )
-                if len(neighbors) != 1:
-                    raise RuntimeError(f"This shouldn't happen, found {neighbors=}")
-                orig_site_idx = neighbors[0][2]
-                orig_specie = structure[orig_site_idx].specie
-                new_specie = Species(
-                    orig_specie.symbol,
-                    getattr(orig_specie, "oxi_state", None),
-                    spin=spin,
-                )
-                structure.replace(
-                    orig_site_idx,
-                    new_specie,
-                    properties=structure[orig_site_idx].properties,
-                )
+        sites_to_remove = [idx for idx, site in enumerate(structure) if isinstance(site.specie, DummySpecies)]
+        if not sites_to_remove:
+            return structure
+        # A single neighbor list for the whole structure: Structure.get_neighbors(site, ...) on each dummy
+        # site is slower and misses the coincident original site when that site has index 0.
+        # The 0.05 A cutoff is arbitrary, it needs to be << any bond length but >> floating point noise.
+        center_indices, point_indices, _, _ = structure.get_neighbor_list(0.05)
+        for idx in sites_to_remove:
+            neighbors = point_indices[center_indices == idx]
+            if len(neighbors) != 1:
+                raise RuntimeError(f"This shouldn't happen, found {len(neighbors)} sites coincident with {idx=}")
+            orig_site_idx = int(neighbors[0])
+            orig_specie = structure[orig_site_idx].specie
+            new_specie = Species(
+                orig_specie.symbol,
+                getattr(orig_specie, "oxi_state", None),
+                spin=getattr(structure[idx].specie, "spin", 0),
+            )
+            structure.replace(
+                orig_site_idx,
+                new_specie,
+                properties=structure[orig_site_idx].properties,
+            )
         structure.remove_sites(sites_to_remove)
         logger.debug(f"Structure with dummy species removed:\n{structure}")
         return structure
@@ -791,22 +795,18 @@ class MagOrderingTransformation(AbstractTransformation):
             Structure: Structure with spin magnitudes added.
         """
         for idx, site in enumerate(structure):
-            if getattr(site.specie, "spin", False):
-                spin = site.specie.spin
-                spin = getattr(site.specie, "spin", None)
-                sign = int(spin) if spin else 0
-                if spin:
-                    # this very hacky bit of code only works because we know
-                    # that on disordered sites in this class, all species are the same
-                    # but have different spins, and this is comma-delimited
-                    sp = str(site.specie).split(",", maxsplit=1)[0]
-                    new_spin = sign * self.mag_species_spin.get(sp, 0)
-                    new_specie = Species(
-                        site.specie.symbol,
-                        getattr(site.specie, "oxi_state", None),
-                        spin=new_spin,
-                    )
-                    structure.replace(idx, new_specie, properties=site.properties)
+            if not (spin := getattr(site.specie, "spin", None)):
+                continue
+            # this very hacky bit of code only works because we know
+            # that on disordered sites in this class, all species are the same
+            # but have different spins, and this is comma-delimited
+            sp = str(site.specie).split(",", maxsplit=1)[0]
+            new_specie = Species(
+                site.specie.symbol,
+                getattr(site.specie, "oxi_state", None),
+                spin=int(spin) * self.mag_species_spin.get(sp, 0),
+            )
+            structure.replace(idx, new_specie, properties=site.properties)
         logger.debug(f"Structure with spin magnitudes:\n{structure}")
         return structure
 
@@ -836,7 +836,7 @@ class MagOrderingTransformation(AbstractTransformation):
 
         # trivial case
         if structure.is_ordered:
-            structure = self._remove_dummy_species(structure)
+            structure = self._add_spin_magnitudes(self._remove_dummy_species(structure))
             return [structure] if return_ranked_list > 1 else structure
 
         enum_kwargs = self.enum_kwargs.copy()
@@ -883,13 +883,15 @@ class MagOrderingTransformation(AbstractTransformation):
         # Remove duplicate structures and group according to energy model
         matcher = StructureMatcher(comparator=SpinComparator())
 
-        def key(struct: Structure) -> int:
-            return SpacegroupAnalyzer(struct, 0.1).get_space_group_number()
-
+        # space group number of each structure, computed once and used for both sorting and grouping
+        structs = [dct["structure"] for dct in all_structs]  # type: ignore[index]
+        spg_and_structs = sorted(
+            ((SpacegroupAnalyzer(struct, 0.1).get_space_group_number(), struct) for struct in structs),  # type: ignore[arg-type]
+            key=itemgetter(0),
+        )
         out = []
-        for _, group in groupby(sorted((dct["structure"] for dct in all_structs), key=key), key):  # type: ignore[arg-type, index]
-            group = list(group)  # type: ignore[assignment]
-            grouped = matcher.group_structures(group)
+        for _, group in groupby(spg_and_structs, itemgetter(0)):
+            grouped = matcher.group_structures([struct for _, struct in group])
             out.extend([{"structure": g[0], "energy": self.energy_model.get_energy(g[0])} for g in grouped])
 
         self._all_structures = sorted(out, key=lambda dct: dct["energy"])
@@ -1545,16 +1547,12 @@ class CubicSupercellTransformation(AbstractTransformation):
             target_sc_size = self.min_length
             while sc_not_found:
                 target_sc_lat_vecs = np.eye(3, 3) * target_sc_size
-                length_vecs, n_atoms, superstructure, self.transformation_matrix = self.get_possible_supercell(
-                    lat_vecs, structure, target_sc_lat_vecs
+                length_vecs, n_atoms, sc_lattice, self.transformation_matrix = self._get_possible_supercell_lattice(
+                    lat_vecs, len(structure), target_sc_lat_vecs
                 )
                 # Check if constraints are satisfied
-                if self.check_constraints(
-                    length_vecs=length_vecs,
-                    n_atoms=n_atoms,
-                    superstructure=superstructure,
-                ):
-                    return superstructure
+                if self._check_constraints(length_vecs, n_atoms, sc_lattice):
+                    return SupercellTransformation(self.transformation_matrix).apply_transformation(structure)
 
                 # Increase threshold until proposed supercell meets requirements
                 target_sc_size += self.step_size
@@ -1566,22 +1564,21 @@ class CubicSupercellTransformation(AbstractTransformation):
             # prevent a too long search for the supercell
             self.step_size *= 5
 
-        combined_list = [
-            [size_a, size_b, size_c]
-            for size_a in np.arange(self.min_length, self.max_length, self.step_size)
-            for size_b in np.arange(self.min_length, self.max_length, self.step_size)
-            for size_c in np.arange(self.min_length, self.max_length, self.step_size)
+        sizes = np.arange(self.min_length, self.max_length, self.step_size)
+        combined_list = np.stack(np.meshgrid(sizes, sizes, sizes, indexing="ij"), axis=-1).reshape(-1, 3)
+        # stable sort by (a + b) + c, matching sorted(..., key=sum) on the lexicographic product
+        combined_list = combined_list[
+            np.argsort(combined_list[:, 0] + combined_list[:, 1] + combined_list[:, 2], kind="stable")
         ]
-        combined_list = sorted(combined_list, key=sum)
 
         for size_a, size_b, size_c in combined_list:
             target_sc_lat_vecs = np.array([[size_a, 0, 0], [0, size_b, 0], [0, 0, size_c]])
-            length_vecs, n_atoms, superstructure, self.transformation_matrix = self.get_possible_supercell(
-                lat_vecs, structure, target_sc_lat_vecs
+            length_vecs, n_atoms, sc_lattice, self.transformation_matrix = self._get_possible_supercell_lattice(
+                lat_vecs, len(structure), target_sc_lat_vecs
             )
             # Check if constraints are satisfied
-            if self.check_constraints(length_vecs=length_vecs, n_atoms=n_atoms, superstructure=superstructure):
-                return superstructure
+            if self._check_constraints(length_vecs, n_atoms, sc_lattice):
+                return SupercellTransformation(self.transformation_matrix).apply_transformation(structure)
 
             self.check_exceptions(length_vecs, n_atoms)
         raise AttributeError("Unable to find orthorhombic supercell")
@@ -1605,15 +1602,16 @@ class CubicSupercellTransformation(AbstractTransformation):
             bool
 
         """
+        return self._check_constraints(length_vecs, n_atoms, superstructure.lattice)
+
+    def _check_constraints(self, length_vecs, n_atoms, lattice: Lattice) -> bool:
+        """Same as check_constraints, but only needs the supercell lattice."""
         return bool(
             (
                 np.min(np.linalg.norm(length_vecs, axis=1)) >= self.min_length
                 and self.min_atoms <= n_atoms <= self.max_atoms
             )
-            and (
-                not self.force_90_degrees
-                or np.all(np.absolute(np.array(superstructure.lattice.angles) - 90) < self.angle_tolerance)
-            )
+            and (not self.force_90_degrees or np.all(np.absolute(np.array(lattice.angles) - 90) < self.angle_tolerance))
         )
 
     @staticmethod
@@ -1623,6 +1621,25 @@ class CubicSupercellTransformation(AbstractTransformation):
 
         Returns:
             length_vecs, n_atoms, superstructure, transformation_matrix
+        """
+        length_vecs, _, _, transformation_matrix = CubicSupercellTransformation._get_possible_supercell_lattice(
+            lat_vecs, len(structure), target_sc_lat_vecs
+        )
+        # Get number of atoms
+        st = SupercellTransformation(transformation_matrix)
+        superstructure = st.apply_transformation(structure)
+        n_atoms = len(superstructure)
+        return length_vecs, n_atoms, superstructure, transformation_matrix
+
+    @staticmethod
+    def _get_possible_supercell_lattice(lat_vecs, n_sites: int, target_sc_lat_vecs):
+        """Like get_possible_supercell, but without building the supercell Structure.
+
+        The supercell atom count is n_sites * |det(T)| and its lattice is T @ lat_vecs, which is
+        all the constraint checks need. Avoids constructing a full Structure per trial matrix.
+
+        Returns:
+            length_vecs, n_atoms, supercell lattice, transformation_matrix
         """
         transformation_matrix = target_sc_lat_vecs @ np.linalg.inv(lat_vecs)
         # round the entries of T and force T to be non-singular
@@ -1650,11 +1667,8 @@ class CubicSupercellTransformation(AbstractTransformation):
                 length6_vec,
             ]
         )
-        # Get number of atoms
-        st = SupercellTransformation(transformation_matrix)
-        superstructure = st.apply_transformation(structure)
-        n_atoms = len(superstructure)
-        return length_vecs, n_atoms, superstructure, transformation_matrix
+        n_atoms = n_sites * round(abs(np.linalg.det(transformation_matrix)))
+        return length_vecs, n_atoms, Lattice(proposed_sc_lat_vecs), transformation_matrix
 
 
 class AddAdsorbateTransformation(AbstractTransformation):
@@ -2167,12 +2181,18 @@ class SQSTransformation(AbstractTransformation):
         to_return = [{"structure": struct, "objective_function": struct.objective_function} for struct in structs]
 
         for dct in to_return:
-            # delete temporary objective_function attribute
-            del dct["structure"].objective_function
+            # delete the temporary objective_function attribute added above to
+            # carry the value through grouping/sorting. Guard with hasattr: when
+            # remove_duplicate_structures is False a structure object can appear
+            # in several entries of to_return, and the unguarded `del` would
+            # crash on the redundant second delete (AttributeError).
+            struct = dct["structure"]
+            if hasattr(struct, "objective_function"):
+                del struct.objective_function
 
             # reduce structure
             if reduction_algo:
-                dct["structure"] = dct["structure"].get_reduced_structure(reduction_algo=reduction_algo)
+                dct["structure"] = struct.get_reduced_structure(reduction_algo=reduction_algo)
 
         # because bools are subclasses of ints, cannot just check that returned_ranked_list is int
         if isinstance(return_ranked_list, int) and not isinstance(return_ranked_list, bool):

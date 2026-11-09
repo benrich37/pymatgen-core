@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import gzip
+import pickle
 import re
 import warnings
 
@@ -8,7 +10,7 @@ import numpy as np
 import orjson
 import pytest
 from monty.serialization import loadfn
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 from pytest import approx
 
 from pymatgen.core import Element, Structure
@@ -57,6 +59,33 @@ class TestDos:
         assert isinstance(dos_dict["densities"]["1"][0], float)
         assert not isinstance(dos_dict["densities"]["1"][0], np.float64)
 
+    def test_add_subclasses(self):
+        # Adding CompleteDos/FermiDos used to call the subclass constructor with
+        # Dos positional args and crash
+        for dos in (self.dos, FermiDos(self.dos)):
+            summed = dos + dos
+            assert type(summed) is Dos
+            assert summed.efermi == approx(dos.efermi)
+            for spin in dos.densities:
+                assert_allclose(summed.densities[spin], 2 * dos.densities[spin])
+
+
+@pytest.mark.parametrize("dos_cls", [Dos, DOS])
+def test_get_interpolated_gap_fermi_level_on_grid(dos_cls):
+    # Occupied states on a grid point exactly at efermi (as in LOBSTER output, where efermi = 0)
+    # belong to the valence band. Used to raise "out of range" ValueError when interpolating the VBM.
+    energies = [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]
+    densities = [0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0]
+    dos = Dos(0.0, energies, {Spin.up: densities}) if dos_cls is Dos else DOS(energies, densities, 0.0)
+    gap, cbm, vbm = dos.get_interpolated_gap(tol=1e-3, abs_tol=True)
+    assert vbm == approx(0.999)
+    assert cbm == approx(2.001)
+    assert gap == approx(1.002)
+
+    # Occupied grid points on both sides of the one at efermi: no gap
+    dos = Dos(0.0, energies, {Spin.up: [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0]})
+    assert dos.get_interpolated_gap(tol=1e-3, abs_tol=True) == (0.0, 0.0, 0.0)
+
 
 class TestFermiDos:
     def setup_method(self):
@@ -90,8 +119,8 @@ class TestFermiDos:
             else:
                 assert sci_dos.get_fermi(c_ref, temperature=T) - fermi_range[idx] == approx(-0.4651, abs=1e-2)
 
-        assert sci_dos.get_fermi_interextrapolated(-1e26, 300) == approx(7.50545, abs=1e-4)
-        assert sci_dos.get_fermi_interextrapolated(1e26, 300) == approx(-1.41276, abs=1e-4)
+        assert sci_dos.get_fermi_interextrapolated(-1e26, 300) == approx(7.95526, abs=1e-4)
+        assert sci_dos.get_fermi_interextrapolated(1e26, 300) == approx(-1.79397, abs=1e-4)
         assert sci_dos.get_fermi_interextrapolated(0.0, 300) == approx(2.9069, abs=1e-4)
 
     def test_as_dict(self):
@@ -103,6 +132,41 @@ class TestFermiDos:
         assert isinstance(dos_dict["densities"]["1"], list)
         assert isinstance(dos_dict["densities"]["1"][0], float)
         assert not isinstance(dos_dict["densities"]["1"][0], np.float64)
+
+    def test_as_from_dict_round_trip(self):
+        dos_dict = self.dos.as_dict()
+        assert isinstance(dos_dict["structure"], dict)
+        orjson.dumps(dos_dict, option=orjson.OPT_SERIALIZE_NUMPY)
+
+        new_dos = FermiDos.from_dict(dos_dict)
+        assert new_dos.structure == self.dos.structure
+        assert new_dos.nelecs == approx(self.dos.nelecs)
+        assert_allclose(new_dos.energies, self.dos.energies)
+        assert_allclose(new_dos.tdos, self.dos.tdos)
+
+    def test_get_fermi_interextrapolated_log_linear(self, monkeypatch):
+        # get_fermi_interextrapolated assumes E_F is linear in ln|c| outside the range
+        # where get_fermi converges. For an exactly log-linear E_F(c) the extrapolation
+        # must therefore be exact, which requires the reference point to use ln(c_ref).
+        e_0, slope, c_max = 1.0, 0.05, 1e20
+
+        def get_doping(fermi_level, temperature):
+            return np.exp((e_0 - fermi_level) / slope)
+
+        def get_fermi(concentration, temperature, **kwargs):
+            if not 0 < concentration <= c_max:
+                raise ValueError("Could not find fermi")
+            return e_0 - slope * np.log(concentration)
+
+        monkeypatch.setattr(self.dos, "get_doping", get_doping)
+        monkeypatch.setattr(self.dos, "get_fermi", get_fermi)
+
+        for conc in (1e21, 1e23, 1e26):
+            assert self.dos.get_fermi_interextrapolated(conc, 300, warn=False) == approx(e_0 - slope * np.log(conc))
+        # result must not depend on the choice of the reference concentration
+        assert self.dos.get_fermi_interextrapolated(1e24, 300, warn=False, c_ref=1e15) == approx(
+            e_0 - slope * np.log(1e24)
+        )
 
     def test_get_e_h_concs(self):
         e_conc, h_conc = self.dos.get_e_h_concs(fermi_level=self.dos.efermi + 2.0, temperature=300)
@@ -198,6 +262,56 @@ class TestCompleteDos:
         ):
             self.dos.get_interpolated_value(1000)
 
+    def test_pdos_site_keyed_dict(self):
+        # pdos is a plain dict keyed by the structure's own sites, in structure order, as before the lazy storage
+        with open(f"{TEST_DIR}/complete_dos.json", "rb") as file:
+            dct = orjson.loads(file.read())
+        dos = CompleteDos.from_dict(dct)
+        sites = list(dos.structure)
+        site_dos_before = [dos.get_site_dos(site).densities for site in sites]
+        element_dos_before = dos.get_element_dos()
+        assert type(dos.pdos) is dict
+        assert all(key is site for key, site in zip(dos.pdos, sites, strict=True))
+        assert dos.pdos is dos.pdos
+        # Results computed before and after the dict was built agree
+        for site, densities in zip(sites, site_dos_before, strict=True):
+            assert dos.pdos[site] is dos._pdos[site]
+            for spin, dens in densities.items():
+                assert_allclose(dos.get_site_dos(site).densities[spin], dens)
+        for el, el_dos in dos.get_element_dos().items():
+            assert_allclose(el_dos.densities[Spin.up], element_dos_before[el].densities[Spin.up])
+
+        # Equal but non-identical sites (another structure instance, or float noise) still work as keys
+        dos = CompleteDos.from_dict(dct)
+        noisy = Structure.from_dict(dct["structure"])
+        noisy.translate_sites(range(len(noisy)), [1e-9, 0, 0], frac_coords=False, to_unit_cell=False)
+        for site, other in zip(dos.structure, noisy, strict=True):
+            assert other is not site
+            assert dos._pdos[other] is dos.pdos[site]
+            assert_array_equal(
+                dos.get_site_orbital_dos(other, Orbital.s).densities[Spin.up], dos.pdos[site][Orbital.s][Spin.up]
+            )
+
+        # Writes to the pdos dict are seen by the methods, and get_normalized shares the same dict
+        dos = CompleteDos.from_dict(dct)
+        site = dos.structure[4]
+        dos.pdos[site] = {Orbital.s: {Spin.up: np.ones(len(dos.energies)), Spin.down: np.zeros(len(dos.energies))}}
+        assert dos.get_site_dos(site).densities[Spin.up].sum() == len(dos.energies)
+        assert dos.as_dict()["pdos"][4] == {"s": {"densities": {"1": [1.0] * 301, "-1": [0.0] * 301}}}
+        assert dos.get_normalized().pdos is dos.pdos
+
+        # Pickling, including objects pickled when pdos was a plain instance attribute
+        dos = CompleteDos.from_dict(dct)
+        dos.get_site_dos(dos.structure[0])
+        for clone in (pickle.loads(pickle.dumps(dos)), copy.deepcopy(dos)):
+            assert clone.as_dict() == dos.as_dict()
+        legacy = CompleteDos.__new__(CompleteDos)
+        state = dict(vars(dos))
+        state["pdos"] = state.pop("_pdos").to_dict()
+        legacy.__setstate__(state)
+        assert legacy.pdos is state["pdos"]
+        assert legacy.as_dict() == dos.as_dict()
+
     def test_as_from_dict(self):
         dct = self.dos.as_dict()
         dos = CompleteDos.from_dict(dct)
@@ -214,6 +328,12 @@ class TestCompleteDos:
 
         # The sums of the SPD or the element doses should be the same.
         assert_allclose(sum_spd.energies, sum_element.energies, atol=1e-4)
+
+        # Deserialized PDOS are arrays, as for a CompleteDos parsed from vasprun.xml
+        for site_pdos in dos.pdos.values():
+            for orb_pdos in site_pdos.values():
+                assert all(isinstance(dens, np.ndarray) for dens in orb_pdos.values())
+        assert dos.as_dict()["pdos"] == dct["pdos"]
 
     def test_legacy_dx2_orbital_name(self):
         dct = self.dos.as_dict()
@@ -444,6 +564,15 @@ class TestLobsterCompleteDos:
         with open(f"{TEST_DIR}/structure_MnO.json", "rb") as file:
             data_MnO = orjson.loads(file.read())
         self.structure_MnO = Structure.from_dict(data_MnO)
+
+    def test_get_gap(self):
+        # LOBSTER energies are shifted so that efermi = 0 is a grid point. Occupied states there
+        # used to make get_gap raise (MnO) or be skipped, giving a 7.5 eV gap for KF.
+        assert self.LobsterCompleteDOS_MnO.get_gap() == 0.0
+        assert self.LobsterCompleteDOS_MnO_nonspin.get_gap() == 0.0
+        cbm, vbm = self.LobsterCompleteDOS_nonspin.get_cbm_vbm()
+        assert vbm == approx(3.749874, abs=1e-6)
+        assert cbm == approx(3.758334, abs=1e-6)
 
     def test_get_site_orbital_dos(self):
         # with spin polarization

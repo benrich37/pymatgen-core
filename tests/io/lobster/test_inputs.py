@@ -6,9 +6,10 @@ import numpy as np
 import pytest
 from pytest import approx
 
+from pymatgen.core.lattice import Lattice
 from pymatgen.core.structure import Structure
 from pymatgen.io.lobster import Lobsterin
-from pymatgen.io.lobster.inputs import get_all_possible_basis_combinations
+from pymatgen.io.lobster.inputs import MODULE_DIR, get_all_possible_basis_combinations
 from pymatgen.io.vasp.inputs import Incar, Kpoints, Potcar
 from pymatgen.util.testing import FAKE_POTCAR_DIR, TEST_FILES_DIR, VASP_IN_DIR, VASP_OUT_DIR, MatSciTest
 
@@ -349,6 +350,16 @@ class TestLobsterin(MatSciTest):
             potcar_symbols=potcar_names,
         ) == ["Ga 3d 4p 4s ", "As 4p 4s "]
 
+        # W_pv only exists in the PBE_52 POTCAR set, which the bundled PBE_54 basis files do not cover
+        bcc_w = Structure(Lattice.cubic(3.16), ["W", "W"], [[0, 0, 0], [0.5, 0.5, 0.5]])
+        for basis_set in ("standard", "min", "max"):
+            with pytest.raises(ValueError, match=r"POTCAR symbol: W_pv.*only cover the POTCAR symbols of the PBE_54"):
+                lobsterin1.get_basis(
+                    bcc_w,
+                    potcar_symbols=["W_pv"],
+                    address_basis_file=f"{MODULE_DIR}/lobster_basis/BASIS_PBE_54_{basis_set}.yaml",
+                )
+
     def test_get_all_possible_basis_functions(self):
         potcar = Potcar.from_file(f"{VASP_IN_DIR}/POTCAR_Fe3O4.gz")
         potcar_names = [name["symbol"] for name in potcar.spec]
@@ -579,6 +590,29 @@ class TestLobsterin(MatSciTest):
         new_lobsterin = Lobsterin.from_dict(self.Lobsterin.as_dict())
         assert new_lobsterin == self.Lobsterin
         new_lobsterin.to_json()
+
+
+def test_standard_settings_onlycobi():
+    """'onlycobi' must compute COBIs only, i.e. skip COOPs but not COBIs."""
+    lobsterin = Lobsterin.standard_calculations_from_vasp_files(
+        f"{VASP_IN_DIR}/POSCAR_Fe3O4",
+        f"{VASP_IN_DIR}/INCAR.lobster",
+        dict_for_basis={"Fe": "3d 4p 4s", "O": "2s 2p"},
+        option="onlycobi",
+    )
+    assert "skipcobi" not in lobsterin
+    assert lobsterin["skipcohp"]
+    assert lobsterin["skipcoop"]
+    assert lobsterin["skipdos"]
+
+
+def test_diff_same_list_keywords():
+    """Identical list keywords must be reported under 'Same'."""
+    settings = {"basisfunctions": ["Fe 3d 4s", "O 2p 2s"], "cohpstartenergy": -15.0}
+    diff = Lobsterin(settings).diff(Lobsterin(settings))
+    assert diff["Different"] == {}
+    assert diff["Same"]["basisfunctions"] == settings["basisfunctions"]
+    assert diff["Same"]["cohpstartenergy"] == approx(-15.0)
 
 
 class TestUtils(MatSciTest):

@@ -11,6 +11,7 @@ REM entries.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
@@ -229,7 +230,7 @@ class ResParser:
                 elif first == "SFAC":
                     _SFAC = self._parse_sfac(rest, it)
                 else:
-                    raise Warning(f"Skipping {line=}, tag {first} not recognized.")
+                    warnings.warn(f"Skipping {line=}, tag {first} not recognized.", stacklevel=2)
         except StopIteration:
             pass
         if _CELL is None or _SFAC is None:
@@ -376,9 +377,9 @@ class ResProvider(MSONable):
     def sites(self) -> list[PeriodicSite]:
         """Construct a list of PeriodicSites from the res file."""
         sfac_tag = self._res.SFAC
+        lattice = self.lattice  # build the Lattice once rather than once per ion
         return [
-            PeriodicSite(ion.specie, ion.pos, self.lattice, properties=self._site_spin(ion.spin))
-            for ion in sfac_tag.ions
+            PeriodicSite(ion.specie, ion.pos, lattice, properties=self._site_spin(ion.spin)) for ion in sfac_tag.ions
         ]
 
     @property
@@ -612,7 +613,15 @@ class AirssProvider(ResProvider):
     @property
     def entry(self) -> ComputedStructureEntry:
         """This res file as a ComputedStructureEntry."""
-        return ComputedStructureEntry(self.structure, self.energy, data={"rems": self.rems})
+        # Store the TITL fields under the keys ResWriter reads back, so entry -> res keeps them
+        data = {
+            "rems": self.rems,
+            "seed": self.seed,
+            "pressure": self.pressure,
+            "isd": self.integrated_spin_density,
+            "iasd": self.integrated_absolute_spin_density,
+        }
+        return ComputedStructureEntry(self.structure, self.energy, data=data)
 
     def as_dict(self, verbose: bool = True) -> dict[str, Any]:
         """Get dict with title fields, structure and rems of this AirssProvider."""

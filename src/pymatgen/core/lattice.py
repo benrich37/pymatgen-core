@@ -22,7 +22,7 @@ from pymatgen.util.due import Doi, due
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from typing import Literal, Self
+    from typing import Any, Literal, Self
 
     from numpy.typing import ArrayLike, NDArray
 
@@ -32,6 +32,12 @@ __author__ = "Shyue Ping Ong, Michael Kocher"
 __copyright__ = "Copyright 2011, The Materials Project"
 __maintainer__ = "Shyue Ping Ong"
 __email__ = "shyuep@gmail.com"
+
+# Lattice instance attributes derived from the (read-only) matrix: lazily computed, excluded
+# from pickles/copies and rebuilt on demand. "_diags" is a legacy, unused attribute of old pickles.
+_CACHE_ATTRS = frozenset(
+    {"_inv_matrix", "_lll_matrix_mappings", "_lll_inverse", "_diags", "lengths", "angles", "volume"}
+)
 
 
 class Lattice(MSONable):
@@ -68,11 +74,23 @@ class Lattice(MSONable):
         mat.setflags(write=False)
         self._matrix: NDArray[np.float64] = mat
         self._inv_matrix: NDArray[np.float64] | None = None
-        self._diags = None
         self._lll_matrix_mappings: dict[float, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
-        self._lll_inverse = None
+        self._lll_inverse: NDArray[np.float64] | None = None
 
         self.pbc = pbc
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Pickle/copy state without the lazily computed caches derived from the matrix."""
+        return {key: val for key, val in self.__dict__.items() if key not in _CACHE_ATTRS}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore from pickle/copy state, dropping any caches (e.g. from older pickles)."""
+        self.__dict__.update({key: val for key, val in state.items() if key not in _CACHE_ATTRS})
+        # copy.deepcopy hands back a writable copy of the matrix; re-freeze it so the caches stay valid
+        self._matrix.setflags(write=False)
+        self._inv_matrix = None
+        self._lll_matrix_mappings = {}
+        self._lll_inverse = None
 
     def __repr__(self) -> str:
         matrix = self._matrix.tolist()
@@ -532,8 +550,7 @@ class Lattice(MSONable):
         use the reciprocal_lattice_crystallographic property.
         The property is lazily generated for efficiency.
         """
-        inv_mat = np.linalg.inv(self._matrix).T
-        return type(self)(inv_mat * 2 * np.pi)
+        return type(self)(self.inv_matrix.T * 2 * np.pi)
 
     @property
     def reciprocal_lattice_crystallographic(self) -> Self:
@@ -556,8 +573,12 @@ class Lattice(MSONable):
 
     @property
     def lll_inverse(self) -> NDArray[np.float64]:
-        """Inverse of self.lll_mapping."""
-        return np.linalg.inv(self.lll_mapping)  # type: ignore[return-value]
+        """Inverse of self.lll_mapping (cached, read-only)."""
+        if self._lll_inverse is None:
+            lll_inverse = np.linalg.inv(self.lll_mapping)
+            lll_inverse.setflags(write=False)
+            self._lll_inverse = lll_inverse
+        return self._lll_inverse
 
     @property
     def selling_vector(self) -> NDArray[np.float64]:
@@ -1052,7 +1073,7 @@ class Lattice(MSONable):
             Lattice: LLL reduced
         """
         if delta not in self._lll_matrix_mappings:
-            self._lll_matrix_mappings[delta] = self._calculate_lll()
+            self._lll_matrix_mappings[delta] = self._calculate_lll(delta=delta)
         return type(self)(self._lll_matrix_mappings[delta][0])
 
     def _calculate_lll(self, delta: float = 0.75) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -1365,13 +1386,10 @@ class Lattice(MSONable):
             if np.iscomplexobj(coord):
                 raise TypeError(f"Complex array are not supported, got {coord=}")
 
-        if not frac_coords:
-            cart_a, cart_b = coords_a, coords_b
-        else:
-            cart_a = np.reshape([self.get_cartesian_coords(vec) for vec in coords_a], (-1, 3))
-            cart_b = np.reshape([self.get_cartesian_coords(vec) for vec in coords_b], (-1, 3))
+        if frac_coords:
+            coords_a, coords_b = self.get_cartesian_coords(coords_a), self.get_cartesian_coords(coords_b)
 
-        return np.array(list(itertools.starmap(np.dot, zip(cart_a, cart_b, strict=True))))
+        return np.einsum("ij,ij->i", coords_a, coords_b)
 
     def norm(self, coords: ArrayLike, frac_coords: bool = True) -> NDArray[np.float64]:
         """Compute the norm of vector(s).
@@ -1789,7 +1807,8 @@ def get_integer_index(
     Returns:
         tuple[int, ...]: The Miller index.
     """
-    mi = np.asarray(miller_index)
+    # Copy as float: the in-place divisions below must neither fail on integer input nor mutate the caller's array
+    mi = np.array(miller_index, dtype=np.float64)
     # Deal with the case we have small irregular floats
     # that are all equal or factors of each other
     mi /= min(m for m in mi if m != 0)
@@ -1908,7 +1927,7 @@ def get_points_in_spheres(
                 valid_images.append(np.tile(image, [np.sum(valid_index_bool), 1]) - image_offsets[valid_index_bool])
                 valid_indices.extend([k for k in ind if valid_index_bool[k]])
         if not valid_coords:
-            return [[]] * len(center_coords)
+            return [[] for _ in range(len(center_coords))]
         valid_coords = np.concatenate(valid_coords, axis=0)  # type: ignore[assignment]
         valid_images = np.concatenate(valid_images, axis=0)  # type:ignore[assignment]
 

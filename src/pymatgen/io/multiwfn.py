@@ -78,11 +78,13 @@ def extract_info_from_cp_text(
 
     cp_name = "null"
 
-    this_conditionals = copy.deepcopy(conditionals)
+    # Shallow copy is enough: entries are only popped, never mutated
+    this_conditionals = dict(conditionals)
 
     for ind, i in enumerate(lines_split):
+        tokens = set(i)
         for k, v in this_conditionals.items():
-            if all(x in i for x in v):
+            if tokens.issuperset(v):
                 if k == "cp_num":
                     cp_dict[k] = int(i[2][:-1])
 
@@ -412,7 +414,7 @@ def add_atoms(
             bond_atoms_list = list()
             for index in cp_desc["connected_bond_paths"]:
                 for true_index, descriptors in atom_cps.items():
-                    if int(descriptors["name"].split("_")[0]) == index:
+                    if "name" in descriptors and int(descriptors["name"].split("_")[0]) == index:
                         bond_atoms_list.append(true_index)
                         break
 
@@ -422,7 +424,7 @@ def add_atoms(
                 bond_atoms_list = list()
                 for index in cp_desc["connected_bond_paths"]:
                     for true_index, descriptors in atom_cps.items():
-                        if int(descriptors["name"].split("_")[0]) == index:
+                        if "name" in descriptors and int(descriptors["name"].split("_")[0]) == index:
                             bond_atoms_list.append(true_index)
                             break
                 if len(bond_atoms_list) != 2:

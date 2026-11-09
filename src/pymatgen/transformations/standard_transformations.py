@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 
     from numpy.random import Generator
 
-    from pymatgen.core.sites import PeriodicSite
     from pymatgen.util.typing import SpeciesLike
 
 
@@ -541,29 +540,28 @@ class OrderDisorderedStructureTransformation(AbstractTransformation):
                 structure, **{k: getattr(self, k) for k in ("symprec", "angle_tolerance") if getattr(self, k, None)}
             ).get_symmetrized_structure()
 
+        # index of the symmetry-equivalent group of each site (all 0 if symmetry is not used)
+        sym_group = [0] * len(structure)
+        if self.symmetrized_structures:
+            for group_idx, indices in enumerate(structure.equivalent_indices):  # type:ignore[union-attr]
+                for idx in indices:
+                    sym_group[idx] = group_idx
+
         equivalent_sites: list[list[int]] = []
-        exemplars: list[PeriodicSite] = []
+        exemplars: list[int] = []
         # generate list of equivalent sites to order
         # equivalency is determined by sp_and_occu and symmetry
         # if symmetrized structure is true
         for idx, site in enumerate(structure):
             if site.is_ordered:
                 continue
-            for j, ex in enumerate(exemplars):
-                sp = ex.species
-                if not site.species.almost_equals(sp):
-                    continue
-                if self.symmetrized_structures:
-                    sym_equiv = structure.find_equivalent_sites(ex)  # type:ignore[attr-defined]
-                    sym_test = site in sym_equiv
-                else:
-                    sym_test = True
-                if sym_test:
+            for j, ex_idx in enumerate(exemplars):
+                if sym_group[idx] == sym_group[ex_idx] and site.species.almost_equals(structure[ex_idx].species):
                     equivalent_sites[j].append(idx)
                     break
             else:
                 equivalent_sites.append([idx])
-                exemplars.append(site)
+                exemplars.append(idx)
 
         # generate the list of manipulations and input structure
         struct = Structure.from_sites(structure)
@@ -609,6 +607,9 @@ class OrderDisorderedStructureTransformation(AbstractTransformation):
             rand_structures = get_randomly_manipulated_structures(
                 struct=struct, manipulations=manipulations, n_return=n_to_return
             )
+            if self.no_oxi_states:
+                for rand_struct in rand_structures:
+                    rand_struct.remove_oxidation_states()
             if return_ranked_list:
                 return [
                     {"energy": 0.0, "energy_above_minimum": 0.0, "structure": s} for s in rand_structures[:n_to_return]
@@ -851,7 +852,15 @@ class DiscretizeOccupanciesTransformation(AbstractTransformation):
                     raise RuntimeError("Cannot discretize structure within tolerance!")
                 sp[k] = new_occ
 
-        return Structure(structure.lattice, species, structure.frac_coords)
+        return Structure(
+            structure.lattice,
+            species,
+            structure.frac_coords,
+            charge=structure.charge,
+            site_properties=structure.site_properties,
+            labels=structure.labels,
+            properties=structure.properties,
+        )
 
     def __repr__(self):
         return "DiscretizeOccupanciesTransformation"
@@ -941,7 +950,11 @@ class ScaleToRelaxedTransformation(AbstractTransformation):
             match = StructureMatcher()
             s_map = match.get_best_electronegativity_anonymous_mapping(self.unrelaxed_structure, structure)
         else:
-            s_map = self.species_map
+            # accept string keys/values and a list of tuples, as documented
+            s_map = {
+                get_el_sp(key): val if isinstance(val, dict) else get_el_sp(val)
+                for key, val in dict(self.species_map).items()
+            }
 
         params = list(structure.lattice.abc)
         params.extend(structure.lattice.angles)

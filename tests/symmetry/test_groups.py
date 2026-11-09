@@ -9,7 +9,8 @@ from pytest import approx
 
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.operations import SymmOp
-from pymatgen.symmetry.groups import SYMM_DATA, PointGroup, SpaceGroup
+from pymatgen.core.structure import Structure
+from pymatgen.symmetry.groups import SYMM_DATA, PointGroup, SpaceGroup, in_fractional_array_list
 
 __author__ = "Shyue Ping Ong"
 __copyright__ = "Copyright 2012, The Materialyze Lab"
@@ -19,7 +20,7 @@ __email__ = "shyue@nus.edu"
 __date__ = "4/10/14"
 
 ORDERED_SYMBOLS = (
-    "P1 P-1 P121 P12_11 C121 P1m1 P1c1 C1m1 C1c1 P12/m1 P12_1/m1 C12/m1 P12/c1 P12_1/c1 C12/c1 P222 P222_1"
+    "P1 P-1 P2 P2_1 C2 Pm Pc Cm Cc P2/m P2_1/m C2/m P2/c P2_1/c C2/c P222 P222_1"
     " P2_12_12 P2_12_12_1 C222_1 C222 F222 I222 I2_12_12_1 Pmm2 Pmc2_1 Pcc2 Pma2 Pca2_1 Pnc2 Pmn2_1 Pba2 Pna2_1 Pnn2 "
     "Cmm2 Cmc2_1 Ccc2 Amm2 Aem2 Ama2 Aea2 Fmm2 Fdd2 Imm2 Iba2 Ima2 Pmmm Pnnn Pccm Pban Pmma Pnna Pmna Pcca Pbam "
     "Pccn Pbcm Pnnm Pmmn Pbcn Pbca Pnma Cmcm Cmce Cmmm Cccm Cmme Ccce Fmmm Fddd Immm Ibam Ibca Imma P4 P4_1 P4_2 "
@@ -97,6 +98,68 @@ class TestSpaceGroup:
         sg = SpaceGroup("R-3mH")
         assert sg.int_number == 166
 
+    @pytest.mark.parametrize(
+        ("number", "short_symbol", "full_symbol"),
+        [
+            (3, "P2", "P121"),
+            (4, "P2_1", "P12_11"),
+            (5, "C2", "C121"),
+            (6, "Pm", "P1m1"),
+            (7, "Pc", "P1c1"),
+            (8, "Cm", "C1m1"),
+            (9, "Cc", "C1c1"),
+            (10, "P2/m", "P12/m1"),
+            (11, "P2_1/m", "P12_1/m1"),
+            (12, "C2/m", "C12/m1"),
+            (13, "P2/c", "P12/c1"),
+            (14, "P2_1/c", "P12_1/c1"),
+            (15, "C2/c", "C12/c1"),
+        ],
+    )
+    def test_short_monoclinic_symbols(self, number, short_symbol, full_symbol):
+        for symbol in (short_symbol, full_symbol):
+            sg = SpaceGroup(symbol)
+            assert sg.symbol == short_symbol
+            assert sg.full_symbol == full_symbol
+            assert sg.int_number == number
+        assert SpaceGroup.from_int_number(number).symbol == short_symbol
+
+    @pytest.mark.parametrize(
+        ("symbol", "diagonal"),
+        [("P2", (-1, 1, -1)), ("P112", (-1, -1, 1)), ("P211", (1, -1, -1))],
+    )
+    def test_monoclinic_symbol_preserves_unique_axis(self, symbol, diagonal):
+        sg = SpaceGroup(symbol)
+        assert sg.symbol == symbol
+        assert sg.int_number == 3
+        assert sg.order == 2
+        assert SymmOp.from_rotation_and_translation(np.diag(diagonal)) in sg.symmetry_ops
+
+    @pytest.mark.parametrize("number", range(1, 231))
+    def test_eq_round_trips_through_symbol(self, number):
+        sg = SpaceGroup.from_int_number(number)
+        for symbol in (sg.symbol, sg.full_symbol):
+            other = SpaceGroup(symbol)
+            assert other == sg
+            assert hash(other) == hash(sg)
+            assert other.symmetry_ops == sg.symmetry_ops
+
+    def test_eq_distinguishes_settings(self):
+        assert SpaceGroup("P2") == SpaceGroup("P121") == SpaceGroup.from_int_number(3)
+        assert len({SpaceGroup("P2_1/c"), SpaceGroup("P12_1/c1"), SpaceGroup.from_int_number(14)}) == 1
+        # Different unique axis, basis or rhombohedral setting are different groups.
+        assert SpaceGroup("P2") != SpaceGroup("P112")
+        assert SpaceGroup("P2") != SpaceGroup("P121(2*a+c,b,c)")
+        assert SpaceGroup("R-3m:H") != SpaceGroup("R-3m:R")
+        assert SpaceGroup("Fm-3m") != SpaceGroup("Fm-3m(a-1/4,b-1/4,c-1/4)")
+        assert SpaceGroup("Fm-3m") != PointGroup("m-3m")
+        assert SpaceGroup("Fm-3m") != "Fm-3m"
+
+    @pytest.mark.parametrize("number", range(3, 16))
+    def test_monoclinic_symbol_settings(self, number):
+        sg = SpaceGroup.from_int_number(number)
+        assert SpaceGroup.get_settings(sg.symbol) == SpaceGroup.get_settings(sg.full_symbol)
+
     def test_attr(self):
         sg = SpaceGroup("Fm-3m")
         assert sg.full_symbol == "F4/m-32/m"
@@ -121,6 +184,13 @@ class TestSpaceGroup:
             assert len(sg.symmetry_ops) == sg.order
 
     def test_get_settings(self):
+        assert SpaceGroup.get_settings("P2") == {
+            "P121",
+            "P112",
+            "P211",
+            "P121(2*a+c,b,c)",
+            "P121(c,2*a+c,b)",
+        }
         assert SpaceGroup.get_settings("Fm-3m") == {"Fm-3m(a-1/4,b-1/4,c-1/4)", "Fm-3m"}
 
         pmmn_settings = {
@@ -144,6 +214,13 @@ class TestSpaceGroup:
             "Pbmn",
         }
 
+    def test_get_settings_full_and_abbreviated_symbols(self):
+        # the docstring accepts full and abbreviated symbols; both used to raise KeyError
+        assert SpaceGroup.get_settings("I4/m2/m2/m") == SpaceGroup.get_settings("I4/mmm")
+        settings = SpaceGroup.get_settings("C2/c")
+        assert len(settings) > 1
+        assert {SpaceGroup(symbol).int_number for symbol in settings} == {15}
+
     def test_crystal_system(self):
         sg = SpaceGroup("R-3c")
         assert sg.crystal_system == "trigonal"
@@ -164,6 +241,43 @@ class TestSpaceGroup:
         assert rand_percent[0] == approx(pp[0])
         assert rand_percent[1] == approx(pp[1])
         assert rand_percent[2] == approx(pp[2])
+
+    def test_get_orbit_identifies_lattice_images(self):
+        # Regression test: wrapped coordinates at z ~ 0 and z ~ 1 are the
+        # same fractional-torus point and must not both enter the orbit.
+        sg = SpaceGroup("Fm-3m")
+        point = [0.0, 0.5, 0.999999]
+        for orbit in (sg.get_orbit(point), sg.get_orbit_and_generators(point)[0]):
+            images = [q for q in orbit if abs(q[0]) < 1e-8 and abs(q[1] - 0.5) < 1e-8]
+            assert len(images) == 1
+
+    def test_get_orbit_exact_match(self):
+        # tol=0 keeps meaning exact matching: duplicates are still removed.
+        sg = SpaceGroup("Fm-3m")
+        assert len(sg.get_orbit([0, 0, 0], tol=0)) == 4
+        assert len(sg.get_orbit([0.1, 0.2, 0.3], tol=0)) == 96
+
+    def test_in_fractional_array_list(self):
+        points = np.array([[0.0, 0.0, 0.0], [0.5, 0.25, 0.75]])
+        assert in_fractional_array_list(points, np.array([0.999999, 0.0, 0.0]))
+        assert in_fractional_array_list(points, np.array([1.0, 1.0, 1.0]))  # not wrapped
+        assert in_fractional_array_list(points, np.array([0.5, 0.25, 0.75]), tol=0)
+        assert not in_fractional_array_list(points, np.array([0.999999, 0.0, 0.0]), tol=0)
+        assert not in_fractional_array_list(points, np.array([0.4, 0.0, 0.0]))
+        assert not in_fractional_array_list(points[:0], np.array([0.0, 0.0, 0.0]))
+
+    def test_from_spacegroup_collapses_opposite_cell_faces(self):
+        # materialsproject/pymatgen#3721: the Ge pair at opposite ends of
+        # the cell must collapse to three atoms at tol=0.01.
+        lattice = Lattice.from_parameters(4.98502, 4.98502, 5.648, 90.0, 90.0, 120.0)
+        species = ("Ge", "O")
+        coords = ((0.4513, 0.0, 0.6667), (0.3969, 0.3021, 0.12))
+        struct = Structure.from_spacegroup(154, lattice, species, coords, tol=0.01)
+        assert len([site for site in struct if site.specie.symbol == "Ge"]) == 3
+        assert len(struct) == 9
+        # The default tolerance keeps the finer split: 6 Ge sites.
+        default_tol = Structure.from_spacegroup(154, lattice, species, coords)
+        assert len([site for site in default_tol if site.specie.symbol == "Ge"]) == 6
 
     def test_is_compatible(self):
         cubic = Lattice.cubic(1)
@@ -224,6 +338,20 @@ class TestSpaceGroup:
         sg = SpaceGroup("Pnma")
         op = SymmOp.from_rotation_and_translation([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0.5, 0.5, 0.5])
         assert op in sg.symmetry_ops
+
+    def test_contains(self):
+        sg = SpaceGroup("Pnma")
+        op = SymmOp.from_rotation_and_translation([[1, 0, 0], [0, -1, 0], [0, 0, -1]], [0.5, 0.5, 0.5])
+        assert op in sg
+        assert SymmOp.from_rotation_and_translation(np.eye(3), [0.25, 0, 0]) not in sg
+        assert "x,y,z" not in sg
+        assert SymmOp.inversion() in PointGroup("mmm")
+        assert SymmOp.from_axis_angle_and_translation([0, 0, 1], 90) not in PointGroup("mmm")
+
+    def test_is_subgroup_of_non_space_group(self):
+        # used to return NotImplemented, which is truthy
+        assert SpaceGroup("Pnma").is_subgroup(PointGroup("mmm")) is False
+        assert PointGroup("mmm").is_supergroup(SpaceGroup("Pnma")) is False
 
     def test_other_settings(self):
         sg = SpaceGroup("Pbnm")
