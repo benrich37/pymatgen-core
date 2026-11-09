@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize(
     ("init_meth", "init_var", "add_checks"),
     [
-        (lambda x: JDFTXOutfile.from_file(x), example_sp_outfile_path, lambda dir_repr: None),
+        (JDFTXOutfile.from_file, example_sp_outfile_path, lambda dir_repr: None),
         (lambda x: JDFTXOutfileSlice._from_out_slice(x, [], []), ex_outfileslice1, lambda dir_repr: None),
         # (JDFTXOutfileSlice._from_out_slice, ex_outfileslice1, lambda dir_repr: None),
         (
@@ -63,7 +63,7 @@ def test_dir_repr(init_meth: Callable, init_var: Any, add_checks: Callable) -> N
 @pytest.mark.parametrize(
     ("init_meth", "init_var", "add_checks"),
     [
-        (lambda x: JDFTXOutfile.from_file(x), example_sp_outfile_path, lambda dir_repr: None),
+        (JDFTXOutfile.from_file, example_sp_outfile_path, lambda dir_repr: None),
         (lambda x: JDFTXOutfileSlice._from_out_slice(x, [], []), ex_outfileslice1, lambda dir_repr: None),
         # (JDFTXOutfileSlice._from_out_slice, ex_outfileslice1, lambda dir_repr: None),
         (
@@ -96,7 +96,7 @@ def test_repr_repr(init_meth: Callable, init_var: Any, add_checks: Callable) -> 
 @pytest.mark.parametrize(
     ("init_meth", "init_var", "add_checks"),
     [
-        (lambda x: JDFTXOutfile.from_file(x), example_sp_outfile_path, lambda dir_repr: None),
+        (JDFTXOutfile.from_file, example_sp_outfile_path, lambda dir_repr: None),
         (lambda x: JDFTXOutfileSlice._from_out_slice(x, [], []), ex_outfileslice1, lambda dir_repr: None),
         # (JDFTXOutfileSlice._from_out_slice, ex_outfileslice1, lambda dir_repr: None),
         (
@@ -122,7 +122,7 @@ def test_str_repr(init_meth: Callable, init_var: Any, add_checks: Callable) -> N
 @pytest.mark.parametrize(
     ("init_meth", "init_var", "add_checks"),
     [
-        (lambda x: JDFTXOutfile.from_file(x), example_sp_outfile_path, lambda dir_repr: None),
+        (JDFTXOutfile.from_file, example_sp_outfile_path, lambda dir_repr: None),
         (
             lambda x: JDFTXOutfileSlice._from_out_slice(x, [], [], none_on_error=False),
             ex_outfileslice1,

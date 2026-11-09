@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from monty.dev import deprecated
 
 from pymatgen.core import Lattice
 from pymatgen.core.units import Ha_to_eV
@@ -505,21 +504,25 @@ class JDFTXOutfile:
             'lattice' or 'ionic' if geom_opt, else "single point". ('lattice' optimizations perform ionic optimizations
             as well unless ion positions are given in direct coordinates).
         ecomponents (dict): The components of the total energy in eV of the most recent JDFTx call.
-        efermi (float): The Fermi energy in eV of the most recent JDFTx call. Equivalent to "mu".
-        egap (float): The band gap in eV of the most recent JDFTx call. (Only available if eigstats was dumped).
-        emin (float): The minimum energy in eV (smallest Kohn-Sham eigenvalue) of the most recent JDFTx call. (Only
-            available if eigstats was dumped).
-        emax (float): The maximum energy in eV (largest Kohn-Sham eigenvalue) of the most recent JDFTx call. (Only
-            available if eigstats was dumped).
-        homo (float): The energy in eV of the band-gap lower bound (Highest Occupied Molecular Orbital) (Only available
-            if eigstats was dumped).
-        lumo (float): The energy in eV of the band-gap upper bound (Lowest Unoccupied Molecular Orbital) (Only
-            available if eigstats was dumped).
-        homo_filling (float): The electron filling at the homo band-state. (Only available if eigstats was dumped).
-        lumo_filling (float): The electron filling at the lumo band-state. (Only available if eigstats was dumped).
-        is_metal (bool): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an arbitrary
-            tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001 and 0
-            would not be). (Only available if eigstats was dumped).
+        efermi (float | None): The Fermi energy in eV of the most recent JDFTx call. Equivalent to "mu".
+        egap (float | None): The band gap in eV of the most recent JDFTx call. (Only available if eigstats was dumped,
+            and None if JDFTx reports it unavailable, e.g. when there are no empty bands).
+        emin (float | None): The minimum energy in eV (smallest Kohn-Sham eigenvalue) of the most recent JDFTx call.
+            (Only available if eigstats was dumped).
+        emax (float | None): The maximum energy in eV (largest Kohn-Sham eigenvalue) of the most recent JDFTx call.
+            (Only available if eigstats was dumped).
+        homo (float | None): The energy in eV of the band-gap lower bound (Highest Occupied Molecular Orbital) (Only
+            available if eigstats was dumped, and None if JDFTx reports it unavailable).
+        lumo (float | None): The energy in eV of the band-gap upper bound (Lowest Unoccupied Molecular Orbital) (Only
+            available if eigstats was dumped, and None if JDFTx reports it unavailable, e.g. when there are no empty
+            bands).
+        homo_filling (float | None): The electron filling at the homo band-state. (Only available if eigstats was
+            dumped, and None if an energy it needs is unavailable).
+        lumo_filling (float | None): The electron filling at the lumo band-state. (Only available if eigstats was
+            dumped, and None if an energy it needs is unavailable).
+        is_metal (bool | None): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an
+            arbitrary tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001
+            and 0 would not be). (Only available if eigstats was dumped and both fillings are available).
         converged (bool): True if most recent SCF cycle converged (and geom forces converged is calc is geom_opt)
         etype (str): String representation of total energy-type of system. Commonly "G" (grand-canonical potential) for
             GC calculations, and "F" for canonical (fixed electron count) calculations.
@@ -547,7 +550,8 @@ class JDFTXOutfile:
         nbands (int): The number of bands used in the most recent JDFTx call.
         atom_elements (list[str]): The list of each ion's element symbol in the most recent JDFTx call.
         atom_elements_int (list[int]): The list of ion's atomic numbers in the most recent JDFTx call.
-        atom_types (list[str]): Non-repeating list of each ion's element symbol in the most recent JDFTx call.
+        atom_types (list[str]): Non-repeating list of the ions' species names in the most recent JDFTx call. These
+            are element symbols, unless a species is named after its pseudopotential file (e.g. Fe1 for Fe1.upf).
         spintype (str): The spin type used in the most recent JDFTx call. Options are "none", "collinear",
         nspin (int): The number of spins used in the most recent JDFTx call.
         nat (int): The number of atoms in the most recent JDFTx call.
@@ -565,6 +569,10 @@ class JDFTXOutfile:
         stress (np.ndarray): The stress tensor of the most recent JDFTx call as a 3x3 numpy array. In units of
             eV/Angstrom^3.
         strain (np.ndarray): The strain tensor of the most recent JDFTx call as a 3x3 numpy array.
+        thermostat_velocity (np.ndarray | None): Nose-Hoover chain thermostat velocities of the most recent JDFTx call
+            (one per chain element, chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of
+            time) so they can be written back unchanged as the thermostat-velocity tag of a restart input. None if not
+            printed.
         nstep (int): The number of geometric optimization steps in the most recent JDFTx call.
         e (float): The final energy in eV of the most recent JDFTx call (equivalent to the call's etype).
         grad_k (float): The final norm of the preconditioned gradient for geometric optimization of the most recent
@@ -613,15 +621,15 @@ class JDFTXOutfile:
     fftgrid: list[int] = field(init=False)
     geom_opt: bool = field(init=False)
     geom_opt_type: str = field(init=False)
-    efermi: float = field(init=False)
-    egap: float = field(init=False)
-    emin: float = field(init=False)
-    emax: float = field(init=False)
-    homo: float = field(init=False)
-    lumo: float = field(init=False)
-    homo_filling: float = field(init=False)
-    lumo_filling: float = field(init=False)
-    is_metal: bool = field(init=False)
+    efermi: float | None = field(init=False)
+    egap: float | None = field(init=False)
+    emin: float | None = field(init=False)
+    emax: float | None = field(init=False)
+    homo: float | None = field(init=False)
+    lumo: float | None = field(init=False)
+    homo_filling: float | None = field(init=False)
+    lumo_filling: float | None = field(init=False)
+    is_metal: bool | None = field(init=False)
     converged: bool = field(init=False)
     etype: str = field(init=False)
     broadening_type: str = field(init=False)
@@ -854,10 +862,6 @@ class JDFTXOutfile:
             value = getattr(self, fld)
             dct[fld] = value
         return dct
-
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
 
     ###########################################################################
     # Magic methods

@@ -1,0 +1,21 @@
+# A water molecule in implicit water with 0.5 M NaF (the user guide's example input)
+lattice Cubic 15
+coords-type Cartesian
+ion O   0.00  0.00  0.00  0
+ion H   1.43  1.11  0.00  1
+ion H  -1.43  1.11  0.00  1
+ion-species GBRV/$ID_pbe.uspp
+
+elec-ex-corr gga-PBE
+elec-cutoff 20 100
+coulomb-interaction Isolated
+coulomb-truncation-embed 0 0 0
+
+fluid LinearPCM
+pcm-variant CANDLE
+fluid-solvent H2O
+fluid-cation Na+ 0.5
+fluid-anion F- 0.5
+
+ionic-minimize nIterations 10
+dump End State ElecDensity

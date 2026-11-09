@@ -10,7 +10,6 @@ import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
-from monty.dev import deprecated
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,20 +21,19 @@ if TYPE_CHECKING:
 from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
-from pymatgen.io.jdftx.jelstep import JElSteps
+from pymatgen.io.jdftx.inputs import (
+    JDFTX_SPECIES_SITE_PROPERTY,
+    JDFTX_TIME_UNIT_TO_FS,
+    _constraint_vector_to_cartesian,
+    get_species_elements,
+    get_species_names,
+)
+from pymatgen.io.jdftx.jelstep import JElSteps, _eopt_step_keys
 
 __author__ = "Ben Rich"
 
 _jos_atrs_from_elecmindata = ("mu", "nelectrons", "abs_magneticmoment", "tot_magneticmoment")
 _jos_atrs_elec_from_elecmindata = ("nstep", "e", "grad_k", "alpha", "linmin")
-
-
-def _is_homogenous(val: list):
-    try:
-        np.array(val)
-        return True
-    except ValueError:
-        return False
 
 
 # TODO: Phase out redundant class attributes to data stored in `properties` and `site_properties` dicts.
@@ -56,6 +54,9 @@ class JOutStructure(Structure):
         elecmindata (JElSteps | None): The electronic minimization data.
         stress (np.ndarray | None): The stress tensor.
         strain (np.ndarray | None): The strain tensor.
+        thermostat_velocity (np.ndarray | None): The Nose-Hoover chain thermostat velocities (one per chain element,
+            chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of time) so they can be
+            written back unchanged as the thermostat-velocity tag of a restart input. None if not printed.
         nstep (int | None): The most recent step number.
         e (float | None): The total energy of the system.
         grad_k (float | None): The gradient of the electronic density along the most recent line minimization.
@@ -114,7 +115,11 @@ class JOutStructure(Structure):
     _velocities: list[NDArray[np.float64] | None] | None = None
     _constraint_vectors: list[NDArray[np.float64] | list[NDArray[np.float64]] | None] | None = None
     _constraint_types: list[str | None] | None = None
-    _group_names: list[list[str] | None] | None = None
+    _group_names: list[list[str | None] | None] | None = None
+    # Ion lines and their coordinate system exactly as JDFTx printed them, since converting positions to pymatgen
+    # units and back can change them in the last digit
+    _printed_ion_lines: list[str] | None = None
+    _printed_coords_type: str | None = None
 
     def _elecmindata_postinit(self) -> None:
         """Post-initialization method for attributes taken from elecmindata."""
@@ -205,7 +210,7 @@ class JOutStructure(Structure):
         """Return the velocities.
 
         Returns:
-            list[np.ndarray | None] | None: The velocities of the atoms in the system.
+            list[np.ndarray | None] | None: The velocities of the atoms in the system, in Cartesian angstrom/fs.
         """
         if "velocities" not in self.site_properties:
             return self._velocities
@@ -219,7 +224,7 @@ class JOutStructure(Structure):
             velocities (list[np.ndarray | None] | None): The velocities of the atoms in the system.
         """
         self._velocities = velocities
-        if (velocities is not None) and _is_homogenous(velocities):
+        if velocities is not None:
             self.add_site_property("velocities", list(velocities))
         elif "velocities" in self.site_properties:
             self.remove_site_property("velocities")
@@ -243,7 +248,7 @@ class JOutStructure(Structure):
             constraint_types (list[str | None] | None): The constraint_types of the atoms in the system.
         """
         self._constraint_types = constraint_types
-        if (constraint_types is not None) and _is_homogenous(constraint_types):
+        if constraint_types is not None:
             self.add_site_property("constraint_types", list(constraint_types))
         elif "constraint_types" in self.site_properties:
             self.remove_site_property("constraint_types")
@@ -267,30 +272,32 @@ class JOutStructure(Structure):
             constraint_vectors (list[np.ndarray | list[np.ndarray] | None] | None): The constraint_vectors of the
             atoms in the system.
         """
-        if (constraint_vectors is not None) and _is_homogenous(constraint_vectors):
+        self._constraint_vectors = constraint_vectors
+        if constraint_vectors is not None:
             self.add_site_property("constraint_vectors", list(constraint_vectors))
         elif "constraint_vectors" in self.site_properties:
             self.remove_site_property("constraint_vectors")
 
     @property
-    def group_names(self) -> Sequence | list[list[str] | None] | None:
+    def group_names(self) -> Sequence | list[list[str | None] | None] | None:
         """Return the group_names.
 
         Returns:
-            list[list[str] | None] | None: The group_names of the atoms in the system.
+            list[list[str | None] | None] | None: The group_names of the atoms in the system.
         """
         if "group_names" not in self.site_properties:
             return self._group_names
         return self.site_properties["group_names"]
 
     @group_names.setter
-    def group_names(self, group_names: list[list[str] | None] | None) -> None:
+    def group_names(self, group_names: list[list[str | None] | None] | None) -> None:
         """Set the group_names.
 
         Args:
-            group_names (list[list[str] | None] | None): The group_names of the atoms in the system.
+            group_names (list[list[str | None] | None] | None): The group_names of the atoms in the system.
         """
-        if (group_names is not None) and _is_homogenous(group_names):
+        self._group_names = group_names
+        if group_names is not None:
             self.add_site_property("group_names", list(group_names))
         elif "group_names" in self.site_properties:
             self.remove_site_property("group_names")
@@ -323,6 +330,7 @@ class JOutStructure(Structure):
         expected_etype: str | None = None,
         skim_levels: list[str] | None = None,
         skip_props: list[str] | None = None,
+        req_new_geom: bool = False,
     ) -> JOutStructure:
         """
         Return JOutStructure object.
@@ -347,7 +355,6 @@ class JOutStructure(Structure):
         """
         if skip_props is None:
             skip_props = []
-        # cur_species: Sequence[Element | Species] | None = None
         if init_structure is None:
             cur_species: Sequence[Element | Species] = []
             instance = cls(lattice=np.eye(3), species=cur_species, coords=[], site_properties={})
@@ -382,7 +389,8 @@ class JOutStructure(Structure):
             _line_types.remove("lowdin")
         line_collections = instance._init_line_collections(_line_types)
         line_collections = instance._gather_line_collections(line_collections, text_slice)
-
+        if len(line_collections["posns"]["lines"]) == 0 and req_new_geom:
+            raise ValueError("No posns lines found in slice, but req_new_geom is True")
         # ecomponents needs to be parsed before emin and opt to set etype
         instance._parse_ecomp_lines(line_collections["ecomp"]["lines"])
         if instance.is_md:
@@ -525,6 +533,9 @@ class JOutStructure(Structure):
             out file.
         """
         etype = None
+        # Only search what follows "<eopt_type>: ", as the prefix can itself look like a label ("SCF: " ends in "F: ")
+        emin_lines = [line.split(f"{self.eopt_type}: ", maxsplit=1)[-1] for line in emin_lines]
+        step_key = f"{_eopt_step_keys.get(str(self.eopt_type), 'Iter')}:"
         for line in emin_lines:
             if "F:" in line:
                 etype = "F"
@@ -542,9 +553,9 @@ class JOutStructure(Structure):
         # to be checked by reading through the source code (TODO)
         if etype is None:
             for line in emin_lines:
-                if "Iter:" in line:
-                    # Assume line will have etype in "... Iter: n <etype>: num ..."
-                    etype = line.split("Iter:")[1].split(":")[0].strip().split()[-1].strip()
+                if step_key in line:
+                    # Assume line will have etype in "... Iter: n <etype>: num ..." (or "Cycle: n <etype>: ..." for SCF)
+                    etype = line.split(step_key)[1].split(":")[0].strip().split()[-1].strip()
         return etype
 
     def _set_etype_from_emin_lines(self, emin_lines: list[str]) -> None:
@@ -685,10 +696,14 @@ class JOutStructure(Structure):
         if len(cur_species):
             if len(names) != len(cur_species):
                 return False
-            _names = list(set(names))
-            _self_names = [s.symbol for s in cur_species]
-            for _name in _names:
-                if names.count(_name) != _self_names.count(_name):
+            # Compare species names (e.g. Fe1), which JDFTx reads ignoring case
+            if JDFTX_SPECIES_SITE_PROPERTY in self.site_properties and len(self) == len(cur_species):
+                _self_names = [name.lower() for name in get_species_names(self)]
+            else:
+                _self_names = [s.symbol.lower() for s in cur_species]
+            _names = [name.lower() for name in names]
+            for _name in set(_names):
+                if _names.count(_name) != _self_names.count(_name):
                     return False
         return True
 
@@ -705,10 +720,10 @@ class JOutStructure(Structure):
             Collected lines will start with the string "# Ionic positions in ..."
             (specifying either cartesian or direct coordinates), followed by a line
             for each ion (atom) in the format "ion_name x y z sd", where ion_name is
-            the name of the element, and sd is a flag indicating whether the ion is
-            excluded from optimization (1) or not (0).
+            the species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file), and sd is a
+            flag indicating whether the ion is excluded from optimization (1) or not (0).
         """
-        new_species: None | list[Element | Species] = None
+        new_species: list[Element | Species] | None = None
         if len(posns_lines):
             coords_type = posns_lines[0].split("positions in")[1]
             coords_type = coords_type.strip().split()[0].strip()
@@ -718,7 +733,7 @@ class JOutStructure(Structure):
             velocities: list[NDArray[np.float64] | None] = []
             constraint_types: list[str | None] = []
             constraint_vectors: list[list[NDArray[np.float64]] | NDArray[np.float64] | None] = []
-            group_names_list: list[list[str] | None] = []
+            group_names_list: list[list[str | None] | None] = []
             natoms = len(posns_lines) - 1
             if "thermostat-velocity" in posns_lines[-1]:
                 natoms -= 1
@@ -736,22 +751,44 @@ class JOutStructure(Structure):
             if not is_good and len(cur_species):
                 # Abort structure updating if we have a pre-existing structure
                 return cur_species
+            # The ions' elements, and their species names if any isn't its element symbol (e.g. Fe1)
+            elements, species_names = get_species_elements(names)
             self.remove_sites(list(range(len(cur_species))))
+            self._printed_ion_lines = [posns_lines[i + 1].strip() for i in range(natoms)]
+            self._printed_coords_type = coords_type.lower()
             posns = np.array(_posns)
-            if coords_type.lower() != "cartesian":
-                posns = np.dot(posns, self.lattice.matrix)
+            # Lattice-coordinate positions are stored as given (fractional coordinates), so they stay exact. Velocities
+            # and constraint vectors are converted to Cartesian coordinates
+            coords_are_cartesian = coords_type.lower() == "cartesian"
+            if not coords_are_cartesian:
+                velocities = [self.lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
+                constraint_vectors = [
+                    _constraint_vectors_to_cartesian(ctype, vectors, self.lattice)
+                    for ctype, vectors in zip(constraint_types, constraint_vectors, strict=True)
+                ]
             else:
                 posns *= bohr_to_ang
                 velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
+            velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]  # angstrom/fs
             for i in range(natoms):
-                self.append(species=names[i], coords=posns[i], coords_are_cartesian=True)
-            self.selective_dynamics = selective_dynamics
-            self.velocities = velocities
-            self.constraint_types = constraint_types
-            self.constraint_vectors = constraint_vectors
-            self.group_names = group_names_list
+                self.append(species=elements[i], coords=posns[i], coords_are_cartesian=coords_are_cartesian)
+            if species_names is not None:
+                self.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
+            for prop, vals in zip(
+                ["selective_dynamics", "velocities", "constraint_types", "constraint_vectors", "group_names"],
+                [selective_dynamics, velocities, constraint_types, constraint_vectors, group_names_list],
+                strict=True,
+            ):
+                if not all(v is None for v in vals):
+                    setattr(self, prop, vals)
+                # self.add_site_property(prop, vals)
+            # self.selective_dynamics = selective_dynamics
+            # self.velocities = velocities
+            # self.constraint_types = constraint_types
+            # self.constraint_vectors = constraint_vectors
+            # self.group_names = group_names_list
             # Calling `self.species` is fairly expensive, so we create in manually like this to save compute time
-            new_species = [Element(name) for name in names]
+            new_species = [Element(element) for element in elements]
         return new_species if new_species is not None else cur_species
 
     def _parse_forces_lines(self, forces_lines: list[str], forces_name="forces") -> None:
@@ -770,10 +807,21 @@ class JOutStructure(Structure):
                 force = np.array([float(x.strip()) for x in line.split()[2:5]])
                 _forces.append(force)
             forces = np.array(_forces)
-            if coords_type.lower() != "cartesian":
-                forces = np.dot(forces, np.linalg.inv(self.lattice.matrix))
-            else:
+            # Convert to Cartesian Ha/Ang. With R the lattice vectors as columns (self.lattice.matrix is R^T), JDFTx
+            # prints lattice forces as R^T F (covariant, in Ha) and contravariant forces as R^-1 F (in Ha/bohr^2)
+            coords_type = coords_type.lower()
+            if coords_type == "cartesian":
                 forces *= 1 / bohr_to_ang  # Convert from Ha/Bohr to Ha/Ang
+            elif coords_type == "lattice":
+                forces = np.linalg.solve(self.lattice.matrix, forces.T).T
+            elif coords_type == "contravariant":
+                forces = forces @ self.lattice.matrix / bohr_to_ang**2
+            else:
+                # Skip rather than store forces that can't be converted to Cartesian coordinates
+                warnings.warn(
+                    f"Unrecognized coordinate system '{coords_type}' for {forces_name}, skipping", stacklevel=2
+                )
+                return
             forces *= Ha_to_eV
             setattr(self, forces_name, forces)
             # self.forces = forces
@@ -818,16 +866,22 @@ class JOutStructure(Structure):
                 charges_dict = self._parse_lowdin_line(line, charges_dict)
             elif line_type_map["magnetic_moments"] in line:
                 moments_dict = self._parse_lowdin_line(line, moments_dict)
-        names = [s.name for s in cur_species]
+        # JDFTx prints the values by species name (e.g. "# oxidation-state Fe1 ..."), which it reads ignoring case
+        if len(self) == len(cur_species):
+            names = [name.lower() for name in get_species_names(self)]
+        else:
+            names = [s.name.lower() for s in cur_species]
+        charges_dict = {name.lower(): values for name, values in charges_dict.items()}
+        moments_dict = {name.lower(): values for name, values in moments_dict.items()}
         charges = None
         moments = None
-        if len(charges_dict):
+        if charges_dict:
             charges = np.zeros(len(names))
             for el in charges_dict:
                 idcs = [int(i) for i in range(len(names)) if names[i] == el]
                 for i, idx in enumerate(idcs):
                     charges[idx] += charges_dict[el][i]
-        if len(moments_dict):
+        if moments_dict:
             moments = np.zeros(len(names))
             for el in moments_dict:
                 idcs = [i for i in range(len(names)) if names[i] == el]
@@ -1023,10 +1077,6 @@ class JOutStructure(Structure):
                 dct[fld] = value
         return dct
 
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
-
     # TODO: Add string representation for JOutStructure-specific meta-data
     # This method currently only returns the Structure Summary as inherited from
     # the pymatgen Structure class.
@@ -1043,6 +1093,27 @@ class JOutStructure(Structure):
 constraint_types = ["HyperPlane", "Linear", "Planar"]
 
 
+def _constraint_vectors_to_cartesian(
+    constraint_type: str | None, vectors: NDArray[np.float64] | list[NDArray[np.float64]] | None, lattice: Lattice
+) -> NDArray[np.float64] | list[NDArray[np.float64]] | None:
+    """Convert a site's constraint vector(s) from lattice to Cartesian coordinates.
+
+    Args:
+        constraint_type (str | None): Constraint type of the site.
+        vectors (NDArray | list[NDArray] | None): Constraint vector (one per hyperplane for a HyperPlane constraint)
+            in lattice coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        NDArray | list[NDArray] | None: Constraint vector(s) in Cartesian coordinates.
+    """
+    if constraint_type is None or vectors is None:
+        return vectors
+    if constraint_type == "HyperPlane":
+        return [_constraint_vector_to_cartesian(constraint_type, v, lattice) for v in vectors]
+    return _constraint_vector_to_cartesian(constraint_type, vectors, lattice)
+
+
 def _parse_posn_line(
     posn_line: str,
 ) -> tuple[
@@ -1052,26 +1123,27 @@ def _parse_posn_line(
     NDArray[np.float64] | None,
     str | None,
     list[NDArray[np.float64]] | NDArray[np.float64] | None,
-    list[str] | None,
+    list[str | None] | None,
 ]:
     """Parse a single position line.
 
     Parse a line of text corresponding to the position of an ion (atom) in a
     JDFTx out file. Returns ion name, ion position, selective dynamics, velocity (optional), constraint
-    type (optional), constraint vector(s) (optional, may be a list if multiple HyperPlane constraints), and group names
-    (if multiple HyperPlane constraints).
+    type (optional), constraint vector(s) (optional, a list for HyperPlane constraints), and group names
+    (for HyperPlane constraints).
 
     tuple: A tuple containing the following elements:
-        - str: Ion name (element symbol)
+        - str: Ion species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file)
         - np.ndarray: Ion position coordinates as a 3D vector
         - list[int]: Selective dynamics flags (list of 0/1 values)
         - np.ndarray | None: Velocity as a 3D vector if present, otherwise None
         - str | None: Constraint type (e.g., "HyperPlane") if constrained, otherwise None
         - list[np.ndarray] | np.ndarray | None: Constraint vector(s), returns:
-            - list[np.ndarray]: Multiple constraint vectors if multiple HyperPlane constraints
-            - np.ndarray: Single constraint vector for a single constraint
+            - list[np.ndarray]: One vector per hyperplane for a HyperPlane constraint
+            - np.ndarray: Single constraint vector for a Linear or Planar constraint
             - None: If no constraints are present
-        - list[str] | None: Group names for constraints if multiple HyperPlane constraints, otherwise None
+        - list[str | None] | None: Group name of each hyperplane (None if unlabeled) for a HyperPlane constraint,
+            otherwise None
     """
     psplit: list[str] = list(posn_line.split())
     name: str = psplit[1]
@@ -1080,7 +1152,7 @@ def _parse_posn_line(
     sd: list[int] = []
     constraint_type: str | None = None
     constraint_vector: NDArray[np.float64] | list[NDArray[np.float64]] | None = None
-    group_names: list[str] | None = None
+    group_names: list[str | None] | None = None
     # Expecting a line to looks like "ion Ir   0.087   0.23   0.285 0"
     # If that last (6th) element is "v", we are dealing with an MD calculation and line might look like
     # "ion Ir   0.087481227766366   0.236770029479291   0.285789315528821 v   0.002  0.10   0.03 1"
@@ -1089,8 +1161,9 @@ def _parse_posn_line(
         offset = 4
         velocity = np.array([float(x) for x in psplit[6:9]])
     # Convert the movescale tag to a redundant selective_dynamics tag to match the expected shape
-    # (int(bool(v)) used since technically something like "0.1" can be passed to JDFTx to indicate non-freezing)
-    sd = [int(bool(posn_line.split()[offset + 5])) for _ in range(3)]
+    # (int(bool(float(v))) used since technically something like "0.1" can be passed to JDFTx to indicate non-freezing)
+    sd_tag_str = posn_line.split()[offset + 5]
+    sd = [int(bool(float(sd_tag_str))) for _ in range(3)]
     # Only trigger the try/except block if we have enough elements in the line
     if len(psplit) > offset + 6:
         # Check for constraints (protected by try/except since its genuinely more likely that an accidental edit
@@ -1098,14 +1171,14 @@ def _parse_posn_line(
         try:
             constraint_type = psplit[offset + 6]
             if constraint_type in constraint_types:
-                # Check for multiple HyperPlane constraints
+                # A HyperPlane constraint can hold several hyperplanes
                 if constraint_type == "HyperPlane":
-                    if psplit.count("HyperPlane") > 1:
-                        idcs = [i for i, v in enumerate(psplit) if v == "HyperPlane"]
-                        constraint_vector = [np.array([float(x) for x in psplit[i + 1 : i + 4]]) for i in idcs]
-                        group_names = [psplit[i + 4] for i in idcs]
-                    else:
-                        constraint_vector = np.array([float(x) for x in psplit[offset + 7 : offset + 10]])
+                    idcs = [i for i, v in enumerate(psplit) if v == "HyperPlane"]
+                    constraint_vector = [np.array([float(x) for x in psplit[i + 1 : i + 4]]) for i in idcs]
+                    # A hyperplane's group label is optional (JDFTx prints nothing for an unlabeled one)
+                    group_names = [
+                        psplit[i + 4] if i + 4 < len(psplit) and psplit[i + 4] != "HyperPlane" else None for i in idcs
+                    ]
                 else:
                     constraint_vector = np.array([float(x) for x in psplit[offset + 7 : offset + 10]])
             else:

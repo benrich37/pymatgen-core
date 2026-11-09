@@ -97,6 +97,8 @@ def condense_jdftxinputs(jdftxinput: JDFTXInfile, jdftxstructure: JDFTXStructure
             A JDFTXInfile that includes the calculation
             parameters and input structure.
     """
-    # force Cartesian coordinates
+    # Replace (rather than add to) any structure tags already in the inputs, writing in their coordinate system
     coords_type = jdftxinput.get("coords-type")
-    return jdftxinput + JDFTXInfile.from_str(jdftxstructure.get_str(in_cart_coords=(coords_type == "Cartesian")))
+    settings = jdftxinput.copy()
+    settings.strip_structure_tags()
+    return settings + JDFTXInfile.from_str(jdftxstructure.get_str(in_cart_coords=(coords_type == "Cartesian")))

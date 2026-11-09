@@ -9,11 +9,12 @@ from __future__ import annotations
 import inspect
 import math
 import pprint
+import re
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
-from monty.dev import deprecated
 
 if TYPE_CHECKING:
     from typing import Any
@@ -37,7 +38,8 @@ from pymatgen.io.jdftx._output_utils import (
     get_colon_val,
     key_exists,
 )
-from pymatgen.io.jdftx.inputs import JDFTXInfile
+from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning, element_from_species_name
+from pymatgen.io.jdftx.inputs import JDFTX_SPECIES_SITE_PROPERTY, JDFTXInfile, get_species_elements, get_species_names
 from pymatgen.io.jdftx.joutstructures import JOutStructures, _get_joutstructures_start_idx
 
 __author__ = "Ben Rich"
@@ -102,24 +104,25 @@ class JDFTXOutfileSlice:
         geom_opt_type (str | None): Type of geometric optimization performed (lattice or ionic, where lattice implies
             ionic as well unless geometry was given in direct coordinates).
         efermi (float | None): Fermi energy in eV (may be None if eigstats are not dumped).
-        egap (float | None): Band gap in eV (None if eigstats are not dumped).
+        egap (float | None): Band gap in eV (None if eigstats are not dumped, or if JDFTx reports it unavailable,
+            e.g. when there are no empty bands).
         emin (float | None): Minimum energy in eV (None if eigstats are not dumped).
         emax (float | None): Maximum energy in eV (None if eigstats are not dumped).
         homo (float | None): Energy of last band-state before Fermi level (acronym for Highest Occupied Molecular
             Orbital, even though these are not molecular orbitals and this state may not be entirely occupied)
-            (None if eigstats are not dumped).
+            (None if eigstats are not dumped, or if JDFTx reports it unavailable).
         lumo (float | None): Energy of first band-state after Fermi level (acronym for Lowest Unoccupied Molecular
             Orbital, even though these are not molecular orbitals, and this state may not be entirely unoccupied)
-            (None if eigstats are not dumped).
+            (None if eigstats are not dumped, or if JDFTx reports it unavailable, e.g. when there are no empty bands).
         homo_filling (float | None): Filling of "homo" band-state as calculated within this class object from the homo
             energy, Fermi level, electronic broadening type and electronic broadening parameter. (None if eigstats are
-            not dumped).
+            not dumped, or if the homo energy or Fermi level needed with broadening is unavailable).
         lumo_filling (float | None): Filling of "lumo" band-state as calculated within this class object from the homo
             energy, Fermi level, electronic broadening type and electronic broadening parameter. (None if eigstats are
-            not dumped).
+            not dumped, or if the lumo energy or Fermi level needed with broadening is unavailable).
         is_metal (bool | None): True if fillings of homo and lumo band-states are off-set by 1 and 0 by at least an
             arbitrary tolerance of 0.01 (ie 1 - 0.015 and 0.012 for homo/lumo fillings would be metallic, while 1-0.001
-            and 0 would not be). (Only available if eigstats was dumped).
+            and 0 would not be). (None unless eigstats were dumped and both fillings are available).
         etype (str | None): String representation of total energy-type of system. Commonly "G" (grand-canonical
             potential) for GC calculations, and "F" for canonical (fixed electron count) calculations.
         broadening_type (str): Type of broadening for electronic filling about Fermi-level requested. Either "Fermi",
@@ -146,7 +149,8 @@ class JDFTXOutfileSlice:
         nbands (int): The number of bands used in the most recent JDFTx call.
         atom_elements (list[str]): The list of each ion's element symbol in the most recent JDFTx call.
         atom_elements_int (list[int]): The list of ion's atomic numbers in the most recent JDFTx call.
-        atom_types (list[str]): Non-repeating list of each ion's element symbol in the most recent JDFTx call.
+        atom_types (list[str]): Non-repeating list of the ions' species names in the most recent JDFTx call. These
+            are element symbols, unless a species is named after its pseudopotential file (e.g. Fe1 for Fe1.upf).
         spintype (str): The spin type used in the most recent JDFTx call. Options are "none", "collinear".
         nspin (int): The number of spins used in the most recent JDFTx call.
         nat (int): The number of atoms in the most recent JDFTx call.
@@ -173,6 +177,10 @@ class JDFTXOutfileSlice:
         elecmindata (JElSteps): elecmindata from most recent JOutStructure.
         stress (np.ndarray | None): Stress tensor from most recent JOutStructure in units eV/Ang^3.
         strain (np.ndarray | None): Strain tensor from most recent JOutStructure (unitless).
+        thermostat_velocity (np.ndarray | None): Nose-Hoover chain thermostat velocities from most recent JOutStructure
+            (one per chain element, chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of
+            time) so they can be written back unchanged as the thermostat-velocity tag of a restart input. None if not
+            printed.
         nstep (int | None): (geometric) nstep from most recent JOutStructure.
         e (float | None): Energy of system "etype" from most recent JOutStructure.
         grad_k (float): The final norm of the preconditioned gradient for geometric optimization of the most recent
@@ -318,7 +326,7 @@ class JDFTXOutfileSlice:
     vibrational_modes: list[dict[str, Any]] | None = None
     vibrational_energy_components: dict[str, float] | None = None
 
-    def _get_mu(self) -> None | float:
+    def _get_mu(self) -> float | None:
         """Sets mu from most recent JOutStructure. (Equivalent to efermi)"""
         _mu = None
         if self.jstrucs is not None:
@@ -427,9 +435,11 @@ class JDFTXOutfileSlice:
                 break
         if end_line_idx is None:
             raise ValueError("Calculation did not begin for this out file slice.")
-        self.infile = JDFTXInfile.from_str(
-            "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False, skip_invalid_tags=True
-        )
+        with warnings.catch_warnings():  # Warnings on the choice of options are for whoever sets them, not readers
+            warnings.simplefilter("ignore", JDFTXOptionWarning)
+            self.infile = JDFTXInfile.from_str(
+                "\n".join(text[start_line_idx:end_line_idx]), validate_value_boundaries=False, skip_invalid_tags=True
+            )
         self.constant_lattice = True
         if "lattice-minimize" in self.infile:
             latsteps = self.infile["lattice-minimize"]["nIterations"]
@@ -759,6 +769,36 @@ class JDFTXOutfileSlice:
         if self.has_parsable_pseudo and self.pp_type in ["GBRV", "SG15"]:
             self._set_pseudo_vars_t1(text)
         # Otherwise variables requiring parsing pseudopotential output will be kept as None
+        self._check_species_elements(text)
+
+    def _check_species_elements(self, text: list[str]) -> None:
+        """Warn if a pseudopotential file is for another element than the one taken from its species' name.
+
+        JDFTx doesn't print a species' element, so pymatgen takes it from the species name (see
+        element_from_species_name). UPF files (e.g. SG15) state theirs, which JDFTx prints as
+        "'<element>' pseudopotential". JDFTx reads the pseudopotential files in the order of its species, the order of
+        atom_types.
+
+        Args:
+            text (list[str]): Output of read_file for out file.
+        """
+        section_starts = find_all_key("Reading pseudopotential file", text)
+        if self.atom_types is None or len(section_starts) != len(self.atom_types):
+            return
+        mismatches = []
+        for start, species in zip(section_starts, self.atom_types, strict=True):
+            for line in text[start + 1 : start + 3]:
+                if (match := re.match(r"\s*'(\w+)' pseudopotential", line)) is not None:
+                    element = element_from_species_name(species)
+                    if element is not None and match.group(1).lower() != element.lower():
+                        mismatches.append(f"{species} (read as {element}, file for {match.group(1)})")
+                    break
+        if mismatches:
+            warnings.warn(
+                "pymatgen takes a species' element from its name, but these species' pseudopotential files are for "
+                f"other elements: {', '.join(mismatches)}",
+                stacklevel=2,
+            )
 
     def _set_pseudo_vars_t1(self, text: list[str]) -> None:
         """Set the pseudopotential variables for SG15 and GBRV pseudopotentials.
@@ -784,8 +824,9 @@ class JDFTXOutfileSlice:
             raise ValueError("Pseudopotential data cannot be allocated without atom types.")
         if self.atom_elements is None:
             raise ValueError("Atom elements not set yet.")
-        # Explicit zipping due to pre-commit in three lines below
-        element_total_electrons = np.array([total_elec_dict[x] for x in self.atom_elements])
+        # Each species has its own pseudopotential (two species of one element can differ, e.g. in semicore states)
+        atom_species = [ion["species-id"] for ion in self.infile["ion"]] if "ion" in self.infile else self.atom_elements
+        element_total_electrons = np.array([total_elec_dict[x] for x in atom_species])
         pmg_elements = [Element(x) for x in self.atom_elements]
         element_valence_electrons = np.array(
             [
@@ -917,6 +958,8 @@ class JDFTXOutfileSlice:
             # skim_levels,
             # skip_props,
             opt_type=self.geom_opt_label,
+            # JDFTx optimizes the electrons by SCF instead of the default variational minimizer if electronic-scf is set
+            eopt_type="SCF" if "electronic-scf" in self.infile else "ElecMinimize",
             init_struc=self.initial_structure,
             is_md=self.is_md,
             has_igp="ionic-gaussian-potential" in self.infile,
@@ -981,20 +1024,33 @@ class JDFTXOutfileSlice:
         self.lumo_filling = 0
 
     def _set_orb_fillings_broad(
-        self, nspin: float, ehomo: float, elumo: float, efermi: float, broadening_type: str, broadening: float
+        self,
+        nspin: float,
+        ehomo: float | None,
+        elumo: float | None,
+        efermi: float | None,
+        broadening_type: str,
+        broadening: float,
     ) -> None:
         """Set the orbital fillings with broadening.
 
+        A filling is set to None if an energy it needs is None (JDFTx reports e.g. the LUMO as unavailable when there
+        are no empty bands).
+
         Args:
             nspin (float): Number of spins in calculation.
-            ehomo (float): Energy of the highest occupied molecular orbital.
-            elumo (float): Energy of the lowest unoccupied molecular orbital.
-            efermi (float): Fermi energy.
+            ehomo (float | None): Energy of the highest occupied molecular orbital.
+            elumo (float | None): Energy of the lowest unoccupied molecular orbital.
+            efermi (float | None): Fermi energy.
             broadening_type (str): Type of broadening.
             broadening (float): Broadening parameter.
         """
-        self.homo_filling = (2 / nspin) * self._calculate_filling(broadening_type, broadening, ehomo, efermi)
-        self.lumo_filling = (2 / nspin) * self._calculate_filling(broadening_type, broadening, elumo, efermi)
+        self.homo_filling, self.lumo_filling = (
+            None
+            if eig is None or efermi is None
+            else (2 / nspin) * self._calculate_filling(broadening_type, broadening, eig, efermi)
+            for eig in (ehomo, elumo)
+        )
 
     def _set_orb_fillings(self) -> None:
         """Set the orbital fillings.
@@ -1005,25 +1061,15 @@ class JDFTXOutfileSlice:
             if self.nspin is not None:
                 if self.broadening_type is not None:
                     if self.broadening is not None:
-                        if self.efermi is not None:
-                            if self.homo is not None:
-                                if self.lumo is not None:
-                                    self._set_orb_fillings_broad(
-                                        self.nspin,
-                                        self.homo,
-                                        self.lumo,
-                                        self.efermi,
-                                        self.broadening_type,
-                                        self.broadening,
-                                    )
-                                else:
-                                    raise ValueError(
-                                        "Cannot set orbital fillings with broadening with self.lumo as None"
-                                    )
-                            else:
-                                raise ValueError("Cannot set orbital fillings with broadening with self.homo as None")
-                        else:
-                            raise ValueError("Cannot set orbital fillings with broadening with self.efermi as None")
+                        # homo, lumo and efermi may be None (unavailable), leaving the fillings that need them None
+                        self._set_orb_fillings_broad(
+                            self.nspin,
+                            self.homo,
+                            self.lumo,
+                            self.efermi,
+                            self.broadening_type,
+                            self.broadening,
+                        )
                     else:
                         raise ValueError("Cannot set orbital fillings with broadening with self.broadening as None")
                 else:
@@ -1058,15 +1104,19 @@ class JDFTXOutfileSlice:
         Args:
             text (list[str]): Output of read_file for out file.
         """
+        # JDFTx always prints the number of bands it uses in the "nBands:" line. The echoed "elec-n-bands <n>
+        # [<multiplier>]" command is only a fallback, since <n> = 0 means a (multiplied) default number of bands.
+        lines = find_all_key("nBands:", text)
+        if len(lines):
+            self.nbands = int(text[lines[0]].split("nBands:")[1].split()[0])
+            return
         lines = find_all_key("elec-n-bands", text)
         if len(lines):
-            line = lines[0]
-            nbands = int(text[line].strip().split()[-1].strip())
-        else:
-            lines = find_all_key("nBands:", text)
-            line = lines[0]
-            nbands = int(text[line].split("nBands:")[1].strip().split()[0].strip())
-        self.nbands = nbands
+            nbands = int(text[lines[0]].split()[1])
+            if nbands > 0:
+                self.nbands = nbands
+                return
+        warnings.warn("Could not determine the number of bands from the out file.", stacklevel=2)
 
     def _set_atom_vars(self, text: list[str]) -> None:
         """Set the atom variables.
@@ -1081,12 +1131,13 @@ class JDFTXOutfileSlice:
         if endline is None:
             raise ValueError("Unable to find end line for atom lines")
         lines = find_first_range_key("ion ", text, startline=startline, endline=endline)
-        atom_elements = [text[x].split()[1] for x in lines]
+        species_names = [text[x].split()[1] for x in lines]
+        atom_elements, _ = get_species_elements(species_names)
         self.nat = len(atom_elements)
         atom_coords = [text[x].split()[2:5] for x in lines]
         self.atom_coords_initial = np.array(atom_coords, dtype=float)
         atom_types = []
-        for x in atom_elements:
+        for x in species_names:
             if x not in atom_types:
                 atom_types.append(x)
         self.atom_elements = atom_elements
@@ -1175,16 +1226,15 @@ class JDFTXOutfileSlice:
         """Determine if the system is a metal based on the fillings of homo and lumo.
 
         Returns:
-            bool: True if system is metallic.
+            bool | None: True if system is metallic, None if eigstats were not dumped or a filling is unavailable.
         """
         tol_partial = 0.01
         if self.has_eigstats:
             if self.nspin is not None:
-                if self.homo_filling is not None:
-                    if self.lumo_filling is not None:
-                        return self._determine_is_metal(tol_partial, self.nspin, self.homo_filling, self.lumo_filling)
-                    raise ValueError("Cannot determine if system is metal - self.lumo_filling undefined")
-                raise ValueError("Cannot determine if system is metal - self.homo_filling undefined")
+                # A filling is None if an energy it needs was unavailable, so metallicity can't be determined
+                if self.homo_filling is None or self.lumo_filling is None:
+                    return None
+                return self._determine_is_metal(tol_partial, self.nspin, self.homo_filling, self.lumo_filling)
             raise ValueError("Cannot determine if system is metal - self.nspin undefined")
         return None
 
@@ -1281,20 +1331,73 @@ class JDFTXOutfileSlice:
             JDFTXInfile: A JDFTXInfile object representing the input parameters of the JDFTXOutfile.
         """
         # Use internal infile as a reference for calculation parameters
-        base_infile = self.infile.copy()
-        # Strip references to the input
-        base_infile.strip_structure_tags()
+        with warnings.catch_warnings():  # Warnings on the choice of options were for whoever set them
+            warnings.simplefilter("ignore", JDFTXOptionWarning)
+            base_infile = self.infile.copy()
         if self.structure is None:
+            base_infile.strip_structure_tags()
             return base_infile
-        # Optimization restrictions and velocities are carried over the structure site properties
-        add_infile = JDFTXInfile.from_structure(self.structure)
+        # Optimization restrictions and velocities are carried over the structure site properties. Ions are written in
+        # the input's coordinate system, so they match the positions JDFTx printed
+        in_cart_coords = base_infile.get("coords-type", "Lattice").lower() == "cartesian"
+        add_infile = JDFTXInfile.from_structure(self.structure, write_cart_coords=in_cart_coords)
+        printed_ions = self._get_printed_ions(in_cart_coords)
+        if printed_ions is not None:
+            add_infile["ion"] = printed_ions
+        if self.initial_structure is not None and np.array_equal(
+            self.structure.lattice.matrix, self.initial_structure.lattice.matrix
+        ):
+            # Keep the input's own lattice and latt-scale tags for an unchanged lattice, so the lattice stays exact
+            del add_infile["lattice"]
+            for tag in ("ion", "coords-type"):
+                if tag in base_infile:
+                    del base_infile[tag]
+        else:
+            base_infile.strip_structure_tags()
         infile = base_infile + add_infile
-        # infile +=
-        # Set most recent thermostat velocity if MD with Nose-Hoover
+        # Set most recent thermostat velocity if MD with Nose-Hoover (none is printed for some runs)
         if self.is_md and self.infile["ionic-dynamics"]["statMethod"] == "NoseHoover":
             tv = self.jstrucs.thermostat_velocity
-            infile["thermostat-velocity"] = {"v1": tv[0], "v2": tv[1], "v3": tv[2]}
+            if tv is not None:
+                infile["thermostat-velocity"] = {"v1": tv[0], "v2": tv[1], "v3": tv[2]}
         return infile
+
+    def _get_printed_ions(self, in_cart_coords: bool) -> list[dict] | None:
+        """Get the final ion tags exactly as JDFTx printed them, if they still describe the final structure.
+
+        Converting positions to pymatgen units and back can change them in the last digit, so a restart input uses the
+        values JDFTx printed (as if they were copied into a new input file) unless the structure has been changed.
+
+        Args:
+            in_cart_coords (bool): Whether the ion tags are written in Cartesian coordinates.
+
+        Returns:
+            list[dict] | None: Ion tags as printed by JDFTx, or None if they can't be used.
+        """
+        jstruc = self.jstrucs.slices[-1] if self.jstrucs is not None and self.jstrucs.slices else None
+        lines = getattr(jstruc, "_printed_ion_lines", None)
+        if self.structure is None or not lines:
+            return None
+        if jstruc._printed_coords_type != ("cartesian" if in_cart_coords else "lattice"):
+            return None
+        try:
+            ions = JDFTXInfile.from_str("\n".join(lines), dont_require_structure=True, validate_value_boundaries=False)
+        except ValueError as err:
+            warnings.warn(
+                f"Could not read the printed ion positions, using the parsed structure instead: {err}", stacklevel=2
+            )
+            return None
+        ion_tags = ions["ion"]
+        positions = np.array([[ion[f"x{k}"] for k in range(3)] for ion in ion_tags])
+        expected = self.structure.cart_coords / bohr_to_ang if in_cart_coords else self.structure.frac_coords
+        species_names = [name.lower() for name in get_species_names(self.structure)]  # JDFTx reads them ignoring case
+        if (
+            [ion["species-id"].lower() for ion in ion_tags] != species_names
+            or positions.shape != expected.shape
+            or not np.allclose(positions, expected, rtol=0, atol=1e-8)
+        ):
+            return None  # The structure has been changed since it was parsed
+        return ion_tags
 
     def _check_solvation(self) -> bool:
         """Check for implicit solvation.
@@ -1326,10 +1429,6 @@ class JDFTXOutfileSlice:
             else:
                 dct[fld] = value
         return dct
-
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
 
     # TODO: Re-do this now that there are no properties
     def __repr__(self) -> str:
@@ -1412,8 +1511,11 @@ def _get_init_structure(pre_out_slice: list[str]) -> Structure | None:
     try:
         lat_mat = _get_initial_lattice(pre_out_slice)
         coords = _get_initial_coords(pre_out_slice)
-        species = _get_initial_species(pre_out_slice)
-        return Structure(lattice=lat_mat, species=species, coords=coords, coords_are_cartesian=True)
+        elements, species_names = get_species_elements(_get_initial_species(pre_out_slice))
+        structure = Structure(lattice=lat_mat, species=elements, coords=coords, coords_are_cartesian=True)
+        if species_names is not None:  # Species not named after their element (e.g. Fe1)
+            structure.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
+        return structure
     except AttributeError:
         return None
 

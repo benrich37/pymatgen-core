@@ -7,6 +7,9 @@ import pytest
 from pymatgen.io.jdftx.outputs import JDFTXOutputs, implemented_store_vars
 
 from .outputs_test_utils import (
+    h2_nbands_multiplier_calc_dir,
+    h2_nbands_multiplier_calc_dir_bandprojections_metadata,
+    h2_nbands_multiplier_calc_dir_known_paths,
     n2_ex_calc_dir,
     n2_ex_calc_dir_bandprojections_metadata,
     n2_ex_calc_dir_known_paths,
@@ -24,7 +27,11 @@ _implemented_store_vars = [v for v in implemented_store_vars if v != "bandstruct
 
 @pytest.mark.parametrize(
     ("calc_dir", "known_paths"),
-    [(n2_ex_calc_dir, n2_ex_calc_dir_known_paths), (nh3_ex_calc_dir, nh3_ex_calc_dir_known_paths)],
+    [
+        (n2_ex_calc_dir, n2_ex_calc_dir_known_paths),
+        (nh3_ex_calc_dir, nh3_ex_calc_dir_known_paths),
+        (h2_nbands_multiplier_calc_dir, h2_nbands_multiplier_calc_dir_known_paths),
+    ],
 )
 def test_known_paths(calc_dir: Path, known_paths: dict):
     """Test that the known paths are correct."""
@@ -79,6 +86,7 @@ def test_bandstructure_construction(calc_dir: Path, store_vars: list[str]):
     [
         (n2_ex_calc_dir, n2_ex_calc_dir_bandprojections_metadata),
         (nh3_ex_calc_dir, nh3_ex_calc_dir_bandprojections_metadata),
+        (h2_nbands_multiplier_calc_dir, h2_nbands_multiplier_calc_dir_bandprojections_metadata),
     ],
 )
 def test_store_bandprojections(calc_dir: Path, known_metadata: dict):
@@ -91,9 +99,17 @@ def test_store_bandprojections(calc_dir: Path, known_metadata: dict):
     assert pytest.approx(jo.bandProjections[0, 0, 0]) == known_metadata["first val"]
 
 
-@pytest.mark.parametrize("calc_dir", [n2_ex_calc_dir, nh3_ex_calc_dir])
+@pytest.mark.parametrize("calc_dir", [n2_ex_calc_dir, nh3_ex_calc_dir, h2_nbands_multiplier_calc_dir])
 def test_store_eigenvals(calc_dir: Path):
     jo = JDFTXOutputs.from_calc_dir(calc_dir, store_vars=["eigenvals"])
     assert hasattr(jo, "eigenvals")
     eigenvals = jo.eigenvals
     assert eigenvals is not None
+
+
+def test_nbands_multiplier():
+    """Test that a default number of bands scaled by an elec-n-bands multiplier is read from the out file."""
+    jo = JDFTXOutputs.from_calc_dir(h2_nbands_multiplier_calc_dir, store_vars=["eigenvals", "bandProjections"])
+    assert jo.outfile.nbands == 3
+    assert jo.eigenvals.shape == (1, 3)
+    assert jo.bandProjections.shape == (1, 3, 2)

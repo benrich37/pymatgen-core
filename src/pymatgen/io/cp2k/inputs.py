@@ -32,7 +32,6 @@ import textwrap
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from monty.dev import deprecated
 from monty.io import zopen
 from monty.json import MSONable
 
@@ -196,10 +195,13 @@ class KeywordList(MSONable):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, type(self)):
             return NotImplemented
-        return all(k == o for k, o in zip(self.keywords, other.keywords, strict=True))
+        return len(self.keywords) == len(other.keywords) and all(
+            k == o for k, o in zip(self.keywords, other.keywords, strict=True)
+        )
 
     def __add__(self, other):
-        return self.extend(other)
+        self.extend(other)
+        return self
 
     def __len__(self):
         return len(self.keywords)
@@ -484,8 +486,10 @@ class Section(MSONable):
         for key, val in dct.items():
             if isinstance(val, str | float | bool | int | list):
                 val = Keyword(key, val)
-            if isinstance(val, Keyword | Section | KeywordList | SectionList):
+            if isinstance(val, Keyword | KeywordList):
                 self.add(val)
+            elif isinstance(val, Section | SectionList):
+                self.insert(val)
             elif isinstance(val, dict):
                 self[key].inc(val)
             else:
@@ -604,11 +608,18 @@ class SectionList(MSONable):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SectionList):
             return NotImplemented
-        return all(k == o for k, o in zip(self.sections, other.sections, strict=True))
+        return len(self.sections) == len(other.sections) and all(
+            k == o for k, o in zip(self.sections, other.sections, strict=True)
+        )
 
     def __add__(self, other):
         self.append(other)
         return self
+
+    def silence(self):
+        """Silence all sections in the list."""
+        for section in self.sections:
+            section.silence()
 
     def __len__(self):
         return len(self.sections)
@@ -751,7 +762,7 @@ class Cp2kInput(Section):
                     elif isinstance(self.by_path(current), SectionList):
                         self.by_path(current)[-1][kwd.name] = KeywordList(keywords=[tmp, kwd])
                     else:
-                        self.by_path(current)[kwd.name] = KeywordList(keywords=[kwd, tmp])
+                        self.by_path(current)[kwd.name] = KeywordList(keywords=[tmp, kwd])
                 elif isinstance(self.by_path(current), SectionList):
                     self.by_path(current)[-1].keywords[kwd.name] = kwd
                 else:
@@ -1336,7 +1347,7 @@ class Kind(Section):
 
         keywords = {
             "ELEMENT": Keyword("ELEMENT", specie.__str__()),
-            "MAGNETIZATION": Keyword("MAGNETIZATION", magnetization),
+            "MAGNETIZATION": Keyword("MAGNETIZATION", self.magnetization),
             "GHOST": Keyword("GHOST", ghost),
         } | (keywords or {})
         if basis_set:
@@ -1349,9 +1360,7 @@ class Kind(Section):
             )
         if aux_basis:
             keywords["BASIS_SET"] += (
-                Keyword("BASIS_SET", f"BASIS_SET AUX_FIT {aux_basis}")
-                if isinstance(aux_basis, str)
-                else aux_basis.get_keyword()
+                Keyword("BASIS_SET", f"AUX_FIT {aux_basis}") if isinstance(aux_basis, str) else aux_basis.get_keyword()
             )
 
         kind_name = alias or specie.__str__()
@@ -1399,8 +1408,8 @@ class DftPlusU(Section):
             subsections: additional subsections
         """
         name = "DFT_PLUS_U"
-        self.eps_u_ramping = 1e-5
-        self.init_u_ramping_each_scf = False
+        self.eps_u_ramping = eps_u_ramping
+        self.init_u_ramping_each_scf = init_u_ramping_each_scf
         self.l = l
         self.u_minus_j = u_minus_j
         self.u_ramping = u_ramping
@@ -1591,11 +1600,6 @@ class VHartreeCube(Section):
         )
 
 
-@deprecated(VHartreeCube, "Deprecated on 2024-03-29.", deadline=(2025, 3, 29))
-class V_Hartree_Cube(VHartreeCube):
-    pass
-
-
 class MOCubes(Section):
     """Controls printing of the molecular orbital eigenvalues."""
 
@@ -1632,11 +1636,6 @@ class MOCubes(Section):
         )
 
 
-@deprecated(MOCubes, "Deprecated on 2024-03-29.", deadline=(2025, 3, 29))
-class MO_Cubes(MOCubes):
-    pass
-
-
 class EDensityCube(Section):
     """Controls printing of the electron density cube file."""
 
@@ -1653,11 +1652,6 @@ class EDensityCube(Section):
             keywords=keywords or {},
             **kwargs,
         )
-
-
-@deprecated(EDensityCube, "Deprecated on 2024-03-29.", deadline=(2025, 3, 29))
-class E_Density_Cube(EDensityCube):
-    pass
 
 
 class Smear(Section):
@@ -1760,7 +1754,7 @@ class BrokenSymmetry(Section):
         el = el if isinstance(el, Element) else Element(el)
 
         def f(x):
-            return {"s": 0, "p": 1, "d": 2, "f": 4}.get(x)
+            return {"s": 0, "p": 1, "d": 2, "f": 3}.get(x)
 
         def f2(x):
             return {0: 2, 1: 6, 2: 10, 3: 14}.get(x)
@@ -1806,12 +1800,13 @@ class BrokenSymmetry(Section):
 
         if spin:
             for idx in reversed(range(len(nel_alpha))):
-                nel_alpha[idx] += min((spin, f3(l_alpha[idx]) - oxi_state))
-                nel_beta[idx] -= min((spin, f3(l_beta[idx]) - oxi_state))
-                if spin > 0:
-                    spin -= min((spin, f3(l_alpha[idx]) - oxi_state))
-                else:
-                    spin += min((spin, f3(l_beta[idx]) - oxi_state))
+                if not spin:
+                    break
+                # Move electrons between channels symmetrically in the sign of spin
+                shift = (1 if spin > 0 else -1) * min(abs(spin), max(f3(l_alpha[idx]) - oxi_state, 0))
+                nel_alpha[idx] += shift
+                nel_beta[idx] -= shift
+                spin -= shift
 
         return BrokenSymmetry(
             l_alpha=l_alpha,
@@ -1847,11 +1842,6 @@ class XCFunctional(Section):
             repeats=False,
             **kwargs,
         )
-
-
-@deprecated(XCFunctional, "Deprecated on 2024-03-29.", deadline=(2025, 3, 29))
-class Xc_Functional(XCFunctional):
-    pass
 
 
 class PBE(Section):
@@ -1957,8 +1947,13 @@ class Kpoints(Section):
         self.verbose = verbose
         self.wavefunctions = wavefunctions
 
+        # A bare MONKHORST-PACK/MACDONALD scheme takes the mesh from a single kpts entry. Schemes that
+        # already carry the mesh (e.g. from from_kpoints) or need none (GAMMA) are written as is.
+        scheme_kwd = Keyword("SCHEME", scheme)
         if len(kpts) == 1:
-            keywords["SCHEME"] = Keyword("SCHEME", scheme, *kpts[0])
+            if scheme.upper() in {"MONKHORST-PACK", "MACDONALD"}:
+                scheme_kwd = Keyword("SCHEME", scheme, *kpts[0])
+            keywords["SCHEME"] = scheme_kwd
         elif len(kpts) > 1:
             keywords["KPOINT"] = KeywordList(
                 [Keyword("KPOINT", *k, w) for k, w in zip(self.kpts, self.weights, strict=True)]
@@ -1967,7 +1962,7 @@ class Kpoints(Section):
             raise ValueError("No k-points provided!")
 
         keywords |= {
-            "SCHEME": Keyword("SCHEME", scheme),
+            "SCHEME": scheme_kwd,
             "EPS_GEO": Keyword("EPS_GEO", eps_geo),
             "FULL_GRID": Keyword("FULL_GRID", full_grid),
             "PARALLEL_GROUP_SIZE": Keyword("PARALLEL_GROUP_SIZE", parallel_group_size),
@@ -2086,11 +2081,6 @@ class KpointSet(Section):
         )
 
 
-@deprecated(KpointSet, "Kpoint_Set has been deprecated on 2024-03-16", deadline=(2025, 3, 16))
-class Kpoint_Set(KpointSet):
-    pass
-
-
 class BandStructure(Section):
     """Specify high symmetry paths for outputting the band structure in CP2K."""
 
@@ -2168,11 +2158,6 @@ class BandStructure(Section):
                 "Unsupported k-point style. Must be line-mode or explicit k-points (reciprocal/cartesian)."
             )
         return cls(kpoint_sets=kpoint_sets, filename="BAND.bs")
-
-
-@deprecated(BandStructure, "Deprecated on 2024-03-29.", deadline=(2025, 3, 29))
-class Band_Structure(BandStructure):
-    pass
 
 
 @dataclass

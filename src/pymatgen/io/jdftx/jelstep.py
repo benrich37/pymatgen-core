@@ -13,12 +13,27 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
-from monty.dev import deprecated
 
 from pymatgen.core.units import Ha_to_eV
 from pymatgen.io.jdftx._output_utils import get_colon_val
 
 __author__ = "Ben Rich"
+
+# Keyword JDFTx logs after "<opt_type>: " on each step of an electronic optimizer: electronic-minimize logs
+# "ElecMinimize: Iter: <n> ..." and electronic-scf logs "SCF: Cycle: <n> ..." (core/Pulay.h)
+_eopt_step_keys = {"ElecMinimize": "Iter", "SCF": "Cycle"}
+
+
+def _get_iter_flag(opt_type: str) -> str:
+    """Return the flag that starts each step line of an electronic optimizer (e.g. "SCF: Cycle:").
+
+    Args:
+        opt_type (str): The type of electronic optimizer ("ElecMinimize" or "SCF").
+
+    Returns:
+        str: The flag that starts each step line.
+    """
+    return f"{opt_type}: {_eopt_step_keys.get(opt_type, 'Iter')}:"
 
 
 @dataclass
@@ -29,16 +44,16 @@ class JElStep:
     SCF step.
 
     Attributes:
-        opt_type (str | None): The type of electronic minimization step
-            (almost always ElecMinimize).
+        opt_type (str | None): The type of electronic optimizer ("ElecMinimize" for electronic-minimize, "SCF" for
+            electronic-scf).
         etype (str | None): The type of energy component (G, F, or Etot).
         nstep (int | None): The SCF step number.
         e (float | None): The total electronic energy in eV.
         grad_k (float | None): The gradient of the Kohn-Sham energy (along the
-            line minimization direction).
-        alpha (float | None): The step length.
+            line minimization direction). None for SCF steps.
+        alpha (float | None): The step length. None for SCF steps.
         linmin (float | None): Normalized line minimization direction / energy
-            gradient projection (-1 for perfectly opposite, 1 for perfectly aligned).
+            gradient projection (-1 for perfectly opposite, 1 for perfectly aligned). None for SCF steps.
         t_s (float | None): Time elapsed from beginning of JDFTx calculation.
         mu (float | None): The chemical potential in eV.
         nelectrons (float | None): The number of electrons.
@@ -82,7 +97,7 @@ class JElStep:
         instance = cls()
         instance.opt_type = opt_type
         instance.etype = etype
-        _iter_flag = f"{opt_type}: Iter: "
+        _iter_flag = _get_iter_flag(opt_type)
         for i, line_text in enumerate(lines_collect):
             if instance._is_iter_line(i, line_text, _iter_flag):
                 instance._read_iter_line(line_text)
@@ -123,10 +138,14 @@ class JElStep:
         # data.pop(f"{self.etype}")
         # self.unread_data["Iter"] = parse_data_generic(data, self)
         ########
+        # Only read what follows "<opt_type>: ", since that prefix can itself look like a value label ("SCF: " ends
+        # in "F: ")
+        step_key = _eopt_step_keys.get(str(self.opt_type), "Iter")
+        line_text = line_text.split(f"{self.opt_type}: ", maxsplit=1)[-1]
         # Quickly fail so JOutStructure can handle Etot parsing
         if f"{self.etype}: " not in line_text:
             raise RuntimeError(f"Could not find {self.etype} in line_text")
-        nstep_float = get_colon_val(line_text, "Iter: ")
+        nstep_float = get_colon_val(line_text, f"{step_key}: ")
         if isinstance(nstep_float, float):
             self.nstep = int(nstep_float)
         elif nstep_float is None:
@@ -204,7 +223,7 @@ class JElStep:
             fillings_line (str): A line of text from a JDFTx out file containing the electronic
             minimization data.
         """
-        _fillings_line = fillings_line.split("magneticMoment: [ ")[1].split(" ]")[0].strip()
+        _fillings_line = fillings_line.split("magneticMoment: [ ")[1].split(" ]", maxsplit=1)[0].strip()
         self.abs_magneticmoment = get_colon_val(_fillings_line, "Abs: ")
         self.tot_magneticmoment = get_colon_val(_fillings_line, "Tot: ")
 
@@ -245,10 +264,6 @@ class JElStep:
             else:
                 dct[fld] = value
         return dct
-
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
 
     def __str__(self) -> str:
         """
@@ -433,10 +448,6 @@ class JElSteps:
                 dct[fld] = value
         return dct
 
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
-
     def __getitem__(self, key: int | str) -> JElStep | Any:
         """Return item.
 
@@ -535,7 +546,7 @@ def _gather_JElSteps_line_collections(opt_type: str, text_slice: list[str]) -> t
     """
     lines_collect = []
     line_collections = []
-    _iter_flag = f"{opt_type}: Iter:"
+    _iter_flag = _get_iter_flag(opt_type)
     for line_text in text_slice:
         if len(line_text.strip()):
             lines_collect.append(line_text)
@@ -547,7 +558,7 @@ def _gather_JElSteps_line_collections(opt_type: str, text_slice: list[str]) -> t
     return line_collections, lines_collect
 
 
-def _parse_ending_lines(ending_lines: list[str], opt_type: str) -> tuple[None | bool, None | str]:
+def _parse_ending_lines(ending_lines: list[str], opt_type: str) -> tuple[bool | None, str | None]:
     """Parse ending lines.
 
     Parses the ending lines of text from a JDFTx out file corresponding to
@@ -601,7 +612,7 @@ def _is_stopping_line(i: int, line_text: str, opt_type: str) -> bool:
     return f"{opt_type}:" in line_text and "Stopping" in line_text
 
 
-def _read_converged_line(line_text: str) -> tuple[bool, None | str]:
+def _read_converged_line(line_text: str) -> tuple[bool, str | None]:
     """Set class variables converged and converged_reason.
 
     Args:
@@ -609,11 +620,11 @@ def _read_converged_line(line_text: str) -> tuple[bool, None | str]:
         convergence for a JDFTx optimization step.
     """
     converged = True
-    converged_reason = line_text.split("(")[1].split(")")[0].strip()
+    converged_reason = line_text.split("(")[1].split(")", maxsplit=1)[0].strip()
     return converged, converged_reason
 
 
-def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, None | str]:
+def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, str | None]:
     """Set class variables converged and converged_reason.
 
     Args:
@@ -621,7 +632,7 @@ def _read_stopping_line(line_text: str, opt_type: str) -> tuple[bool, None | str
         stopping for a JDFTx optimization step.
     """
     converged = False
-    converged_reason = line_text.split(f"{opt_type}:")[1].split("Stopping")[0].rstrip("(").strip()
+    converged_reason = line_text.split(f"{opt_type}:")[1].split("Stopping", maxsplit=1)[0].rstrip("(").strip()
     if "roundoff" in converged_reason:
         converged = True
     return converged, converged_reason

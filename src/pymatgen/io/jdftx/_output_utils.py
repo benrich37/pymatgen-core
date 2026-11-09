@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
+from monty.dev import deprecated
 
 from pymatgen.core.units import Ha_to_eV
 from pymatgen.electronic_structure.core import Orbital
@@ -54,7 +55,7 @@ def read_file(file_name: str) -> list[str]:
     text: list[str]
         list of strings from file
     """
-    with open(file_name) as f:
+    with open(file_name, encoding="utf-8") as f:
         text = f.readlines()
     f.close()
     return text
@@ -148,27 +149,13 @@ def get_colon_val(linetext: str, lkey: str) -> float | np.float64 | None:
 get_colon_var_t1 = get_colon_val
 
 
-# This function matches the format of the generic "is_<x>_start_line" functions specific to
-# the JOutStructure object initialization, but is not moved to the joutstructure module
-# as it is also used in methods for other JDFTx IO modules (e.g. JOutStructures) so it
-# is kept here to avoid circular imports.
+@deprecated(
+    message="JDFTx skips the Lowdin block when no pseudopotential has atomic orbitals, so it is no longer used to "
+    "find ionic steps.",
+    deadline=(2027, 10, 24),
+)
 def is_lowdin_start_line(line_text: str) -> bool:
-    """Return True if the line_text is the start of Lowdin log message.
-
-    Return True if the line_text is the start of a Lowdin population analysis
-    in a JDFTx out file.
-
-    Parameters
-    ----------
-    line_text: str
-        A line of text from a JDFTx out file
-
-    Returns
-    -------
-    is_line: bool
-        True if the line_text is the start of a Lowdin population analysis in a
-        JDFTx out file
-    """
+    """Deprecated. Return True if the line_text is the start of a Lowdin population analysis in a JDFTx out file."""
     return "#--- Lowdin population analysis ---" in line_text
 
 
@@ -503,7 +490,7 @@ def _parse_kptsfrom_bandprojections_file(bandfile_filepath: str | Path) -> tuple
     wk_list: list[float] = []
     k_points_list: list[NDArray] = []
     kpt_lines = []
-    with open(bandfile_filepath) as f:
+    with open(bandfile_filepath, encoding="utf-8") as f:
         for line in f:
             if line.startswith("#") and ";" in line:
                 _line = line.split(";")[0].lstrip("#")
@@ -530,7 +517,7 @@ def _is_complex_bandfile_filepath(bandfile_filepath: str | Path) -> bool:
     """
     hash_lines = 0
     val = True
-    with open(bandfile_filepath) as f:
+    with open(bandfile_filepath, encoding="utf-8") as f:
         for _i, line in enumerate(f):
             if "#" in line:
                 hash_lines += 1
@@ -557,7 +544,7 @@ orb_ref_to_o_dict = {
     "dyz": int(Orbital.dyz),
     "dz2": int(Orbital.dz2),
     "dxz": int(Orbital.dxz),
-    "dx2-y2": int(Orbital.dx2),
+    "dx2-y2": int(Orbital.dx2_y2),
     # Keep the f-orbitals arbitrary-ish until they get designated names in pymatgen.
     orb_ref_list[-1][0]: int(Orbital.f_3),
     orb_ref_list[-1][1]: int(Orbital.f_2),
@@ -789,7 +776,8 @@ def _get_eigstats_varsdict(text: list[str]) -> tuple[bool, dict[str, float | Non
         prefix (str): Prefix for the eigStats section in the out file.
 
     Returns:
-        dict[str, float | None]: Dictionary of eigenvalue statistics.
+        dict[str, float | None]: Dictionary of eigenvalue statistics. A statistic JDFTx printed as "unavailable"
+            (e.g. LUMO and mu when there are no empty bands) is None.
     """
     has_eigstats = False
     varsdict: dict[str, float | None] = {}
@@ -806,7 +794,8 @@ def _get_eigstats_varsdict(text: list[str]) -> tuple[bool, dict[str, float | Non
         line_end = lines1[line_start_rel_idx + 1] if len(lines1) >= line_start_rel_idx + 2 else len(lines1) - 1
         _varsdict = _init_dict_from_colon_dump_lines([text[idx] for idx in range(line_start, line_end)])
         for key in _varsdict:
-            varsdict[eigstats_keymap[key]] = float(_varsdict[key]) * Ha_to_eV
+            value = _varsdict[key]
+            varsdict[eigstats_keymap[key]] = None if value == "unavailable" else float(value) * Ha_to_eV
         has_eigstats = all(eigstats_keymap[key] in varsdict for key in eigstats_keymap) and all(
             eigstats_keymap[key] is not None for key in eigstats_keymap
         )

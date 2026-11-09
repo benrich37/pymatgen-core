@@ -7,7 +7,12 @@ import re
 
 import pytest
 
-from pymatgen.io.jdftx._output_utils import _parse_all_generic, find_first_range_key, get_start_lines
+from pymatgen.io.jdftx._output_utils import (
+    _parse_all_generic,
+    find_first_range_key,
+    get_start_lines,
+    is_lowdin_start_line,
+)
 from pymatgen.io.jdftx.joutstructures import _get_joutstructures_start_idx
 from pymatgen.io.jdftx.outputs import _find_jdftx_out_file
 
@@ -26,7 +31,7 @@ def test_get_start_lines():
         get_start_lines([])
     with pytest.raises(ValueError, match=re.escape("No JDFTx calculations found in file.")):
         get_start_lines(["\n", "\n"])
-    with open(noeigstats_outfile_path) as f:
+    with open(noeigstats_outfile_path, encoding="utf-8") as f:
         outfile_text = list.copy(list(f))
     assert get_start_lines(outfile_text)[0] == 1
     assert len(get_start_lines(outfile_text)) == 1
@@ -102,3 +107,10 @@ def test_parse_all_generic():
         "Tot": "-1.00000 ]",
     }
     assert _parse_all_generic(ex_line) == ex_out
+
+
+def test_is_lowdin_start_line_deprecated():
+    with pytest.warns(FutureWarning, match="is_lowdin_start_line is deprecated"):
+        assert is_lowdin_start_line("#--- Lowdin population analysis ---")
+    with pytest.warns(FutureWarning, match="is_lowdin_start_line is deprecated"):
+        assert not is_lowdin_start_line("# oxidation-state H +0.000")

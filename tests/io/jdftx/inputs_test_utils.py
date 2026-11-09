@@ -57,9 +57,11 @@ ex_infile1_knowns = {
     "fluid": {"type": "LinearPCM"},
     "pcm-variant": "CANDLE",
     "fluid-solvent": [{"name": "H2O"}],
-    "fluid-cation": {"name": "Na+", "concentration": 0.5},
-    "fluid-anion": {"name": "F-", "concentration": 0.5},
-    "initial-magnetic-moments": "C 1 O 1",
+    "fluid-cation": [{"name": "Na+", "concentration": 0.5}],
+    "fluid-anion": [{"name": "F-", "concentration": 0.5}],
+    "initial-magnetic-moments": {
+        "species-values": [{"species-id": "C", "values": [1.0]}, {"species-id": "O", "values": [1.0]}]
+    },
 }
 
 ex_infile2_fname = ex_in_files_dir / "example_sp.in"

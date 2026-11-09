@@ -151,6 +151,19 @@ nh3_ex_calc_dir_bandprojections_metadata = {
     "first val": -0.0688767 + 0.9503786j,
 }
 
+# Natively generated H2 run (see the notes on generating fixtures) with "elec-n-bands 0 1.5": JDFTx scales the
+# default 2 bands (one atomic orbital per H) by 1.5, so neither token of the echoed command is the number of bands.
+h2_nbands_multiplier_calc_dir = ex_calc_dirs_dir / Path("H2_nbands_multiplier")
+h2_nbands_multiplier_calc_dir_known_paths = {
+    "bandProjections": h2_nbands_multiplier_calc_dir / Path("bandProjections"),
+    "eigenvals": h2_nbands_multiplier_calc_dir / Path("eigenvals"),
+}
+h2_nbands_multiplier_calc_dir_bandprojections_metadata = {
+    "orb_label_list": ["H#1(s)", "H#2(s)"],
+    "shape": (1, 3, 2),
+    "first val": 0.8709816,
+}
+
 example_sp_outfile_path = ex_out_files_dir / Path("example_sp.out")
 example_sp_outfile_known = {
     "nat": 16,
@@ -304,6 +317,38 @@ etot_etype_outfile_known_simple = {
     "elec_grad_k": 2.991e-07,
 }
 
+# Minimal H2 runs (10 bohr isolated box, 10 Ha) made with each electronic optimizer: electronic-minimize and
+# electronic-scf (both with Fermi smearing), and electronic-scf with two ionic steps (no smearing, so JDFTx labels
+# the energy "Etot")
+eopt_elecmin_outfile_path = ex_out_files_dir / Path("eopt_elecmin.out")
+eopt_scf_outfile_path = ex_out_files_dir / Path("eopt_scf.out")
+eopt_scf_ionmin_outfile_path = ex_out_files_dir / Path("eopt_scf_ionmin.out")
+# Natively generated H2 runs (see the notes on generating fixtures) with a pseudopotential stripped of its atomic
+# orbitals, so JDFTx prints no Lowdin population analysis. nolowdin_ionmin.out and nolowdin_latmin.out include
+# electronic minimizations at rejected line-search positions.
+nolowdin_ionmin_outfile_path = ex_out_files_dir / Path("nolowdin_ionmin.out")
+nolowdin_md_outfile_path = ex_out_files_dir / Path("nolowdin_md.out")
+nolowdin_latmin_outfile_path = ex_out_files_dir / Path("nolowdin_latmin.out")
+# Natively generated H2 single point with a bare "van-der-waals" (DFT-D2 with the default scale)
+vdw_d2_outfile_path = ex_out_files_dir / Path("vdw_d2.out")
+# Natively generated H2 single point with "rhoExternal ../n yes" (n: the density dumped by an H2 run)
+rho_external_outfile_path = ex_out_files_dir / Path("rho_external.out")
+# Natively generated z-spin H2 single point with a spin-polarized Vexternal (the same grid file for both spins)
+vexternal_spin_outfile_path = ex_out_files_dir / Path("vexternal_spin.out")
+# Natively generated H2 single point with "debug KpointsBasis" and "debug Symmetries" lines, echoed by JDFTx as
+# "debug  KpointsBasisSymmetries" and a bare "debug "
+debug_outfile_path = ex_out_files_dir / Path("debug.out")
+# Natively generated H2 single point with "elec-ex-corr hyb-HSE06" (SG15 pseudopotentials, as hybrids need)
+hse06_outfile_path = ex_out_files_dir / Path("hse06.out")
+# Natively generated H2 single point in LinearPCM water with "pcm-params lMax 3 sigma 0.7 cavityTension 5e-06"
+pcm_params_outfile_path = ex_out_files_dir / Path("pcm_params.out")
+# Natively generated stretched-H2 ionic minimization (2 steps, z-spin) with two H species named after their
+# pseudopotential files, SG15/H1.upf and SG15/H2.upf (copies of H_ONCV_PBE.upf), and initial-magnetic-moments H1 1 H2 -1
+species_names_outfile_path = ex_out_files_dir / Path("species_names.out")
+# Natively generated H2 single point in ClassicalDFT water with "fluid-site-params H2O O sigmaNuc 0.5" and
+# "fluid-site-params H2O H aPol 0.4"
+fluid_site_params_outfile_path = ex_out_files_dir / Path("fluid_site_params.out")
+
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {
     "00": 13.850216000000000 * bohr_to_ang,
@@ -336,7 +381,10 @@ example_aimd_outfile_known_site_properties = {
             [-0.000023534465678, -0.000069824127281, 0.000014289611531],
         ]
     )
-    # * bohr_to_ang
+    # Velocities are printed in lattice coordinates per Hartree atomic unit of time (2.4188843265864e-2 fs), and
+    # stored in Cartesian angstrom/fs
+    @ (np.array([[23.3298, -11.6649, 2.13539e-06], [0, 20.2043, -4.27078e-06], [0, 0, 30.2317]]).T * bohr_to_ang)
+    / 2.4188843265864e-2
 }
 
 example_igp_aimd_outfile_path = ex_out_files_dir / Path("ex_igp.out")

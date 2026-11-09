@@ -15,7 +15,40 @@ from typing import Any
 
 import numpy as np
 
+from pymatgen.core.periodic_table import Element
+
 __author__ = "Jacob Clary, Ben Rich"
+
+_ELEMENT_SYMBOLS = {element.symbol.lower(): element.symbol for element in Element}
+_MAX_SYMBOL_LENGTH = max(len(symbol) for symbol in _ELEMENT_SYMBOLS)
+
+
+def element_from_species_name(name: str) -> str | None:
+    """Get the element symbol of a JDFTx species name.
+
+    JDFTx names a species after its pseudopotential file: the file name up to its first character that is not a letter
+    or digit, with the first letter capitalized (e.g. species Fe1 for Fe1.upf, used to tell apart two Fe sublattices).
+    Its out files don't print the species' element, so the element is taken to be the longest element symbol the name
+    starts with, ignoring case (Fe1 -> Fe, Co2 -> Co, Hx -> H, Hf -> Hf).
+
+    Args:
+        name (str): The species name.
+
+    Returns:
+        str | None: The element symbol, or None if the name is not only letters and digits, or doesn't start with an
+            element symbol.
+    """
+    if not (name.isascii() and name.isalnum()):
+        return None
+    for length in range(min(_MAX_SYMBOL_LENGTH, len(name)), 0, -1):
+        symbol = _ELEMENT_SYMBOLS.get(name[:length].lower())
+        if symbol is not None:
+            return symbol
+    return None
+
+
+class JDFTXOptionWarning(UserWarning):
+    """Warning for an option JDFTx accepts but that is known to be unreliable (see StrTag.option_warnings)."""
 
 
 # This inheritable class is kept for use by AbstractTag instead of using pprint as
@@ -53,6 +86,7 @@ class AbstractTag(ClassPrintFormatter, ABC):
     defer_until_struc: bool = False
     is_tag_container: bool = False
     allow_list_representation: bool = False  # if True, allow this tag to exist as a list or list of lists
+    ordered: bool = False  # set to True if the order of the values of a can_repeat tag matters for comparison
 
     @abstractmethod
     def validate_value_type(
@@ -88,6 +122,8 @@ class AbstractTag(ClassPrintFormatter, ABC):
             val2 = val2 if isinstance(val2, list) else [val2]
             if len(val1) != len(val2):
                 return False
+            if self.ordered:
+                return all(self._is_equal_to(v1, obj2, v2) for v1, v2 in zip(val1, val2, strict=True))
             return all(True in [self._is_equal_to(v1, obj2, v2) for v2 in val2] for v1 in val1)
         return self._is_equal_to(val1, obj2, val2)
 
@@ -181,6 +217,22 @@ class AbstractTag(ClassPrintFormatter, ABC):
         Returns:
             Any: The parsed value.
         """
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[Any, int]:
+        """Read the value for this tag from the front of a list of value tokens.
+
+        Used by TagContainer to read positional subtags. Tags that read a single value consume one token.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed.
+        """
+        if len(tokens) == 0:
+            raise ValueError(f"No value given for '{tag}'!")
+        return self.read(tag, tokens[0]), 1
 
     def _general_read_validate(self, tag: str, value_str: Any) -> None:
         """General validation for values to be passed to a read method."""
@@ -386,6 +438,13 @@ class StrTag(AbstractTag):
     """
 
     options: list | None = None
+    # Options JDFTx accepts but that are known to be unreliable, mapped to a warning issued when one is read
+    option_warnings: dict[str, str] = field(default_factory=dict)
+    # For a keyword subtag of a TagContainer that JDFTx echoes with an empty value when unset (e.g. "cavityFile " in
+    # pcm-params): the keyword followed by another keyword of the TagContainer, or by nothing, is read as unset
+    empty_means_unset: bool = False
+    # For a species name (the species-id of ion), which must be one element_from_species_name can get the element of
+    species_name: bool = False
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -431,9 +490,18 @@ class StrTag(AbstractTag):
             str: The parsed string value.
         """
         self._single_value_read_validate(tag, value)
+        if self.species_name and element_from_species_name(value.strip()) is None:
+            raise ValueError(
+                f"'{value}' for tag '{tag}' is not a species name pymatgen can read: JDFTx names species after their "
+                "pseudopotential files (letters and digits only), and pymatgen takes a species' element from the "
+                "element symbol its name starts with (e.g. Fe for Fe or Fe1)"
+            )
         compare_value = value.strip().lower()
         compare_options = [x.strip().lower() for x in self.options] if self.options is not None else None
         if compare_options is None or compare_value in compare_options:
+            for option, message in self.option_warnings.items():
+                if compare_value == option.strip().lower():
+                    warnings.warn(f"'{tag} {value}': {message}", JDFTXOptionWarning, stacklevel=3)
             return value
         raise ValueError(f"The string value '{value}' must be one of {self.options} for tag '{tag}'")
 
@@ -456,6 +524,40 @@ class StrTag(AbstractTag):
             int: The token length of the tag.
         """
         return self._get_token_len()
+
+
+@dataclass
+class StrListTag(StrTag):
+    """Tag for repeatable commands that take one or more options per line in JDFTx input files (e.g. debug).
+
+    Each option is stored as its own entry of the tag's list, so reading "debug A B" is the same as reading "debug A"
+    and "debug B". A tag without options reads as no entries.
+    """
+
+    def read(self, tag: str, value: str) -> list[str]:  # type: ignore[override]
+        """Read the value string for this tag.
+
+        Args:
+            tag (str): The tag to read the value string for.
+            value (str): The value string to read.
+
+        Returns:
+            list[str]: The parsed options.
+        """
+        self._general_read_validate(tag, value)
+        return [StrTag.read(self, tag, option) for token in value.split() for option in self._split(token)]
+
+    def _split(self, token: str) -> list[str]:
+        """Split a token made of two options run together.
+
+        JDFTx echoes "debug ... Symmetries" that way, as commands/debug.cpp prints "Symmetries" without a leading space.
+        """
+        options = [x.lower() for x in self.options or []]
+        if token.lower() not in options:
+            for option in options:
+                if token.lower().endswith(option) and token[: -len(option)].lower() in options:
+                    return [token[: -len(option)], token[-len(option) :]]
+        return [token]
 
 
 @dataclass
@@ -510,6 +612,9 @@ class AbstractNumericTag(AbstractTag):
         tag: str,
         value: Any,
     ) -> tuple[bool, str]:
+        # A nan marks an unset value (which JDFTx out files can dump), to be stripped before writing
+        if isinstance(value, float | np.floating) and np.isnan(value):
+            return True, ""
         if not self.val_is_within_bounds(value):
             return False, self.get_invalid_value_error_str(tag, value)
         return True, ""
@@ -598,9 +703,15 @@ class FloatTag(AbstractNumericTag):
     """Tag for float values in JDFTx input files.
 
     Tag for float values in JDFTx input files.
+
+    Attributes:
+        prec (int | None): Number of decimals to write the value with.
+        value_if_bare (float | None): Value read when the tag is given without a value, for tags whose value is an
+            optional argument that JDFTx defaults when omitted. A bare tag is not valid if this is None.
     """
 
     prec: int | None = None
+    value_if_bare: float | None = None
 
     def validate_value_type(
         self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
@@ -616,6 +727,11 @@ class FloatTag(AbstractNumericTag):
         Returns:
             tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
         """
+        # JDFTx reads any number as a double, so integers (but not bools) are valid and are converted to floats
+        if self.can_repeat and isinstance(value, list):
+            value = [_int_to_float(x) for x in value]
+        else:
+            value = _int_to_float(value)
         return self._validate_value_type(float, tag, value, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user)
 
     def read(self, tag: str, value: str) -> float:
@@ -629,6 +745,8 @@ class FloatTag(AbstractNumericTag):
             float: The parsed float value.
         """
         self._single_value_read_validate(tag, value)
+        if self.value_if_bare is not None and not value.strip():
+            return self.value_if_bare
         try:
             value_float = float(value)
         except (ValueError, TypeError) as err:
@@ -664,78 +782,6 @@ class FloatTag(AbstractNumericTag):
 
 
 @dataclass
-class InitMagMomTag(AbstractTag):
-    """Tag for initial-magnetic-moments tag in JDFTx input files.
-
-    Tag for initial-magnetic-moments tag in JDFTx input files.
-    """
-
-    # temporary fix to allow use of initial-magnetic-moments tag
-    # requires the user to set magnetic moments as a string with no extra
-    # validation. Processes input files as simply a string variable with
-    # no extra type conversion
-
-    # the formatting of this tag's value depends on the species labels in the
-    # ion tags. These species labels are not necessarily element symbols.
-    # There are also multiple types of formatting options of the spins
-    # most robustly, this should be a MultiFormatTag, with each option
-    #     being a StructureDeferredTag, because this tag needs to know the
-    #     results of reading in the structure before being able to robustly
-    #     parse the value of this tag
-    def validate_value_type(
-        self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
-    ) -> tuple[str, bool, Any]:
-        """Validate the type of the value for this tag.
-
-        Args:
-            tag (str): The tag to validate the type of the value for.
-            value (Any): The value to validate the type of.
-            try_auto_type_fix (bool, optional): Whether to try to automatically fix the type of the value, by default
-                False.
-
-        Returns:
-            tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
-        """
-        return self._validate_value_type(str, tag, value, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user)
-
-    def read(self, tag: str, value: str) -> str:
-        """Read the value string for this tag.
-
-        Args:
-            tag (str): The tag to read the value string for.
-            value (str): The value string to read.
-
-        Returns:
-            str: The parsed string value.
-        """
-        self._general_read_validate(tag, value)
-        return str(value)
-
-    def write(self, tag: str, value: Any) -> str:
-        """Write the tag and its value as a string.
-
-        Args:
-            tag (str): The tag to write.
-            value (Any): The value to write.
-
-        Returns:
-            str: The tag and its value as a string.
-        """
-        return self._write(tag, value)
-
-    def get_token_len(self) -> int:
-        """Get the token length of the tag.
-
-        Returns:
-            int: The token length of the tag.
-        """
-        return self._get_token_len()
-
-    def _is_equal_to(self, val1, obj2, val2):
-        return True  # TODO: We still need to actually implement initmagmom as a multi-format tag
-
-
-@dataclass
 class TagContainer(AbstractTag):
     """TagContainer class for handling tags that contain other tags.
 
@@ -752,6 +798,12 @@ class TagContainer(AbstractTag):
         True  # used to ensure only TagContainers are converted between list and dict representations
     )
     subtags: dict[str, AbstractTag] = field(default_factory=dict)
+    # For a repeatable tag that JDFTx reads as doing nothing when bare: a bare line (read as {}) isn't stored. JDFTx's
+    # echo of fluid-site-params has one for each input line after the first, so storing them would add one per restart
+    bare_is_noop: bool = False
+    # Other names for subtag keywords, mapped to the subtag, for names JDFTx's echo uses but its input doesn't accept
+    # (e.g. translationMode for translation in fluid-solvent). They are read as the subtag, and never written.
+    subtag_aliases: dict[str, str] = field(default_factory=dict)
 
     def _validate_single_entry(
         self, value: dict | list[dict], try_auto_type_fix: bool = False, warn_user: bool = True
@@ -875,9 +927,10 @@ class TagContainer(AbstractTag):
             dict: The parsed value.
         """
         self._general_read_validate(tag, value)
-        value_list = value.split()
+        value_list = [self.subtag_aliases.get(token, token) for token in value.split()]
 
         tempdict = {}  # temporarily store read tags out of order they are processed
+        keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
 
         for subtag, subtag_type in (
             (subtag, subtag_type) for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname
@@ -892,6 +945,9 @@ class TagContainer(AbstractTag):
                             f"Subtag '{subtag}' for tag '{tag}' is not allowed to repeat but repeats value {value}"
                         )
                     idx_start = value_list.index(subtag)
+                    if self._is_empty_value(subtag_type, value_list[idx_start + 1 :], keywords):
+                        del value_list[idx_start]
+                        continue
                     token_len = subtag_type.get_token_len()
                     idx_end = idx_start + token_len
                     subtag_value = " ".join(
@@ -921,8 +977,11 @@ class TagContainer(AbstractTag):
             if subtag in tempdict or subtag_type.write_tagname:  # this tag has already been read or requires a tagname
                 # keyword to be present
                 continue
-            tempdict[subtag] = subtag_type.read(subtag, value_list[0])
-            del value_list[0]
+            subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, value_list)
+            if n_read == 0:  # a repeatable subtag found nothing it could read
+                continue
+            tempdict[subtag] = subtag_value
+            del value_list[:n_read]
 
         # reorder all tags to match order of __MASTER_TAG_LIST__ and do coarse-grained validation of read.
 
@@ -930,6 +989,127 @@ class TagContainer(AbstractTag):
         self._check_nonoptional_subtags(tag, subdict, self.subtags)
         self._check_unread_values(tag, value_list)
         return subdict
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[dict, int]:
+        """Read this TagContainer as a positional subtag from the front of a list of value tokens.
+
+        Subtags are read in the order they are defined. A keyword subtag (write_tagname=True) is read only where its
+        name is the next token, at its place in that order, and repeatedly if it can repeat (e.g. the
+        "Vext <atom> <V>" entries following each U channel of the add-U tag). Positional subtags never read a token
+        that is one of this TagContainer's keywords. Reading stops once every subtag has been read, so the remaining
+        tokens are left for whatever follows this TagContainer.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[dict, int]: The parsed value and the number of tokens consumed.
+        """
+        tokens = [self.subtag_aliases.get(token, token) for token in tokens]
+        keywords = {subtag for subtag, subtag_type in self.subtags.items() if subtag_type.write_tagname}
+        subdict = {}
+        n_total = 0
+        for subtag, subtag_type in self.subtags.items():
+            if n_total == len(tokens):
+                break
+            remaining = tokens[n_total:]
+            if (
+                subtag_type.write_tagname
+                and remaining[0] == subtag
+                and self._is_empty_value(subtag_type, remaining[1:], keywords)
+            ):
+                n_total += 1
+                continue
+            if subtag_type.write_tagname:
+                subtag_value, n_read = self._read_keyword_subtag(subtag, subtag_type, remaining)
+            else:
+                # Only offer the tokens up to the next keyword
+                n_positional = next((i for i, token in enumerate(remaining) if token in keywords), len(remaining))
+                if n_positional == 0:
+                    continue
+                subtag_value, n_read = self._read_positional_subtag(subtag, subtag_type, remaining[:n_positional])
+            if n_read == 0:
+                continue
+            subdict[subtag] = subtag_value
+            n_total += n_read
+        self._check_nonoptional_subtags(tag, subdict, self.subtags)
+        return subdict, n_total
+
+    @staticmethod
+    def _is_empty_value(subtag_type: AbstractTag, tokens_after: list[str], keywords: set[str]) -> bool:
+        """Check whether a keyword subtag with StrTag.empty_means_unset was given without a value.
+
+        Args:
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens_after (list[str]): The value tokens after the subtag's keyword.
+            keywords (set[str]): The keywords of this TagContainer.
+
+        Returns:
+            bool: True if the keyword is followed by nothing or by another keyword, so its value is empty.
+        """
+        if not (isinstance(subtag_type, StrTag) and subtag_type.empty_means_unset):
+            return False
+        return len(tokens_after) == 0 or tokens_after[0] in keywords
+
+    @staticmethod
+    def _read_keyword_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
+        """Read a keyword subtag that starts at the front of a list of value tokens.
+
+        The subtag is read only if its name is the next token. A subtag with can_repeat=True is read again for as
+        long as its name keeps coming up next, and returned as a list.
+
+        Args:
+            subtag (str): The subtag (and keyword) to read the value for.
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens (list[str]): The remaining value tokens.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed, including the keyword itself
+                (0 if the subtag is not next).
+        """
+        values = []
+        n_total = 0
+        while n_total < len(tokens) and tokens[n_total] == subtag:
+            value, n_read = subtag_type.read_from_tokens(subtag, tokens[n_total + 1 :])
+            values.append(value)
+            n_total += 1 + n_read
+            if not subtag_type.can_repeat:
+                break
+        if len(values) == 0:
+            return None, 0
+        return (values if subtag_type.can_repeat else values[0]), n_total
+
+    @staticmethod
+    def _read_positional_subtag(subtag: str, subtag_type: AbstractTag, tokens: list[str]) -> tuple[Any, int]:
+        """Read a positional subtag from the front of a list of value tokens.
+
+        A positional subtag with can_repeat=True reads values for as long as it can, stopping at the first token it
+        cannot read (e.g. a FloatTag stops at the next species label), and returns them as a list.
+
+        Args:
+            subtag (str): The subtag to read the value for.
+            subtag_type (AbstractTag): The tag object for the subtag.
+            tokens (list[str]): The remaining value tokens, starting with this subtag's value.
+
+        Returns:
+            tuple[Any, int]: The parsed value and the number of tokens consumed (0 if a repeatable subtag read
+                nothing).
+        """
+        if not subtag_type.can_repeat:
+            return subtag_type.read_from_tokens(subtag, tokens)
+        values = []
+        n_total = 0
+        while n_total < len(tokens):
+            try:
+                value, n_read = subtag_type.read_from_tokens(subtag, tokens[n_total:])
+            except (ValueError, TypeError):
+                break
+            if n_read == 0:
+                break
+            values.append(value)
+            n_total += n_read
+        return values, n_total
 
     def write(self, tag: str, value: Any) -> str:
         """Write the tag and its value as a string.
@@ -948,13 +1128,19 @@ class TagContainer(AbstractTag):
 
         final_value = ""
         indent = "    "
-        # Gather all subtag print values into a list
+        # Gather all subtag print values into a list, in the order of self.subtags (the order JDFTx reads positional
+        # subtags in), not the order of the value's keys. Keys that aren't subtags come last, and raise a KeyError.
         print_str_list = []
-        for subtag, subvalue in value.items():
+        ordered_subtags = [subtag for subtag in self.subtags if subtag in value]
+        ordered_subtags += [subtag for subtag in value if subtag not in self.subtags]
+        for subtag in ordered_subtags:
+            subvalue = value[subtag]
             if self.subtags[subtag].can_repeat and isinstance(subvalue, list):
                 print_str_list += [self.subtags[subtag].write(subtag, entry).strip() + " " for entry in subvalue]
             else:
                 print_str_list.append(self.subtags[subtag].write(subtag.strip() + " ", subvalue))
+        # Leave out subtags that write nothing (e.g. out of bounds values), so they don't leave empty lines
+        print_str_list = [print_str for print_str in print_str_list if print_str.strip()]
         # Concatenate all subtag print values into a single string, with line breaks at appropriate
         # locations if needed
         for count, print_str in enumerate(print_str_list):
@@ -1107,8 +1293,11 @@ class TagContainer(AbstractTag):
                 f"Value '{value}' must be a list when passed to 'get_dict_representation' since "
                 f"tag '{tag}' is repeatable."
             )
+        # Entries in list representation are matched to subtags by position, so they must all be the same length.
+        # Entries in dict representation are matched by subtag name, so they may differ in which optional subtags
+        # they include (e.g. only some add-U channels having Vext entries).
         if (
-            self.can_repeat and len({len(x) for x in value}) > 1
+            self.can_repeat and not all(isinstance(entry, dict) for entry in value) and len({len(x) for x in value}) > 1
         ):  # Creates a list of every unique length of the subdicts
             # TODO: Populate subdicts with fewer entries with JDFTx defaults to make compatible
             raise ValueError(f"The values '{value}' for tag '{tag}' provided in a list of lists have different lengths")
@@ -1156,7 +1345,7 @@ class TagContainer(AbstractTag):
 
 
 # TODO: Write StructureDefferedTagContainer back in (commented out code block removed
-# on 11/4/24) and make usable for tags like initial-magnetic-moments
+# on 11/4/24)
 
 
 @dataclass
@@ -1186,9 +1375,35 @@ class MultiformatTag(AbstractTag):
         Returns:
             tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the possibly fixed value.
         """
+        if self.can_repeat and isinstance(value, list) and all(option.can_repeat for option in self.format_options):
+            # Entries of a repeated tag can each use a different format (e.g. ion tags with different constraints)
+            entries = [
+                self._determine_format_option(tag, [entry], try_auto_type_fix=try_auto_type_fix)[1] for entry in value
+            ]
+            return tag, True, [entry for entry_list in entries for entry in entry_list]
         format_index, value = self._determine_format_option(tag, value, try_auto_type_fix=try_auto_type_fix)
         is_valid = format_index is not None
         return tag, is_valid, value
+
+    def validate_value_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        """Validate the bounds of the value with the format option it matches.
+
+        Args:
+            tag (str): The tag to validate the bounds of the value for.
+            value (Any): The value to validate the bounds of.
+
+        Returns:
+            tuple[bool, str]: Whether the value is within bounds, and the error string if it is not.
+        """
+        if self.can_repeat and isinstance(value, list) and all(option.can_repeat for option in self.format_options):
+            # Entries of a repeated tag can each use a different format (e.g. ion tags with different constraints)
+            results = [self._validate_format_option_bounds(tag, [entry]) for entry in value]
+            return all(is_valid for is_valid, _ in results), "\n".join(err for is_valid, err in results if not is_valid)
+        return self._validate_format_option_bounds(tag, value)
+
+    def _validate_format_option_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        format_index, value = self._determine_format_option(tag, value)
+        return self.format_options[format_index].validate_value_bounds(tag, value)
 
     def read(self, tag: str, value: str) -> None:
         """Read the value string for this tag.
@@ -1234,16 +1449,19 @@ class MultiformatTag(AbstractTag):
         Raises:
             ValueError: If no valid read format is found for the tag.
         """
-        problem_log = []
+        problems: dict[str, list[str]] = {}  # each format's reason for failing, with the formats failing for it
         for i, trial_format in enumerate(self.format_options):
             try:
-                _ = trial_format.read(tag, value)
+                with warnings.catch_warnings():  # the value is read again with the format found, warning then
+                    warnings.simplefilter("ignore", JDFTXOptionWarning)
+                    _ = trial_format.read(tag, value)
                 return i
             except (ValueError, TypeError) as e:
-                problem_log.append(f"Format {i}: {e}")
+                problems.setdefault(str(e), []).append(str(i))
+        reasons = "\n".join(f"Format {', '.join(formats)}: {reason}" for reason, formats in problems.items())
         raise ValueError(
             f"No valid read format for tag '{tag}' with value '{value}'\n"
-            "Add option to format_options or double-check the value string and retry!\n\n"
+            "Add option to format_options or double-check the value string and retry!\n\n" + reasons
         )
 
     def raise_invalid_format_option_error(self, tag: str, i: int) -> None:
@@ -1417,6 +1635,193 @@ class DumpTagContainer(TagContainer):
                             warnmsg += f"{tags_list_list[i][j]} "
             warnings.warn(warnmsg, stacklevel=2)
         return tag_out, is_valid_out, updated_value
+
+
+@dataclass
+class SubcommandTagContainer(TagContainer):
+    """TagContainer for a command made of keyword subcommands whose order matters (e.g. density-of-states).
+
+    JDFTx reads such a command one subcommand at a time, and a subcommand can depend on the ones before it: in
+    density-of-states, the Occupied/Complete flags set the mode of the weight functions that follow them. Any subcommand
+    can appear any number of times. The value is therefore a list of entries in order, each a single-key dict
+    mapping a subcommand to its value, e.g. [{"Total": True}, {"Occupied": True}, {"Total": True}].
+
+    A dict of subcommands (the representation used before, e.g. {"Esigma": 0.001, "Total": True, "Orbital": [...]})
+    is still accepted wherever a value is expected, and is read as entries in the dict's order, with a list of
+    several values for a subcommand giving one entry each. Validation with try_auto_type_fix stores the list form.
+
+    Only usable as a top-level tag.
+    """
+
+    def _get_entries(self, tag: str, value: Any) -> list[dict[str, Any]]:
+        """Get the value as a list of single-key dicts, converting it from a dict of subcommands if needed.
+
+        Args:
+            tag (str): The tag the value is for.
+            value (Any): The value, as a list of entries or a dict of subcommands.
+
+        Returns:
+            list[dict[str, Any]]: The entries in order.
+        """
+        if isinstance(value, dict):
+            entries = []
+            for subtag, subvalue in value.items():
+                subtag_type = self.subtags.get(subtag)
+                is_entry_list = (
+                    subtag_type is not None
+                    and subtag_type.is_tag_container
+                    and isinstance(subvalue, list)
+                    and all(isinstance(x, dict | list) for x in subvalue)
+                )
+                entries += [{subtag: x} for x in subvalue] if is_entry_list else [{subtag: subvalue}]
+            value = entries
+        if not isinstance(value, list) or any(not isinstance(entry, dict) or len(entry) != 1 for entry in value):
+            raise TypeError(
+                f"The value '{value}' for tag '{tag}' must be a list of single-key dicts (one per subcommand) or a "
+                "dict of subcommands!"
+            )
+        for entry in value:
+            subtag = next(iter(entry))
+            if subtag not in self.subtags:
+                raise ValueError(f"'{subtag}' is not a valid subcommand of '{tag}'!")
+        return value
+
+    def read(self, tag: str, value: str) -> list[dict[str, Any]]:  # type: ignore[override]
+        """Read the value string for this tag.
+
+        Args:
+            tag (str): The tag to read the value string for.
+            value (str): The value string to read.
+
+        Returns:
+            list[dict[str, Any]]: The subcommands in the order they appear.
+        """
+        self._general_read_validate(tag, value)
+        tokens = value.split()
+        entries, n_read = self.read_from_tokens(tag, tokens)
+        if n_read < len(tokens):
+            raise ValueError(f"'{tokens[n_read]}' is not a valid subcommand of '{tag}'!")
+        return entries
+
+    def read_from_tokens(self, tag: str, tokens: list[str]) -> tuple[list[dict[str, Any]], int]:  # type: ignore[override]
+        """Read subcommands from the front of a list of value tokens, until a token is not a subcommand keyword.
+
+        Args:
+            tag (str): The tag to read the value for.
+            tokens (list[str]): The remaining value tokens, starting with this tag's value.
+
+        Returns:
+            tuple[list[dict[str, Any]], int]: The subcommands in order and the number of tokens consumed.
+        """
+        entries = []
+        n_total = 0
+        while n_total < len(tokens) and tokens[n_total] in self.subtags:
+            subtag = tokens[n_total]
+            subtag_type = self.subtags[subtag]
+            n_read = subtag_type.get_token_len()  # includes the keyword
+            if n_total + n_read > len(tokens):
+                raise ValueError(f"Subcommand '{subtag}' of '{tag}' is missing values: {tokens[n_total:]}")
+            subtag_value = " ".join(tokens[n_total + 1 : n_total + n_read])
+            entries.append({subtag: subtag_type.read(subtag, subtag_value)})
+            n_total += n_read
+        return entries, n_total
+
+    def write(self, tag: str, value: Any) -> str:
+        """Write the tag and its value as a string, one subcommand per line.
+
+        Args:
+            tag (str): The tag to write.
+            value (Any): The value to write.
+
+        Returns:
+            str: The tag and its value as a string.
+        """
+        lines = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            lines.append(f"    {self.subtags[subtag].write(subtag, subvalue).strip()}")
+        if len(lines) == 0:
+            return self._write(tag, "")
+        return self._write(tag, " \\\n".join(lines), multiline_override=True, strip_override=True)
+
+    def validate_value_type(
+        self, tag: str, value: Any, try_auto_type_fix: bool = False, warn_user: bool = True
+    ) -> tuple[str, bool, Any]:
+        """Validate the type of the value for this tag.
+
+        Args:
+            tag (str): The tag to validate the type of the value for.
+            value (Any): The value to validate the type of.
+            try_auto_type_fix (bool, optional): Whether to try to automatically fix the type of the value, by default
+                False.
+
+        Returns:
+            tuple[str, bool, Any]: The tag, whether the value is of the correct type, and the value as a list of
+                entries (with fixed types if try_auto_type_fix).
+        """
+        tags_checked: list[str] = []
+        is_valids: list[bool] = []
+        updated_value: list[dict[str, Any]] = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            checked_tag, is_valid, fixed_subvalue = self.subtags[subtag].validate_value_type(
+                subtag, subvalue, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user
+            )
+            tags_checked.append(checked_tag)
+            is_valids.append(is_valid)
+            updated_value.append({subtag: fixed_subvalue if try_auto_type_fix else subvalue})
+        is_valid_out = all(is_valids)
+        if not is_valid_out:
+            invalid = [checked for checked, is_valid in zip(tags_checked, is_valids, strict=True) if not is_valid]
+            warnings.warn(f"Invalid value(s) found for: {' '.join(invalid)}", stacklevel=2)
+        return ",".join(tags_checked), is_valid_out, updated_value
+
+    def validate_value_bounds(self, tag: str, value: Any) -> tuple[bool, str]:
+        """Check that the value of each subcommand is within its bounds.
+
+        Args:
+            tag (str): The tag the value is for.
+            value (Any): The value to check.
+
+        Returns:
+            tuple[bool, str]: Whether all values are within bounds, and the errors found.
+        """
+        errors = []
+        for entry in self._get_entries(tag, value):
+            ((subtag, subvalue),) = entry.items()
+            is_valid, err_str = self.subtags[subtag].validate_value_bounds(subtag, subvalue)
+            if not is_valid:
+                errors.append(err_str)
+        return len(errors) == 0, f"{tag}: {','.join(errors)}"
+
+    def _is_equal_to(self, val1: Any, obj2: AbstractTag, val2: Any) -> bool:
+        """Check if the two values are equal: the same subcommands with equal values, in the same order."""
+        if not isinstance(obj2, SubcommandTagContainer):
+            return False
+        entries1 = self._get_entries("", val1)
+        entries2 = obj2._get_entries("", val2)
+        if len(entries1) != len(entries2):
+            return False
+        for entry1, entry2 in zip(entries1, entries2, strict=True):
+            ((subtag1, subvalue1),) = entry1.items()
+            ((subtag2, subvalue2),) = entry2.items()
+            if subtag1 != subtag2 or not self.subtags[subtag1].is_equal_to(subvalue1, obj2.subtags[subtag2], subvalue2):
+                return False
+        return True
+
+
+def _int_to_float(value: Any) -> Any:
+    """Convert an integer (but not a bool) to a float, leaving any other value unchanged.
+
+    Args:
+        value (Any): The value to convert.
+
+    Returns:
+        Any: The value as a float if it was an integer, otherwise the value itself.
+    """
+    if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
+        return float(value)
+    return value
 
 
 def _flatten_list(tag: str, list_of_lists: list[Any]) -> list[Any]:

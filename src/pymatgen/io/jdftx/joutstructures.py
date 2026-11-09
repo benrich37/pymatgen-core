@@ -10,8 +10,6 @@ import pprint
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from monty.dev import deprecated
-
 if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
@@ -20,7 +18,7 @@ if TYPE_CHECKING:
     from pymatgen.io.jdftx.jelstep import JElSteps
 
 
-from pymatgen.io.jdftx._output_utils import correct_geom_opt_type, is_lowdin_start_line
+from pymatgen.io.jdftx._output_utils import correct_geom_opt_type
 from pymatgen.io.jdftx.joutstructure import JOutStructure
 
 __author__ = "Ben Rich"
@@ -88,6 +86,9 @@ class JOutStructures:
         elecmindata (JElSteps): The electronic minimization data.
         stress (np.ndarray | None): The stress tensor.
         strain (np.ndarray | None): The strain tensor.
+        thermostat_velocity (np.ndarray | None): The Nose-Hoover chain thermostat velocities (one per chain element,
+            chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of time) so they can be
+            written back unchanged as the thermostat-velocity tag of a restart input. None if not printed.
         nstep (int | None): The number of steps in the optimization.
         e (float | None): The total energy.
         grad_k (float | None): The final norm of the preconditioned gradient for geometric optimization of the most
@@ -155,6 +156,7 @@ class JOutStructures:
         cls,
         out_slice: list[str],
         opt_type: str = "IonicMinimize",
+        eopt_type: str = "ElecMinimize",
         init_struc: Structure | None = None,
         is_md: bool = False,
         has_igp: bool = False,
@@ -170,6 +172,8 @@ class JOutStructures:
 
         Args:
             out_slice (list[str]): A slice of a JDFTx out file (individual call of JDFTx).
+            eopt_type (str): The type of electronic optimizer ("ElecMinimize" for electronic-minimize, "SCF" for
+                electronic-scf).
 
         Returns:
             JOutStructures: The created JOutStructures object.
@@ -181,6 +185,7 @@ class JOutStructures:
         slices = _get_joutstructure_list(
             out_slice[start_idx:],
             opt_type,
+            eopt_type=eopt_type,
             init_structure=init_struc,
             is_md=is_md,
             has_igp=has_igp,
@@ -282,10 +287,6 @@ class JOutStructures:
                 dct[fld] = value
         return dct
 
-    @deprecated(as_dict, deadline=(2025, 10, 4))
-    def to_dict(self):
-        return self.as_dict()
-
     def __getitem__(self, key: int | str) -> JOutStructure | Any:
         """Return item.
 
@@ -342,6 +343,11 @@ class JOutStructures:
 
 
 _elec_min_start_flag: str = "-------- Electronic minimization -----------"
+_geom_step_line_flags: tuple[str, ...] = ("IonicMinimize: Iter:", "LatticeMinimize: Iter:", "IonicDynamics: Step:")
+
+
+def _is_geom_step_line(line_text: str) -> bool:
+    return line_text.startswith(_geom_step_line_flags)
 
 
 def _get_joutstructure_step_bounds(
@@ -361,19 +367,20 @@ def _get_joutstructure_step_bounds(
     """
     bounds_list = []
     bounds = None
-    end_started = False
+    has_geom_step_line = False
     for i, line in enumerate(out_slice):
-        if not end_started:
-            if out_slice_start_flag in line:
-                bounds = [i]
-            elif (bounds is not None) and (is_lowdin_start_line(line)):
-                end_started = True
-        elif not len(line.strip()) and bounds is not None:
-            bounds.append(i)
-            bounds_list.append(bounds)
-            bounds = None
-            end_started = False
-    # This case is for jdftx calls that were interrupted prematurely
+        if out_slice_start_flag in line:
+            # A step that logged its geometry step line is ended by the start of the next one. Otherwise the open
+            # bounds only hold an electronic minimization at a line-search trial position, which is discarded.
+            # (The Lowdin block can't end a step, since JDFTx skips it when no pseudopotential has atomic orbitals.)
+            if bounds is not None and has_geom_step_line:
+                bounds.append(i)
+                bounds_list.append(bounds)
+            bounds = [i]
+            has_geom_step_line = False
+        elif bounds is not None and _is_geom_step_line(line):
+            has_geom_step_line = True
+    # The last step (or the step a prematurely interrupted jdftx call was on) runs to the end of the slice
     if bounds is not None:
         bounds.append(len(out_slice) - 1)
         bounds_list.append(bounds)
@@ -403,6 +410,7 @@ def _get_joutstructures_start_idx(
 def _get_joutstructure_list(
     out_slice: list[str],
     opt_type: str | None,
+    eopt_type: str = "ElecMinimize",
     init_structure: Structure | None = None,
     is_md: bool = False,
     has_igp: bool = False,
@@ -419,6 +427,7 @@ def _get_joutstructure_list(
     Args:
         out_slice (list[str]): A slice of a JDFTx out file (individual call of JDFTx).
         opt_type (str | None): Flag string indicating optimization type.
+        eopt_type (str): Flag string indicating the electronic optimizer type ("ElecMinimize" or "SCF").
         init_structure (Structure | None): The initial structure if available, otherwise None.
         is_md (bool): True if the calculation is a molecular dynamics (MD) simulation, False otherwise.
         skip_error_structures (bool): If True, skip any structures that raise errors during parsing.
@@ -437,6 +446,7 @@ def _get_joutstructure_list(
                 [],
                 init_structure=init_structure,
                 opt_type=opt_type,
+                eopt_type=eopt_type,
                 is_md=is_md,
                 has_igp=has_igp,
                 expected_etype=expected_etype,
@@ -457,6 +467,8 @@ def _get_joutstructure_list(
                 skim_levels,
                 raise_on_error=False,
                 skip_props=skip_props,
+                req_new_geom=True,
+                eopt_type=eopt_type,
             )
             if joutstructure is not None:
                 joutstructure_list.append(joutstructure)
@@ -478,6 +490,7 @@ def _get_joutstructure_list(
             skim_levels,
             raise_on_error=((i != len(out_bounds) - 1) and (not skip_error_structures)),
             skip_props=skip_props,
+            eopt_type=eopt_type,
         )
         if joutstructure is not None:
             joutstructure_list.append(joutstructure)
@@ -495,6 +508,13 @@ def parse_joutstructure_bounds(
     skim_levels: list[str] | None,
     raise_on_error: bool,
     skip_props: list[str] | None = None,
+    # If we're skimming geometry level frequency, we need to set req_new_geom to True as otherwise
+    # the JOutStructure will fall back to its
+    # initial structure if no posn lines are found in the slice, which is bad as initial structure
+    # is the input structure in this case,
+    # not the structure from the previous geometry optimization step.
+    req_new_geom: bool = False,
+    eopt_type: str = "ElecMinimize",
 ) -> JOutStructure | None:
     joutstructure = None
     try:
@@ -502,11 +522,13 @@ def parse_joutstructure_bounds(
             out_slice[bounds[0] : bounds[1]],
             init_structure=init_structure,
             opt_type=opt_type,
+            eopt_type=eopt_type,
             is_md=is_md,
             has_igp=has_igp,
             expected_etype=expected_etype,
             skim_levels=skim_levels,
             skip_props=skip_props,
+            req_new_geom=req_new_geom,
         )
     except (ValueError, IndexError, TypeError, KeyError, AttributeError):
         if raise_on_error:

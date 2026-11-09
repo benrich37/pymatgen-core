@@ -2,6 +2,17 @@
 
 Classes for reading/manipulating/writing JDFTx input files.
 
+Notes on units - within a JDFTXInfile object, all values are stored in JDFTx-consistent units, and positions,
+velocities and constraint vectors are expressed in the coordinate system set by the coords-type tag (lattice
+coordinates by default), exactly as they would appear in a JDFTx input file.
+Initializing a JDFTXInfile object from a file or a string will assume JDFTx-consistent units (perform no conversion).
+Modifying tags directly will also assume JDFTx-consistent units (perform no conversion).
+Initializing a JDFTXInfile object from a pymatgen Structure object (from_structure) or a JDFTXStructure object
+(from_jdftxstructure) will convert pymatgen-consistent units (Cartesian angstrom, and angstrom/fs for velocities) to
+JDFTx-consistent units. This includes the lattice and ion coordinates/velocities/constraint vectors.
+Converting a JDFTXInfile object to a pymatgen Structure or JDFTXStructure (structure, to_pmg_structure,
+to_jdftxstructure) performs the reverse conversion.
+
 Note: JDFTXInfile will be moved back to its own module once a more broad inputs
 class is written.
 """
@@ -9,6 +20,8 @@ class is written.
 from __future__ import annotations
 
 import logging
+import math
+import re
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
@@ -16,13 +29,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from monty.dev import deprecated
 from monty.json import MSONable
 
 from pymatgen.core import Lattice, Structure
 from pymatgen.core import constants as const
 from pymatgen.core.periodic_table import Element
-from pymatgen.core.units import bohr_to_ang
-from pymatgen.io.jdftx.generic_tags import AbstractTag, BoolTagContainer, DumpTagContainer, MultiformatTag, TagContainer
+from pymatgen.core.units import Ha_to_eV, bohr_to_ang
+from pymatgen.io.jdftx.generic_tags import (
+    AbstractTag,
+    BoolTagContainer,
+    DumpTagContainer,
+    MultiformatTag,
+    StrListTag,
+    TagContainer,
+    element_from_species_name,
+)
 from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
 from pymatgen.io.jdftx.jdftxinfile_master_format import (
     __PHONON_TAGS__,
@@ -33,20 +55,68 @@ from pymatgen.io.jdftx.jdftxinfile_master_format import (
     get_tag_object_on_val,
 )
 from pymatgen.util.io_utils import clean_lines
-from pymatgen.util.typing import SpeciesLike
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any
+    from typing import Any, Self
 
     from numpy.typing import ArrayLike
-    from typing_extensions import Self
 
     from pymatgen.util.typing import PathLike
 
 __author__ = "Jacob Clary, Ben Rich"
 
 logger = logging.getLogger(__name__)
+
+# JDFTx's unit of time (the Hartree atomic unit of time, hbar / E_h) in fs, used to convert velocities to angstrom/fs
+JDFTX_TIME_UNIT_TO_FS = const.hbar / (Ha_to_eV * const.e) * 1e15
+
+# Site property holding each site's JDFTx species name, for structures whose species aren't all named after their
+# element (e.g. Fe1 and Fe2, from pseudopotential files Fe1.upf and Fe2.upf, to tell apart two Fe sublattices)
+JDFTX_SPECIES_SITE_PROPERTY = "jdftx_species"
+
+
+def get_species_elements(species_names: Sequence[str]) -> tuple[list[str], list[str] | None]:
+    """Get the elements of JDFTx species names, and the names to keep as the jdftx_species site property.
+
+    Args:
+        species_names (Sequence[str]): The species name of each ion.
+
+    Returns:
+        tuple[list[str], list[str] | None]: The element symbol of each ion (see element_from_species_name), and the
+            species names if any of them isn't its element symbol (ignoring case, as JDFTx does), otherwise None.
+
+    Raises:
+        ValueError: If the element of a species name can't be found.
+    """
+    elements = []
+    for name in species_names:
+        element = element_from_species_name(name)
+        if element is None:
+            raise ValueError(
+                f"Can't tell the element of species '{name}': pymatgen takes it from the element symbol the species "
+                "name starts with"
+            )
+        elements.append(element)
+    if all(name.lower() == element.lower() for name, element in zip(species_names, elements, strict=True)):
+        return elements, None
+    return elements, list(species_names)
+
+
+def get_species_names(structure: Structure) -> list[str]:
+    """Get the JDFTx species name of each site of a structure.
+
+    Args:
+        structure (Structure): The structure.
+
+    Returns:
+        list[str]: Each site's name from the jdftx_species site property, or its element symbol if it has none.
+    """
+    names = structure.site_properties.get(JDFTX_SPECIES_SITE_PROPERTY, [None] * len(structure))
+    return [
+        name if isinstance(name, str) else str(getattr(site.specie, "symbol", site.specie))
+        for name, site in zip(names, structure, strict=True)
+    ]
 
 
 # TODO: Add check for whether all ions have or lack velocities.
@@ -205,7 +275,7 @@ class JDFTXInfile(dict, MSONable):
         path_parent = None
         if assign_path_parent:
             path_parent = Path(filename).parents[0]
-        with open(filename) as file:
+        with open(filename, encoding="utf-8") as file:
             return cls.from_str(
                 file.read(),
                 dont_require_structure=dont_require_structure,
@@ -228,27 +298,47 @@ class JDFTXInfile(dict, MSONable):
     ) -> JDFTXInfile:
         """Create a JDFTXInfile object from a pymatgen Structure.
 
+        Each ion is written with its element symbol, or with its species name from the "jdftx_species" site property
+        when it has one (set by pymatgen's JDFTx readers for species not named after their element, e.g. Fe1 and Fe2
+        from pseudopotential files Fe1.upf and Fe2.upf). A species name that isn't of the site's element (e.g. after
+        replace_species) is ignored with a warning. Site labels are not used as species names, as labels from other
+        sources (e.g. "Fe1" and "O2" from CIF files) usually aren't. Note that get_primitive_structure only keeps sites
+        of different species apart with use_site_props=True, and symmetry refinement drops site properties.
+
         Args:
             structure (Structure): Structure to convert.
             selective_dynamics (ArrayLike, optional): Selective dynamics attribute for each site if available.
                 Shape Nx1, by default None. If None, will check structure.site_properties for "selective_dynamics".
-            velocities (ArrayLike, optional): Velocities attribute for each site if available.
-                Shape Nx3, by default None. If None, will check structure.site_properties for "velocities".
+            velocities (ArrayLike, optional): Velocities for each site if available, in Cartesian angstrom/fs (the
+                same units as structure.site_properties["velocities"]), regardless of write_cart_coords. Converted
+                to JDFTx units on writing. Shape Nx3, by default None. If None, will check
+                structure.site_properties for "velocities".
+            constraint_types (ArrayLike, optional): Constraint type ("Linear", "Planar", "HyperPlane", or None) for
+                each site if available. By default None. If None, will check structure.site_properties for
+                "constraint_types".
+            constraint_vectors (ArrayLike, optional): Constraint vectors for each site if available, in Cartesian
+                coordinates (see _constraint_vector_to_cartesian), regardless of write_cart_coords. A list of vectors
+                for a "HyperPlane" site, a single vector otherwise. By default None. If None, will check
+                structure.site_properties for "constraint_vectors".
+            hyperplane_group_names (ArrayLike, optional): Group names for each site if available (a list with one
+                name per hyperplane for a "HyperPlane" site, None otherwise). By default None. If None, will check
+                structure.site_properties for "group_names".
             write_cart_coords (bool, optional): Whether to write Cartesian coordinates instead of fractional.
                 Defaults to False.
             ignore_site_properties (bool, optional): Whether to ignore site properties in the structure.
                 Defaults to False. If False, arguments selective_dynamics and velocities will changed from
                 values in site_properties if provided as None. If True, arguments selective_dynamics and velocities
                 will be left as provided, and the duplicated structure used for JDFTXStructure initialization will
-                have its site_properties cleared.
+                have its site_properties cleared, except for the species names ("jdftx_species").
 
         Returns:
             JDFTXInfile: The created JDFTXInfile object.
         """
         _structure = structure.copy()
         if ignore_site_properties:
-            _structure.clear_site_properties()
-            # _structure.site_properties = {}
+            for site_property in list(_structure.site_properties):
+                if site_property != JDFTX_SPECIES_SITE_PROPERTY:  # Kept, as they decide each ion's species
+                    _structure.remove_site_property(site_property)
         jdftxstructure = JDFTXStructure(
             _structure,
             selective_dynamics=selective_dynamics,
@@ -325,8 +415,7 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             JDFTXInfile: The created JDFTXInfile object.
         """
-        lines: list[str] = list(clean_lines(string.splitlines()))
-        lines = cls._gather_tags(lines)
+        lines = cls._splice_includes(cls._get_lines(string), path_parent)
 
         params: dict[str, Any] = {}
         # process all tag value lines using specified tag formats in MASTER_TAG_LIST
@@ -342,23 +431,6 @@ class JDFTXInfile(dict, MSONable):
                     warnings.warn(f"Skipping invalid tag line: '{line}'. Error: {e}", stacklevel=2)
                     continue
                 raise
-        pop_idcs = []
-        if "include" in params:
-            for i, filename in enumerate(params["include"]):
-                _filename = filename
-                if not Path(_filename).exists():
-                    if path_parent is not None:
-                        _filename = path_parent / filename
-                    if not Path(_filename).exists():
-                        warnings.warn(f"The include file {filename} ({_filename}) does not exist!", stacklevel=2)
-                        # raise ValueError(f"The include file {filename} ({_filename}) does not exist!")
-                if Path(_filename).exists():
-                    params.update(cls.from_file(_filename, dont_require_structure=True, assign_path_parent=False))
-                    pop_idcs.append(i)
-            for i in reversed(pop_idcs):
-                del params["include"][i]
-            if len(params["include"]) == 0:
-                del params["include"]
 
         if (
             not dont_require_structure
@@ -444,9 +516,8 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             JDFTXInfile: Copy of the JDFTXInfile object.
         """
-        # Wasn't working before
-        # return type(self)(self)
-        return self.from_dict(self.as_dict(skip_module_keys=True), validate_value_boundaries=False)
+        # Deep copy so the copy's nested tag values (e.g. repeated tag entries) aren't shared with this object
+        return self.from_dict(deepcopy(self.as_dict(skip_module_keys=True)), validate_value_boundaries=False)
 
     def get_text_list(self) -> list[str]:
         """Get a list of strings representation of the JDFTXInfile.
@@ -464,13 +535,13 @@ class JDFTXInfile(dict, MSONable):
                     continue
                 added_tag_in_group = True
                 tag_object: AbstractTag = MASTER_TAG_LIST[tag_group][tag]
-                if isinstance(tag_object, MultiformatTag):
-                    i, _ = tag_object._determine_format_option(tag, self_as_dict[tag])
-                    tag_object = tag_object.format_options[i]
-                if tag_object.can_repeat and isinstance(self_as_dict[tag], list):
-                    text += [tag_object.write(tag, entry) for entry in self_as_dict[tag]]
-                else:
-                    text.append(tag_object.write(tag, self_as_dict[tag]))
+                value = self_as_dict[tag]
+                for entry in value if tag_object.can_repeat and isinstance(value, list) else [value]:
+                    entry_object = tag_object
+                    if isinstance(tag_object, MultiformatTag):  # Entries of a repeated tag can use different formats
+                        i, _ = tag_object._determine_format_option(tag, entry)
+                        entry_object = tag_object.format_options[i]
+                    text.append(entry_object.write(tag, entry))
             if added_tag_in_group:
                 text.append("")
         return text
@@ -491,7 +562,7 @@ class JDFTXInfile(dict, MSONable):
         write_infile = self
         if strip_nan:
             write_infile = clean_infile_of_nans(self)
-        with open(filename, mode="w") as file:
+        with open(filename, encoding="utf-8", mode="w") as file:
             file.write(str(write_infile))
 
     @classmethod
@@ -549,7 +620,7 @@ class JDFTXInfile(dict, MSONable):
         Strip all structural tags from the JDFTXInfile. This is useful for preparing a JDFTXInfile object
         from a pre-existing calculation for a new structure.
         """
-        strucural_tags = ["lattice", "ion", "lattice-scale", "coords-type"]
+        strucural_tags = ["lattice", "ion", "latt-scale", "coords-type"]
         for tag in strucural_tags:
             if tag in self:
                 del self[tag]
@@ -634,6 +705,43 @@ class JDFTXInfile(dict, MSONable):
                 "\n Hint - if you are reading from a JDFTX out file, you need to set validate_value_boundaries "
                 "to False, as JDFTx will dump values at non-inclusive boundaries (ie 0.0 for values strictly > 0.0)."
             )
+
+    def validate_initial_magnetic_moments(self) -> None:
+        """Check the initial-magnetic-moments tag for consistency with the spintype and ion tags.
+
+        This is not run automatically when reading an input file, since a partial input (e.g. one read with
+        dont_require_structure=True and merged with defaults later) may legitimately lack the spintype or ion tags.
+
+        Raises:
+            ValueError: If spintype is missing, a species has a number of values that does not fit the spintype,
+                or (when ion tags are present) a species is absent or has a mismatched ion count.
+        """
+        tag = "initial-magnetic-moments"
+        if tag not in self:
+            return
+        if "spintype" not in self:
+            raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
+        # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
+        mult = 3 if self["spintype"] in ["spin-orbit", "vector-spin"] else 1
+        # JDFTx's species names are case-insensitive
+        ion_species = [ion["species-id"].lower() for ion in self["ion"]] if "ion" in self else None
+        for group in self[tag]["species-values"]:
+            sp, n_values = group["species-id"], len(group["values"])
+            if n_values % mult != 0:
+                error_msg = f"Species {sp} in {tag} tag must have a multiple of {mult} values, got {n_values}!"
+                if mult == 3:
+                    error_msg += " Hint: for non-collinear spin, each ion needs 3 values: M, theta, and phi."
+                raise ValueError(error_msg)
+            if ion_species is None:
+                continue
+            n_ions = ion_species.count(sp.lower())
+            if n_ions == 0:
+                raise ValueError(f"Species {sp} in {tag} tag is not present in the ion tags!")
+            if n_values != n_ions * mult:
+                raise ValueError(
+                    f"Species {sp} in {tag} tag has enough values for {n_values // mult} ions, "
+                    f"but there are {n_ions} ions of this species in the ion tags!"
+                )
 
     # TODO: Add examples in the docustring on how to use this function
     def is_comparable_to(
@@ -745,20 +853,14 @@ class JDFTXInfile(dict, MSONable):
         # if val2 = {b: 3}, then val2 -> {a: 1, b: 3} and the comparison will return False)
         differing_tags = []
         for tag in self:
-            val1 = self[tag]
-            obj1 = get_tag_object_on_val(tag, val1)
-            val2 = None
-            obj2 = None
-            if tag not in other:
-                if tag in ref_infile:
-                    val2 = ref_infile[tag]
-                    obj2 = get_tag_object_on_val(tag, val2)
-                else:
-                    differing_tags.append(tag)
-            else:
+            if tag in other:
                 val2 = other[tag]
-                obj2 = get_tag_object_on_val(tag, val2)
-            if not (val2 is None or obj2 is None) and not obj1.is_equal_to(val1, obj2, val2):
+            elif tag in ref_infile:
+                val2 = ref_infile[tag]
+            else:
+                differing_tags.append(tag)
+                continue
+            if not _is_equal_tag_value(tag, self[tag], val2):
                 differing_tags.append(tag)
         return differing_tags
 
@@ -784,6 +886,63 @@ class JDFTXInfile(dict, MSONable):
         temp = cls({k: v for k, v in dct.items() if k not in ("@module", "@class")})
         temp = cls.get_dict_representation(cls.get_list_representation(temp))
         return cls.get_list_representation(temp)
+
+    @staticmethod
+    def _get_lines(string: str) -> list[str]:
+        """Return the lines of an input file's text, without comments and with continued lines joined.
+
+        Args:
+            string (str): Text of the input file.
+
+        Returns:
+            list[str]: The lines of the input file.
+        """
+        # Join lines ending in "\" (line continuation) with the line after them. Previous implementation, kept in case
+        # the regex is not accepted (restore along with the commented-out `_gather_tags` method below):
+        # lines: list[str] = list(clean_lines(string.splitlines()))
+        # return JDFTXInfile._gather_tags(lines)
+        return re.sub(r"[ \t]*\\\n", " ", "\n".join(clean_lines(string.splitlines()))).splitlines()
+
+    @classmethod
+    def _splice_includes(
+        cls, lines: list[str], path_parent: Path | None, include_stack: tuple[Path, ...] = ()
+    ) -> list[str]:
+        """Replace each include line with the lines of the file it names.
+
+        JDFTx reads an included file's lines in place of the include line (so repeatable tags such as ion are added to
+        those of the including file), and does the same for includes within included files. An include line for a
+        file that cannot be found is kept, with a warning.
+
+        Args:
+            lines (list[str]): Lines of the input file.
+            path_parent (Path, optional): Directory to look for include files in if they are not found relative to the
+                current working directory.
+            include_stack (tuple[Path, ...]): Resolved paths of the include files being read, to detect cyclic
+                includes.
+
+        Returns:
+            list[str]: Lines of the input file with the include files' lines spliced in.
+        """
+        spliced_lines = []
+        for line in lines:
+            line_list = line.split(maxsplit=1)
+            if len(line_list) != 2 or line_list[0] != "include":
+                spliced_lines.append(line)
+                continue
+            filename = line_list[1].strip()
+            path = Path(filename)
+            if not path.exists() and path_parent is not None:
+                path = path_parent / filename
+            if not path.exists():
+                warnings.warn(f"The include file {filename} ({path}) does not exist!", stacklevel=2)
+                spliced_lines.append(line)
+                continue
+            resolved_path = path.resolve()
+            if resolved_path in include_stack:
+                raise ValueError(f"The include file {filename} ({path}) (in)directly includes itself!")
+            included_lines = cls._get_lines(path.read_text(encoding="utf-8"))
+            spliced_lines += cls._splice_includes(included_lines, path_parent, (*include_stack, resolved_path))
+        return spliced_lines
 
     @staticmethod
     def _preprocess_line(line: str) -> tuple[AbstractTag, str, str]:
@@ -835,38 +994,42 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             dict: Updated dictionary with the stored value.
         """
-        if tag_object.can_repeat:  # store tags that can repeat in a list
-            if tag not in params:
-                params[tag] = []
-            params[tag].append(value)
+        if isinstance(tag_object, StrListTag) and isinstance(value, list):  # one entry per option read
+            if value:
+                params.setdefault(tag, []).extend(value)
+        elif tag_object.can_repeat:  # store tags that can repeat in a list
+            if isinstance(tag_object, TagContainer) and tag_object.bare_is_noop and value == {}:
+                return params  # a bare line changes nothing
+            params.setdefault(tag, []).append(value)
+        elif tag in params:
+            raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")
         else:
-            if tag in params:
-                raise ValueError(f"The '{tag}' tag appears multiple times in this input when it should not!")
             params[tag] = value
         return params
 
-    @staticmethod
-    def _gather_tags(lines: list[str]) -> list[str]:
-        """Gather broken lines into single string for processing later.
-
-        Args:
-            lines (list[str]): List of lines from the input file.
-
-        Returns:
-            list[str]: List of strings with tags broken across lines combined into single string.
-        """
-        total_tag = ""
-        gathered_strings = []
-        for line in lines:
-            if line[-1] == "\\":  # "\" indicates line continuation (the first "\" needed to be escaped)
-                total_tag += line[:-1].strip() + " "  # remove \ and any extra whitespace
-            elif total_tag:  # then finished with line continuations
-                total_tag += line
-                gathered_strings.append(total_tag)
-                total_tag = ""
-            else:  # then append line like normal
-                gathered_strings.append(line)
-        return gathered_strings
+    # Replaced by a regex in `from_str`; kept in case the regex is not accepted.
+    # @staticmethod
+    # def _gather_tags(lines: list[str]) -> list[str]:
+    #     """Gather broken lines into single string for processing later.
+    #
+    #     Args:
+    #         lines (list[str]): List of lines from the input file.
+    #
+    #     Returns:
+    #         list[str]: List of strings with tags broken across lines combined into single string.
+    #     """
+    #     total_tag = ""
+    #     gathered_strings = []
+    #     for line in lines:
+    #         if line[-1] == "\\":  # "\" indicates line continuation (the first "\" needed to be escaped)
+    #             total_tag += line[:-1].strip() + " "  # remove \ and any extra whitespace
+    #         elif total_tag:  # then finished with line continuations
+    #             total_tag += line
+    #             gathered_strings.append(total_tag)
+    #             total_tag = ""
+    #         else:  # then append line like normal
+    #             gathered_strings.append(line)
+    #     return gathered_strings
 
     @staticmethod
     def _needs_conversion(conversion: str, value: dict | list[dict] | list | list[list]) -> bool:
@@ -910,7 +1073,7 @@ class JDFTXInfile(dict, MSONable):
             bool: Whether the value is numeric.
         """
         # data-types that might accidentally be identified as numeric
-        if type(value) in [bool]:
+        if type(value) is bool:
             return False
         try:
             float(value)
@@ -921,6 +1084,39 @@ class JDFTXInfile(dict, MSONable):
 
 
 ref_infile = JDFTXInfile.from_dict(default_inputs, validate_value_boundaries=False)
+
+
+def _is_equal_tag_value(tag: str, val1: Any, val2: Any) -> bool:
+    """Check if two values of a tag are equal.
+
+    Entries of a repeated multiformat tag can each use a different format (e.g. ion tags with different constraint
+    types), so each entry is compared using the format it matches.
+
+    Args:
+        tag (str): Tag name.
+        val1 (Any): First value of the tag.
+        val2 (Any): Second value of the tag.
+
+    Returns:
+        bool: Whether the two values are equal.
+    """
+    tag_object = get_tag_object(tag)
+    if not (
+        isinstance(tag_object, MultiformatTag)
+        and tag_object.can_repeat
+        and isinstance(val1, list)
+        and isinstance(val2, list)
+    ):
+        return get_tag_object_on_val(tag, val1).is_equal_to(val1, get_tag_object_on_val(tag, val2), val2)
+    if len(val1) != len(val2):
+        return False
+
+    def entries_equal(v1: Any, v2: Any) -> bool:
+        return get_tag_object_on_val(tag, v1).is_equal_to([v1], get_tag_object_on_val(tag, v2), [v2])
+
+    if tag_object.format_options[0].ordered:
+        return all(entries_equal(v1, v2) for v1, v2 in zip(val1, val2, strict=True))
+    return all(any(entries_equal(v1, v2) for v2 in val2) for v1 in val1)
 
 
 def _allnone(val) -> bool:
@@ -950,117 +1146,157 @@ def selective_dynamics_site_prop_to_jdftx_interpretable(
     Returns:
         ArrayLike: JDFTX interpretable format of selective dynamics.
     """
-    _selective_dynamics = []
-    for i in range(len(selective_dynamics)):
-        if isinstance(selective_dynamics[i], (list | tuple | np.ndarray)):
-            _selective_dynamics.append(int(not any(not x for x in selective_dynamics[i])))
-        else:
-            _selective_dynamics.append(int(bool(selective_dynamics[i])))
-    return np.array(_selective_dynamics)
-
-
-def movescale_array_to_selective_dynamics_site_prop(movescale: ArrayLike[int | float]) -> Sequence[Any]:
-    """Convert JDFTX movescale array to selective dynamics site property format.
-
-    Args:
-        movescale (ArrayLike): JDFTX movescale array.
-
-    Returns:
-        list[list[bool]]: Selective dynamics site property format of movescale.
-    """
-    selective_dynamics = []
-    for scale in movescale:
-        bool_v = bool(scale)
-        selective_dynamics.append([bool_v, bool_v, bool_v])
-    return selective_dynamics
+    # A site can move (1) only if it can move along every direction
+    return np.array([int(np.all(sd)) for sd in selective_dynamics])
 
 
 def clean_infile_of_nans(infile: JDFTXInfile) -> JDFTXInfile:
+    """Return a copy of a JDFTXInfile with all nan values removed.
+
+    JDFTx out files dump unset values as nan (e.g. "epsBulk nan"). A nan in a non-optional subtag removes the entry
+    that contains it instead, since the subtag can't be dropped on its own.
+
+    Args:
+        infile (JDFTXInfile): JDFTXInfile to clean.
+
+    Returns:
+        JDFTXInfile: Copy of infile without nan values.
+    """
     infile_cleaned = infile.copy()
-    popmaps = get_popmaps(infile_cleaned)
-    apply_popmaps(infile_cleaned, popmaps)
+    apply_popmaps(infile_cleaned, get_nanmaps(infile_cleaned))
     return infile_cleaned
 
 
-def hasnan(val: Any) -> bool:
-    if type(val) in [float, int]:
-        return np.isnan(val)
-    if isinstance(val, list):
-        for v in val:
-            if hasnan(v):
-                return True
-    elif isinstance(val, dict):
-        for v in val.values():
-            if hasnan(v):
-                return True
-    return False
-
-
 def get_nanmaps(val: Any) -> list[list[str | int]]:
-    nanmaps: list[list[str | int]] = []
-    generator = None
+    """Get the path to each nan inside a value.
+
+    Each path is the sequence of dict keys / list indices leading to a nan, e.g. {"a": [1.0, nan]} gives [["a", 1]]
+    and a bare nan gives [[]]. For a JDFTXInfile, each path starts at its tag name (e.g. ["fluid-solvent", 0,
+    "epsBulk"]).
+
+    Args:
+        val (Any): Value to search (number, or nested lists/dicts).
+
+    Returns:
+        list[list[str | int]]: Path to each nan in val.
+    """
     if type(val) in [float, int]:
-        if hasnan(val):
-            nanmaps.append([])
-    elif isinstance(val, dict):
-        generator = [(k, v) for k, v in val.items()]
-    elif isinstance(val, list):
-        generator = [(i, v) for i, v in enumerate(val)]
-    elif type(val in [str]):
-        pass
-    else:
-        raise ValueError(f"Unexpected type {type(val)} of value {val}")
-    if generator is not None:
-        for k, v in generator:
-            submaps = get_nanmaps(v)
-            for submap in submaps:
-                add_map = [k]
-                add_map.extend(submap)
-                nanmaps.append(add_map)
-    return nanmaps
+        return [[]] if np.isnan(val) else []
+    # Any other value (str, bool, None, ...) holds no nans to map
+    items = val.items() if isinstance(val, dict) else enumerate(val) if isinstance(val, list) else []
+    return [[key, *nanmap] for key, v in items for nanmap in get_nanmaps(v)]
 
 
+@deprecated(get_nanmaps, "Use bool(get_nanmaps(val)) to check for nans.", deadline=(2027, 10, 20))
+def hasnan(val: Any) -> bool:
+    """Deprecated. Check if a value is or contains a nan."""
+    return bool(get_nanmaps(val))
+
+
+@deprecated(get_nanmaps, "get_nanmaps gives the same paths when called on a JDFTXInfile.", deadline=(2027, 10, 20))
 def get_popmaps(infile: JDFTXInfile) -> list[list[str | int]]:
-    popmaps = []
-    for tag in infile:
-        nanmaps = get_nanmaps(infile[tag])
-        for nanmap in nanmaps:
-            add_map = [tag]
-            add_map.extend(nanmap)
-            popmaps.append(add_map)
-    return popmaps
+    """Deprecated. Get the path to each nan in a JDFTXInfile."""
+    return get_nanmaps(infile)
+
+
+@deprecated(message="Use [[bool(s)] * 3 for s in movescale] instead.", deadline=(2027, 10, 20))
+def movescale_array_to_selective_dynamics_site_prop(movescale: Sequence[float] | np.ndarray) -> list[list[bool]]:
+    """Deprecated. Convert a JDFTx moveScale array to the selective dynamics site property format."""
+    return [[bool(s)] * 3 for s in movescale]
 
 
 def apply_popmaps(edit_infile: JDFTXInfile, popmaps: list[list[str | int]]) -> None:
-    for popmap in popmaps:
-        popmap_use = popmap
-        popmap_destination = edit_infile
-        tag = popmap[0]
-        if not isinstance(tag, str):
-            raise TypeError("First element of popmap must be a tag string here")
-        to = get_tag_object_on_val(tag, edit_infile[tag])
-        if isinstance(to, TagContainer):
-            subtag: AbstractTag = to
-            popmap_destination = popmap_destination[tag]
-            popmap_route = popmap[1:]
-            popmap_use = [tag]
-            step = None
-            for i, step in enumerate(popmap_route):
-                if isinstance(step, str):
-                    subtag = subtag.subtags[step]
-                    if not subtag.optional:
-                        step = popmap_route[i - 1]
-                        break
-                popmap_use.append(step)
-            popmap_destination = edit_infile
-            for step in popmap_use[:-1]:
-                popmap_destination = popmap_destination[step]
-            popmap_destination.pop(popmap_use[-1], None)
+    """Remove the value at the end of each path from a JDFTXInfile, in place.
+
+    If a path runs through a non-optional subtag of a TagContainer, the entry containing that subtag is removed
+    instead (or the whole tag, if the first subtag on the path is non-optional). Each entry is removed once even if
+    several paths lead to it, later list entries are removed first so list indices in the other paths stay valid,
+    and a list left empty by a removal is removed as well.
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
+        popmaps (list[list[str | int]]): Paths to remove, each starting at a tag name (see get_nanmaps).
+
+    Raises:
+        TypeError: If a path does not start with a tag name string.
+    """
+    removal_paths = {tuple(_get_removal_path(edit_infile, popmap)) for popmap in popmaps}
+    # Sort so later list indices (and deeper paths) come first; the bool keeps ints and strs from being compared
+    for removal_path in sorted(
+        removal_paths, key=lambda path: [(isinstance(step, int), step) for step in path], reverse=True
+    ):
+        _remove_at_path(edit_infile, list(removal_path))
+
+
+def _get_removal_path(edit_infile: JDFTXInfile, popmap: list[str | int]) -> list[str | int]:
+    """Get the path to the entry to remove for a path to a nan.
+
+    The path is cut short at the first non-optional subtag of a TagContainer, so that the entry containing that
+    subtag is removed instead (or the whole tag, if the first subtag on the path is non-optional).
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile the path points into.
+        popmap (list[str | int]): Path to a nan, starting at a tag name (see get_nanmaps).
+
+    Returns:
+        list[str | int]: Path to the entry to remove, starting at the tag name.
+
+    Raises:
+        TypeError: If the path does not start with a tag name string.
+    """
+    tag = popmap[0]
+    if not isinstance(tag, str):
+        raise TypeError("First element of popmap must be a tag string here")
+    value = edit_infile[tag]
+    if get_tag_object(tag).can_repeat and isinstance(value, list) and len(popmap) > 1 and isinstance(popmap[1], int):
+        value = value[popmap[1]]  # Entries of a repeated multiformat tag can each use a different format
+    tag_object = get_tag_object_on_val(tag, value)
+    if not isinstance(tag_object, TagContainer):
+        return list(popmap)
+    subtag: AbstractTag = tag_object
+    removal_path: list[str | int] = [tag]
+    for step in popmap[1:]:
+        if isinstance(step, str):
+            subtag = subtag.subtags[step]
+            if not subtag.optional:
+                break
+        removal_path.append(step)
+    return removal_path
+
+
+def _remove_at_path(edit_infile: JDFTXInfile, removal_path: list[str | int]) -> None:
+    """Remove the entry at a path from a JDFTXInfile, in place.
+
+    Dict entries (and tags) are removed by key and list entries by index. If removing a list entry leaves the list
+    empty, the list itself is removed too. Paths that no longer exist are ignored.
+
+    Args:
+        edit_infile (JDFTXInfile): JDFTXInfile to edit in place.
+        removal_path (list[str | int]): Path to the entry to remove, starting at the tag name.
+    """
+    container: Any = edit_infile
+    try:
+        for step in removal_path[:-1]:
+            container = container[step]
+    except (KeyError, IndexError):
+        return
+    last_step = removal_path[-1]
+    if isinstance(container, list):
+        if isinstance(last_step, int) and last_step < len(container):
+            del container[last_step]
+        if len(container) == 0:
+            _remove_at_path(edit_infile, removal_path[:-1])
+    else:
+        container.pop(last_step, None)
 
 
 @dataclass
 class JDFTXStructure(MSONable):
     """Object for representing the data in JDFTXStructure tags.
+
+    Species not named after their element (e.g. Fe1 and Fe2, from pseudopotential files Fe1.upf and Fe2.upf) are kept
+    as the structure's "jdftx_species" site property, and written back from it (see JDFTXInfile.from_structure). The
+    element of each species is the element symbol its name starts with (see element_from_species_name).
 
     Attributes:
         structure (Structure): Associated Structure.
@@ -1068,17 +1304,18 @@ class JDFTXStructure(MSONable):
         sort_structure (bool): Whether to sort the structure. Useful if species are not grouped properly together.
             Defaults to False.
         write_cart_coords (bool): Whether to write cartesian coordinates. Defaults to False.
-        velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available. Kept separate from
-            structure.site_properties["velocities"] to allow inhomogeneous shaping.
-        constraint_types (list[str | None]): Constraint types for each site if available. Kept separate from
-            structure.site_properties["constraint_types"] to allow inhomogeneous shaping.
+        velocities (list[np.ndarray | list[float] | None]): Velocities for each site if available, in Cartesian
+            angstrom/fs. Kept separate from structure.site_properties["velocities"] to allow inhomogeneous shaping.
+        constraint_types (list[str | None]): Constraint type ("Linear", "Planar", "HyperPlane", or None) for each site
+            if available. Read from structure.site_properties["constraint_types"] if not given.
         constraint_vectors (list[np.ndarray | list[np.ndarray] | None]): Constraint vectors for each site if
-            available. Kept separate from structure.site_properties["constraint_vectors"] to allow inhomogeneous
-            shaping. i'th entry must be a list of vectors if the i'th constraint_type is "HyperPlane". Otherwise,
-            a single vector is expected.
-        hyperplane_group_names (list[list[str] | None]): Group names for each site if available. Kept separate from
-            structure.site_properties["group_names"] to allow inhomogeneous shaping. i'th entry must be a list of group
-            names if the i'th constraint_type is "HyperPlane". Otherwise, None is expected.
+            available, in Cartesian coordinates (see _constraint_vector_to_cartesian). Read from
+            structure.site_properties["constraint_vectors"] if not given. i'th entry must be a list of vectors if the
+            i'th constraint_type is "HyperPlane". Otherwise, a single vector is expected.
+        hyperplane_group_names (list[list[str | None] | None]): Group names for each site if available. Read from
+            structure.site_properties["group_names"] if not given. i'th entry must be a list of group names (one per
+            hyperplane, None for an unlabeled hyperplane) if the i'th constraint_type is "HyperPlane". Otherwise, None
+            is expected.
     """
 
     structure: Structure | None = None
@@ -1102,46 +1339,29 @@ class JDFTXStructure(MSONable):
         if self.selective_dynamics is not None:
             # Convert provided selective dynamics into JDFTX interpretable format
             self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(self.selective_dynamics)
-        for i in range(len(self.structure.species)):
-            name = ""
-            if isinstance(self.structure.species[i], str):
-                _name_str = self.structure.species[i]
-            elif isinstance(self.structure.species[i], SpeciesLike):
-                _name_str = self.structure.species[i].symbol
-                if not isinstance(_name_str, str):
-                    _name_str = _name_str.symbol
-            else:
-                raise TypeError("Species must be a string or SpeciesLike object")
-            name_str = str(_name_str)
-            for j in range(len(name_str)):
-                if not name_str[j].isdigit():
-                    name += name_str[j]
-            self.structure.species[i] = name
         # For the optional properties, if they are all None, set to None to avoid writing them out, but check for
         # data in structure.site_properties to populate them if available.
-        properties_to_sync = []
-        if _allnone(self.selective_dynamics):
-            self.selective_dynamics = None
-            properties_to_sync.append("selective_dynamics")
-        if _allnone(self.velocities):
-            self.velocities = None
-            properties_to_sync.append("velocities")
-        # We do not continue this for constraint_types, constraint_vectors, hyperplane_group_names
-        # because these are likely inhomogeneous, and thus cannot be stored in structure.site_properties
-        for x in properties_to_sync:
-            self._sync_site_property(x)
+        optional_properties = [
+            "selective_dynamics",
+            "velocities",
+            "constraint_types",
+            "constraint_vectors",
+            "hyperplane_group_names",
+        ]
+        for x in optional_properties:
+            if _allnone(getattr(self, x)):
+                setattr(self, x, None)
+                self._sync_site_property(x)
 
     def _sync_site_property(self, x: str) -> None:
         """Update a single JDFTXStructure class variable from structure site properties."""
-        if self.structure is None:
+        site_property = "group_names" if x == "hyperplane_group_names" else x
+        if self.structure is None or site_property not in self.structure.site_properties:
             return
-        if x in ["velocities", "constraint_types", "constraint_vectors", "group_names"]:
-            if x in self.structure.site_properties:
-                setattr(self, x, self.structure.site_properties[x])
-        elif x == "selective_dynamics" and "selective_dynamics" in self.structure.site_properties:
-            self.selective_dynamics = selective_dynamics_site_prop_to_jdftx_interpretable(
-                self.structure.site_properties["selective_dynamics"]
-            )
+        value = self.structure.site_properties[site_property]
+        setattr(
+            self, x, selective_dynamics_site_prop_to_jdftx_interpretable(value) if x == "selective_dynamics" else value
+        )
 
     def __repr__(self) -> str:
         """Return representation of JDFTXStructure file.
@@ -1203,7 +1423,8 @@ class JDFTXStructure(MSONable):
             sort_structure (bool, optional): Whether to sort the structure. Useful if species are not grouped properly
                 together as JDFTx output will have species sorted.
             fill_site_properties (bool, optional): Whether to fill in site properties for
-                `JDFTXStructure.structure: Structure` from the JDFTXInfile tags.
+                `JDFTXStructure.structure: Structure` from the JDFTXInfile tags. Species names that aren't their
+                element symbol (e.g. Fe1) are always kept, as the jdftx_species site property.
 
         Returns:
             JDFTXStructure: The created JDFTXStructure object.
@@ -1213,7 +1434,7 @@ class JDFTXStructure(MSONable):
                 "Structure sorting requested but is not currently implemented! Site ordering will not be changed."
             )
         lattice = _infile_to_pmg_lattice(jdftxinfile)
-        atomic_symbols = [x["species-id"] for x in jdftxinfile["ion"]]
+        elements, species_names = get_species_elements([x["species-id"] for x in jdftxinfile["ion"]])
         coords = np.array([[x["x0"], x["x1"], x["x2"]] for x in jdftxinfile["ion"]])
         selective_dynamics = np.array([x["moveScale"] for x in jdftxinfile["ion"]])
         # Gather optional tags
@@ -1224,48 +1445,58 @@ class JDFTXStructure(MSONable):
         coords_are_cartesian = False  # is default for JDFTx
         if "coords-type" in jdftxinfile:
             coords_are_cartesian = jdftxinfile["coords-type"].lower() == "cartesian"
+        # Velocities are stored in Cartesian angstrom/fs, converted to Cartesian coordinates like the positions are
         if coords_are_cartesian:
             coords *= bohr_to_ang
-            if not _allnone(velocities):
-                velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
-        constraint_types = [x.get("constraint-type", None) for x in jdftxinfile["ion"]]
-        constraint_vectors = [
-            [x["d0"], x["d1"], x["d2"]] if "constraint-type" in x else None for x in jdftxinfile["ion"]
-        ]
-        hyperplane_vectors = [
-            [[[y["d0"], y["d1"], y["d2"]] for y in x["HyperPlane"]]] if "HyperPlane" in x else None
-            for x in jdftxinfile["ion"]
-        ]
-        hyperplane_groups: list = [None for _ in range(len(hyperplane_vectors))]
-        if not all(x is None for x in hyperplane_vectors):
-            for i in range(len(hyperplane_vectors)):
-                if hyperplane_vectors[i] is not None:
-                    constraint_types[i] = "HyperPlane"
-                    constraint_vectors[i] = hyperplane_vectors[i]
-            hyperplane_groups = [
-                [[y["group"] for y in x["HyperPlane"]] if "HyperPlane" in x else None] for x in jdftxinfile["ion"]
-            ]
+            velocities = [v * bohr_to_ang if v is not None else None for v in velocities]
+        else:
+            velocities = [lattice.get_cartesian_coords(v) if v is not None else None for v in velocities]
+        velocities = [v / JDFTX_TIME_UNIT_TO_FS if v is not None else None for v in velocities]
+        constraint_types: list[str | None] = []
+        constraint_vectors: list = []
+        hyperplane_groups: list[list[str | None] | None] = []
+        for ion in jdftxinfile["ion"]:
+            ctype: str | None = None
+            vectors: list | None = None
+            groups: list[str | None] | None = None
+            if "HyperPlane" in ion:  # One or more labeled hyperplanes
+                ctype, groups = "HyperPlane", [hp["group"] for hp in ion["HyperPlane"]]
+                vectors = [[hp["d0"], hp["d1"], hp["d2"]] for hp in ion["HyperPlane"]]
+            elif "constraint type" in ion:  # Linear, Planar, or a single unlabeled hyperplane
+                ctype = ion["constraint type"]
+                groups = [None] if ctype == "HyperPlane" else None
+                vectors = [[ion["d0"], ion["d1"], ion["d2"]]]
+            if ctype is not None and vectors is not None:
+                if not coords_are_cartesian:
+                    vectors = [_constraint_vector_to_cartesian(ctype, v, lattice).tolist() for v in vectors]
+                if ctype != "HyperPlane":
+                    vectors = vectors[0]
+            constraint_types.append(ctype)
+            constraint_vectors.append(vectors)
+            hyperplane_groups.append(groups)
 
         struct: Structure = Structure(
             lattice,
-            atomic_symbols,
+            elements,
             coords,
             to_unit_cell=False,
             validate_proximity=False,
             coords_are_cartesian=coords_are_cartesian,
         )
-        if velocities is not None and fill_site_properties:
-            struct.add_site_property("velocities", velocities)
-        if constraint_types is not None and fill_site_properties:
-            struct.add_site_property("constraint_types", constraint_types)
-        if constraint_vectors is not None and fill_site_properties:
-            struct.add_site_property("constraint_vectors", constraint_vectors)
-        if hyperplane_groups is not None and fill_site_properties:
-            struct.add_site_property("group_names", hyperplane_groups)
-        if selective_dynamics is not None and fill_site_properties:
-            struct.add_site_property(
-                "selective_dynamics", movescale_array_to_selective_dynamics_site_prop(selective_dynamics)
-            )
+        if species_names is not None:  # Kept even without fill_site_properties, as they decide each ion's species
+            struct.add_site_property(JDFTX_SPECIES_SITE_PROPERTY, species_names)
+        if fill_site_properties:
+            site_properties: list[list] = [velocities, constraint_types, constraint_vectors, hyperplane_groups]
+            for prop, val in zip(
+                ["velocities", "constraint_types", "constraint_vectors", "group_names"],
+                site_properties,
+                strict=True,
+            ):
+                if (val is not None) and (not all(x is None for x in val)):
+                    struct.add_site_property(prop, val)
+            if (selective_dynamics is not None) and (not all(x is None for x in selective_dynamics)):
+                # A site's moveScale applies to all three directions
+                struct.add_site_property("selective_dynamics", [[bool(s)] * 3 for s in selective_dynamics])
         return cls(
             structure=struct,
             selective_dynamics=selective_dynamics,
@@ -1292,34 +1523,37 @@ class JDFTXStructure(MSONable):
         if in_cart_coords is None:
             in_cart_coords = self.write_cart_coords
 
-        lattice = np.copy(self.structure.lattice.matrix)
-        lattice = lattice.T  # transpose to get into column-vector format
-        lattice /= const.value("Bohr radius") * 10**10  # Bohr radius in Ang; convert to Bohr
+        lattice = self.structure.lattice.matrix.T / bohr_to_ang  # column-vector format, in bohr
 
         jdftx_tag_dict["lattice"] = {f"R{i}{j}": lattice[i][j] for i in range(3) for j in range(3)}
         jdftx_tag_dict["ion"] = []
         jdftx_tag_dict["coords-type"] = "Cartesian" if in_cart_coords else "Lattice"
-        valid_labels = [
-            value.symbol for key, value in Element.__dict__.items() if not key.startswith("_") and not callable(value)
-        ]
+        valid_labels = {el.symbol for el in Element}
         if (self.constraint_types is not None) and (self.constraint_vectors is None):
             raise ValueError("Constraint types are present but constraint vectors are not!")
         if (self.constraint_vectors is not None) and (self.constraint_types is None):
             raise ValueError("Constraint vectors are present but constraint types are not!")
         if self.structure is None:
             return ""
+        species_names = self.structure.site_properties.get(JDFTX_SPECIES_SITE_PROPERTY)
+        mismatched_sites = []  # Sites whose species name isn't of their element
         for i, site in enumerate(self.structure):
             label = site.label
-            coords = site.coords * (1 / bohr_to_ang) if in_cart_coords else site.frac_coords
+            coords = site.coords / bohr_to_ang if in_cart_coords else site.frac_coords
             sd = int(bool(cast("np.ndarray", self.selective_dynamics)[i])) if self.selective_dynamics is not None else 1
-            # TODO: This is needlessly complicated, simplify this
-            if label not in valid_labels:
-                for varname in ["species_string", "specie.name"]:
-                    if _multi_hasattr(site, varname) and _multi_getattr(site, varname) in valid_labels:
-                        label = _multi_getattr(site, varname)
-                        break
+            name = species_names[i] if species_names is not None else None
+            if isinstance(name, str) and element_from_species_name(name) == getattr(site.specie, "symbol", None):
+                label = name  # The site's JDFTx species name (e.g. Fe1)
+            else:
+                if name is not None:
+                    mismatched_sites.append(i)
                 if label not in valid_labels:
-                    raise ValueError(f"Could not correct site label {label} for site (index {i})")
+                    # Fall back to first the species string (ie "Ag" for label "Ag0"), and then the element name
+                    # (e.g. "Fe" for species "Fe2+")
+                    fallbacks: tuple[str, ...] = (site.species_string, getattr(site.specie, "name", ""))
+                    label = next((x for x in fallbacks if x in valid_labels), label)
+                    if label not in valid_labels:
+                        raise ValueError(f"Could not correct site label {label} for site (index {i})")
             ion_dict_rep = {
                 "species-id": label,
                 "x0": coords[0],
@@ -1329,34 +1563,63 @@ class JDFTXStructure(MSONable):
             }
             # Gather velocities if present
             if (self.velocities is not None) and (self.velocities[i] is not None):
-                conv = 1
+                # angstrom/fs to JDFTx units
+                velocity = np.asarray(self.velocities[i], dtype=float) * JDFTX_TIME_UNIT_TO_FS
                 if in_cart_coords:
-                    conv = 1 / bohr_to_ang
-                ion_dict_rep["v"] = {
-                    "vx0": self.velocities[i][0] * conv,
-                    "vx1": self.velocities[i][1] * conv,
-                    "vx2": self.velocities[i][2] * conv,
-                }
-            # Gather constraints if present
-            if ((self.constraint_types is not None) and (self.constraint_vectors is not None)) and (
-                self.constraint_types[i] is not None
-            ):
-                ctype = self.constraint_types[i]
-                if ctype == "HyperPlane":
-                    ion_dict_rep["HyperPlane"] = []
-                    if self.constraint_vectors[i] is not None:
-                        for j, hyperplane in enumerate(self.constraint_vectors[i]):
-                            _hyperplane = {}
-                            for k in range(3):
-                                _hyperplane["d" + str(k)] = hyperplane[k]
-                            _hyperplane["group"] = self.hyperplane_groups[i][j]
-                            ion_dict_rep["HyperPlane"].append(_hyperplane)
+                    velocity = velocity / bohr_to_ang
                 else:
-                    ion_dict_rep["constraint-type"] = ctype
-                    for j in range(3):
-                        ion_dict_rep["d" + str(j)] = self.constraint_vectors[i][j]
+                    velocity = self.structure.lattice.get_fractional_coords(velocity)
+                ion_dict_rep["v"] = {"vx0": velocity[0], "vx1": velocity[1], "vx2": velocity[2]}
+            # Gather constraints if present
+            if self.constraint_types is not None and self.constraint_types[i] is not None:
+                ion_dict_rep.update(self._get_constraint_tags(i, sd, in_cart_coords))
             jdftx_tag_dict["ion"].append(ion_dict_rep)
+        if mismatched_sites:
+            warnings.warn(
+                f"The {JDFTX_SPECIES_SITE_PROPERTY} species names of sites {mismatched_sites} aren't of their elements "
+                "(e.g. after replace_species), so these sites are written with their element symbols instead",
+                stacklevel=2,
+            )
         return str(JDFTXInfile.from_dict(jdftx_tag_dict))
+
+    def _get_constraint_tags(self, i: int, move_scale: int, in_cart_coords: bool) -> dict[str, Any]:
+        """Get the ion tag entries for the constraint on a site.
+
+        Args:
+            i (int): Site index.
+            move_scale (int): moveScale written for the site.
+            in_cart_coords (bool): Whether the ion tags are written in Cartesian coordinates.
+
+        Returns:
+            dict[str, Any]: Constraint entries to add to the site's ion tag.
+
+        Raises:
+            ValueError: If the constraint can't be written as a valid JDFTx constraint.
+        """
+        ctype = cast("list", self.constraint_types)[i]
+        if ctype not in ("Linear", "Planar", "HyperPlane"):
+            raise ValueError(f"Unknown constraint type {ctype} for site (index {i})")
+        if cast("list", self.constraint_vectors)[i] is None:
+            raise ValueError(f"Site (index {i}) has a {ctype} constraint but has no constraint vector")
+        if not move_scale:  # JDFTx rejects constraints on fixed ions
+            raise ValueError(f"Site (index {i}) has a {ctype} constraint but a moveScale of 0")
+        vectors = np.reshape(cast("list", self.constraint_vectors)[i], (-1, 3)).astype(float)
+        if ctype != "HyperPlane" and (len(vectors) != 1 or not vectors.any()):
+            raise ValueError(f"{ctype} constraint vector for site (index {i}) must be a single non-zero vector")
+        if not in_cart_coords:
+            vectors = np.array([_constraint_vector_from_cartesian(ctype, v, self.structure.lattice) for v in vectors])
+        groups = None if self.hyperplane_group_names is None else self.hyperplane_group_names[i]
+        if groups is None:
+            groups = [None] * len(vectors)
+        if len(vectors) == 1 and groups[0] is None:  # Linear, Planar, or a single unlabeled hyperplane
+            return {"constraint type": ctype, "d0": vectors[0][0], "d1": vectors[0][1], "d2": vectors[0][2]}
+        if None in groups:
+            raise ValueError(f"Each hyperplane on site (index {i}) needs a group name when there is more than one")
+        return {
+            "HyperPlane": [
+                {"d0": v[0], "d1": v[1], "d2": v[2], "group": group} for v, group in zip(vectors, groups, strict=True)
+            ]
+        }
 
     def write_file(self, filename: PathLike, **kwargs) -> None:
         """Write JDFTXStructure to a file.
@@ -1368,7 +1631,7 @@ class JDFTXStructure(MSONable):
             filename (PathLike): Filename to write to.
             **kwargs: Kwargs to pass to JDFTXStructure.get_str.
         """
-        with open(filename, mode="w") as file:
+        with open(filename, encoding="utf-8", mode="w") as file:
             file.write(self.get_str(**kwargs))
 
     def as_dict(self) -> dict:
@@ -1408,60 +1671,17 @@ class JDFTXStructure(MSONable):
         )
 
 
-def _multi_hasattr(varbase: Any, varname: str):
-    """Check if object has an attribute (capable of nesting with . splits).
-
-    Check if object has an attribute (capable of nesting with . splits).
-
-    Parameters
-    ----------
-    varbase
-        Object to check.
-    varname
-        Attribute to check for.
-
-    Returns
-    -------
-    bool
-        Whether the object has the attribute.
-    """
-    varlist = varname.split(".")
-    for i, var in enumerate(varlist):
-        if i == len(varlist) - 1:
-            return hasattr(varbase, var)
-        if hasattr(varbase, var):
-            varbase = getattr(varbase, var)
-        else:
-            return False
-    return None
-
-
-def _multi_getattr(varbase: Any, varname: str):
-    """Check if object has an attribute (capable of nesting with . splits).
-
-    Check if object has an attribute (capable of nesting with . splits).
-
-    Parameters
-    ----------
-    varbase
-        Object to check.
-    varname
-        Attribute to check for.
-
-    Returns
-    -------
-    Any
-        Attribute of the object.
-    """
-    if not _multi_hasattr(varbase, varname):
-        raise AttributeError(f"{varbase} does not have attribute {varname}")
-    varlist = varname.split(".")
-    for var in varlist:
-        varbase = getattr(varbase, var)
-    return varbase
-
-
 def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
+    """Convert JDFTX lattice tag to pymatgen Lattice object.
+
+    Handles both the matrix format (R00 ... R22) and the named-lattice format (e.g. "lattice Cubic 10.0").
+
+    Args:
+        jdftxinfile (JDFTXInfile): JDFTXInfile containing a lattice tag.
+
+    Returns:
+        Lattice: Pymatgen Lattice object.
+    """
     jl = jdftxinfile["lattice"]
     if "R00" not in jl:
         return _infile_special_format_to_pmg_lattice(jdftxinfile)
@@ -1469,32 +1689,71 @@ def _infile_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
 
 
 def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
-    jl = jdftxinfile["lattice"].copy()
-    for key in ["a", "b", "c"]:
-        if key in jl and isinstance(jl[key], float):
-            jl[key] *= bohr_to_ang
+    """Convert JDFTX named-lattice tag to pymatgen Lattice object.
+
+    Handles the named-lattice format (e.g. "lattice Cubic 10.0"), converting lengths from bohr to angstrom and
+    applying the latt-scale tag if present.
+
+    Args:
+        jdftxinfile (JDFTXInfile): JDFTXInfile containing a named-lattice lattice tag.
+
+    Returns:
+        Lattice: Pymatgen Lattice object.
+
+    Raises:
+        NotImplementedError: If the lattice uses a modification.
+        ValueError: If the lattice type is not recognized.
+    """
+    jl = jdftxinfile["lattice"]
     if "modification" in jl:
         raise NotImplementedError("Special case lattices with modification not implemented yet")
-    # Second boolean to check if latt-scale was passed but does nothing
-    if ("latt-scale" in jl) and (not all(np.isclose(float(x), 1) in jl for x in ["s0", "s1", "s2"])):
-        raise NotImplementedError("latt-scale for special case lattices not implemented yet")
-    if "Monoclinic" in jl:
-        lattice = Lattice.monoclinic(jl["a"], jl["b"], jl["c"], jl["beta"])
-    elif "Orthorhombic" in jl:
-        lattice = Lattice.orthorhombic(jl["a"], jl["b"], jl["c"])
-    elif "Cubic" in jl:
-        lattice = Lattice.cubic(jl["a"])
-    elif "Hexagonal" in jl:
-        lattice = Lattice.hexagonal(jl["a"], jl["c"])
-    elif "Rhombohedral" in jl:
-        lattice = Lattice.rhombohedral(jl["a"], jl["alpha"])
-    elif "Tetragonal" in jl:
-        lattice = Lattice.tetragonal(jl["a"], jl["c"])
-    elif "Triclinic" in jl:
-        lattice = Lattice.from_parameters(jl["a"], jl["b"], jl["c"], jl["alpha"], jl["beta"], jl["gamma"])
-    else:
+    # Lengths (bohr) and angles (degrees) a, b, c, alpha, beta, gamma of each named lattice
+    parameters = {
+        "Cubic": lambda: (jl["a"], jl["a"], jl["a"], 90.0, 90.0, 90.0),
+        "Tetragonal": lambda: (jl["a"], jl["a"], jl["c"], 90.0, 90.0, 90.0),
+        "Orthorhombic": lambda: (jl["a"], jl["b"], jl["c"], 90.0, 90.0, 90.0),
+        "Hexagonal": lambda: (jl["a"], jl["a"], jl["c"], 90.0, 90.0, 120.0),
+        "Rhombohedral": lambda: (jl["a"], jl["a"], jl["a"], jl["alpha"], jl["alpha"], jl["alpha"]),
+        "Monoclinic": lambda: (jl["a"], jl["b"], jl["c"], 90.0, jl["beta"], 90.0),
+        "Triclinic": lambda: (jl["a"], jl["b"], jl["c"], jl["alpha"], jl["beta"], jl["gamma"]),
+    }
+    lattice_type = next((name for name in parameters if name in jl), None)
+    if lattice_type is None:
         raise ValueError(f"Unable to convert JDFTX lattice tag {jl} to pymatgen Lattice object")
-    return lattice
+    r = _jdftx_named_lattice_vectors(*(float(x) for x in parameters[lattice_type]()))
+    if "latt-scale" in jdftxinfile:
+        # JDFTx scales lattice vector k (column k) by s_k
+        r = r * np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]], dtype=float)
+    return Lattice(r.T * bohr_to_ang)  # convert to row vector format, in Ang
+
+
+def _jdftx_named_lattice_vectors(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> np.ndarray:
+    """Get the lattice vectors of a named lattice as JDFTx builds them (GridInfo::setLatticeVectors).
+
+    JDFTx puts a along x and b in the xy-plane, which pymatgen's Lattice.from_parameters does not (it puts c along z).
+    The orientation decides where ions given in Cartesian coordinates sit in the cell, so JDFTx's construction (and
+    arithmetic) is followed exactly.
+
+    Args:
+        a (float): Length of the first lattice vector (bohr).
+        b (float): Length of the second lattice vector (bohr).
+        c (float): Length of the third lattice vector (bohr).
+        alpha (float): Angle between b and c (degrees).
+        beta (float): Angle between a and c (degrees).
+        gamma (float): Angle between a and b (degrees).
+
+    Returns:
+        np.ndarray: Lattice vectors as columns (bohr).
+    """
+    cos_alpha = math.cos(alpha * math.pi / 180.0)
+    cos_beta = math.cos(beta * math.pi / 180.0)
+    sin_gamma, cos_gamma = math.sin(gamma * math.pi / 180.0), math.cos(gamma * math.pi / 180.0)
+    r = np.zeros((3, 3))
+    r[:, 0] = [a, 0.0, 0.0]
+    r[:, 1] = [b * cos_gamma, b * sin_gamma, 0.0]
+    r[:, 2] = [c * cos_beta, c * ((cos_alpha - cos_beta * cos_gamma) / sin_gamma), 0.0]
+    r[2, 2] = math.sqrt(c * c - r[0, 2] * r[0, 2] - r[1, 2] * r[1, 2])
+    return r
 
 
 def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
@@ -1506,14 +1765,47 @@ def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
     Returns:
         Lattice: Pymatgen Lattice object.
     """
-    _lattice = np.zeros([3, 3])
     jl = jdftxinfile["lattice"]
-    for i in range(3):
-        for j in range(3):
-            _lattice[i][j] += float(jl[f"R{i}{j}"])
+    _lattice = np.array([[jl[f"R{i}{j}"] for j in range(3)] for i in range(3)], dtype=float)
     if "latt-scale" in jdftxinfile:
         latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]])
         _lattice *= latt_scale
-    _lattice = _lattice.T  # convert to row vector format
-    _lattice *= const.value("Bohr radius") * 10**10  # Bohr radius in Ang; convert to Ang
-    return Lattice(_lattice)
+    return Lattice(_lattice.T * bohr_to_ang)  # convert to row vector format, in Ang
+
+
+def _constraint_vector_to_cartesian(constraint_type: str, vector: ArrayLike, lattice: Lattice) -> np.ndarray:
+    """Convert an ion constraint vector from JDFTx lattice coordinates to Cartesian coordinates.
+
+    As in JDFTx, a Linear constraint direction is covariant (like a direction index) and a Planar or HyperPlane
+    normal is contravariant (like a plane index). The result is in the bohr-based units JDFTx uses internally, so it
+    matches what JDFTx reads from an input file with Cartesian coords-type.
+
+    Args:
+        constraint_type (str): "Linear", "Planar", or "HyperPlane".
+        vector (ArrayLike): Constraint vector in lattice coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        np.ndarray: Constraint vector in Cartesian coordinates.
+    """
+    r = lattice.matrix.T / bohr_to_ang  # JDFTx lattice vectors (columns), in bohr
+    vector = np.asarray(vector, dtype=float)
+    return r @ vector if constraint_type == "Linear" else np.linalg.solve(r.T, vector)
+
+
+def _constraint_vector_from_cartesian(constraint_type: str, vector: ArrayLike, lattice: Lattice) -> np.ndarray:
+    """Convert an ion constraint vector from Cartesian coordinates to JDFTx lattice coordinates.
+
+    Inverse of _constraint_vector_to_cartesian.
+
+    Args:
+        constraint_type (str): "Linear", "Planar", or "HyperPlane".
+        vector (ArrayLike): Constraint vector in Cartesian coordinates.
+        lattice (Lattice): Lattice of the structure.
+
+    Returns:
+        np.ndarray: Constraint vector in lattice coordinates.
+    """
+    r = lattice.matrix.T / bohr_to_ang  # JDFTx lattice vectors (columns), in bohr
+    vector = np.asarray(vector, dtype=float)
+    return np.linalg.solve(r, vector) if constraint_type == "Linear" else r.T @ vector
