@@ -44,9 +44,9 @@ An output file can hold several runs (JDFTx appends to an existing `-o` file). `
 from pymatgen.io.jdftx.inputs import JDFTXInfile
 
 jif = JDFTXInfile.from_file("h2o.in")
-jif["elec-cutoff"]                                 # {'Ecut': 20.0, 'EcutRho': 100.0}
+jif["elec-cutoff"]  # {'Ecut': 20.0, 'EcutRho': 100.0}
 jif["elec-cutoff"] = {"Ecut": 25, "EcutRho": 125}  # change a setting
-jif["elec-smearing"] = "Fermi 0.01"                # or give it as written in the file
+jif["elec-smearing"] = "Fermi 0.01"  # or give it as written in the file
 jif.append_tag("fluid-cation", {"name": "K+", "concentration": 0.1})
 jif.append_tag("fluid-anion", {"name": "Cl-", "concentration": 0.1})  # JDFTx refuses a charged electrolyte
 del jif["ionic-minimize"]
@@ -108,11 +108,11 @@ settings = JDFTXInfile.from_dict({"ion-species": "GBRV/$ID_pbe.uspp", "elec-cuto
 from pymatgen.io.jdftx.outputs import JDFTXOutfile
 
 out = JDFTXOutfile.from_file("jdftx.out")
-out.structure     # final structure (pymatgen Structure, Å)
-out.e             # final energy, eV
-out.ecomponents   # energy terms, eV
-out.forces        # eV/Å, one row per atom
-out.infile        # the run's settings, as JDFTx printed them
+out.structure  # final structure (pymatgen Structure, Å)
+out.e  # final energy, eV
+out.ecomponents  # energy terms, eV
+out.forces  # eV/Å, one row per atom
+out.infile  # the run's settings, as JDFTx printed them
 ```
 
 - Lowdin charges and magnetic moments are site properties of the structure (`charges`, `magmom`).
@@ -145,9 +145,9 @@ final velocities and thermostat state). *(To write after issues 9, 41 and 47: wh
 from pymatgen.io.jdftx.outputs import JDFTXOutputs
 
 outputs = JDFTXOutputs.from_calc_dir("calc_folder", store_vars=["eigenvals", "bandProjections"])
-outputs.eigenvals        # eV, shape (spins x k-points, bands)
+outputs.eigenvals  # eV, shape (spins x k-points, bands)
 outputs.bandProjections  # shape (spins x k-points, bands, orbitals)
-outputs.orb_label_list   # orbital of each projection, e.g. "H#1(s)"
+outputs.orb_label_list  # orbital of each projection, e.g. "H#1(s)"
 ```
 
 Asking for `"bandstructure"` builds a pymatgen `BandStructure` from the eigenvalues, the k-points and, if present, the
