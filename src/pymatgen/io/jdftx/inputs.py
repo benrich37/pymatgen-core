@@ -803,22 +803,12 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             list[str]: Tags that differ between the two JDFTXInfile objects.
         """
-        # Copy to avoid mutating the caller's list
-        exclude_tags = [] if exclude_tags is None else list(exclude_tags)
-        if exclude_tag_categories is None:
-            exclude_tag_categories = []
-        if ensure_include_tags is None:
-            ensure_include_tags = []
-        for category in exclude_tag_categories:
-            exclude_tags += list(MASTER_TAG_LIST[category].keys())
-        for tag in ensure_include_tags:
-            if tag in exclude_tags:
-                exclude_tags.remove(tag)
-        differing_tags = self.get_differing_tags(other)
-        for exclude_tag in exclude_tags:
-            if exclude_tag in differing_tags:
-                differing_tags.remove(exclude_tag)
-        return differing_tags
+        # A set, so a tag excluded more than once (named and in a category) is still re-included in one step
+        excluded = set(exclude_tags or [])
+        for category in exclude_tag_categories or []:
+            excluded.update(MASTER_TAG_LIST[category])
+        excluded.difference_update(ensure_include_tags or [])
+        return [tag for tag in self.get_differing_tags(other) if tag not in excluded]
 
     # get_differing_tags for a full list of tags that differ between two JDFTXInfile objects
     def get_differing_tags(self, other: JDFTXInfile) -> list[str]:

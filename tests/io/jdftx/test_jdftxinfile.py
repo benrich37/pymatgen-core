@@ -1973,3 +1973,31 @@ def test_get_filtered_differing_tags_does_not_mutate_args():
     exclude_tags = ["elec-n-bands"]
     jif1.get_filtered_differing_tags(jif2, exclude_tags=exclude_tags, ensure_include_tags=ensure_include_tags)
     assert exclude_tags == ["elec-n-bands"]
+
+
+@pytest.mark.parametrize(
+    ("exclude_tags", "exclude_tag_categories"),
+    [
+        (["elec-n-bands"], ["electronic"]),  # named and in an excluded category
+        (["elec-n-bands", "elec-n-bands"], None),  # named twice
+        (None, ["electronic", "electronic"]),  # category named twice
+    ],
+)
+def test_get_filtered_differing_tags_ensure_include_beats_repeated_exclusion(exclude_tags, exclude_tag_categories):
+    """A tag in ensure_include_tags is compared however many times it was excluded."""
+    jif1 = JDFTXInfile.from_file(ex_infile1_fname)
+    jif2 = jif1.copy()
+    jif2["elec-n-bands"] = 20001
+    differing_tags = jif1.get_filtered_differing_tags(
+        jif2,
+        exclude_tags=exclude_tags,
+        exclude_tag_categories=exclude_tag_categories,
+        ensure_include_tags=["elec-n-bands"],
+    )
+    assert differing_tags == ["elec-n-bands"]
+    assert not jif1.is_comparable_to(
+        jif2,
+        exclude_tags=exclude_tags,
+        exclude_tag_categories=exclude_tag_categories,
+        ensure_include_tags=["elec-n-bands"],
+    )
