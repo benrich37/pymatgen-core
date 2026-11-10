@@ -1064,6 +1064,7 @@ def test_perturb_minimize_algorithm_rejects_cgiminres():
 JDFTX_REPEATABLE_TAGS = {
     "box-potential",
     "charged-defect",
+    "chargeball",
     "debug",
     "dump",
     "dump-Eresolved-density",
@@ -1251,6 +1252,41 @@ def test_dump_hc():
     jif = JDFTXInfile.from_str("dump End HC\n", dont_require_structure=True)
     assert jif["dump"] == [{"End": {"HC": True}}]
     assert " ".join(str(jif).split()) == "dump End HC"
+
+
+@pytest.mark.parametrize(
+    ("echo", "expected"),
+    [
+        ("chargeball H 1 0.5", [{"species-id": "H", "norm": 1.0, "width": 0.5}]),
+        (
+            "setVDW \tO 0.7 1.3 \\\n\tH 1.5 2",
+            {"species-params": [{"species": "O", "C6": 0.7, "R0": 1.3}, {"species": "H", "C6": 1.5, "R0": 2.0}]},
+        ),
+        (
+            "set-atomic-radius \tO 1.5 \\\n\tH 1.2",
+            {"species-radii": [{"species": "O", "Ri": 1.5}, {"species": "H", "Ri": 1.2}]},
+        ),
+        (
+            "metadynamics-bond O 1 H 2 0.1 0.001 bias.dat",
+            {
+                "species1": "O",
+                "atom1": 1,
+                "species2": "H",
+                "atom2": 2,
+                "resolution": 0.1,
+                "energy-per-step": 0.001,
+                "state-file": "bias.dat",
+            },
+        ),
+    ],
+    ids=["chargeball", "setVDW", "set-atomic-radius", "metadynamics-bond"],
+)
+def test_species_override_and_metadynamics_commands(echo: str, expected: Any):
+    """These commands were missing, so inputs with them raised and restarts lost them. The lines are JDFTx's echoes."""
+    tag = echo.split(maxsplit=1)[0]
+    jif = JDFTXInfile.from_str(echo + "\n", dont_require_structure=True)
+    assert jif[tag] == expected
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)[tag] == expected
 
 
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
