@@ -1225,6 +1225,11 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "T": FloatTag(),
                 "omegaResolution": FloatTag(),
                 "dumpK": BoolTag(),
+                # Added in JDFTx 2026-08-27 (c80e3463); JDFTx since then echoes both, even when unset (-1).
+                # iConfiguration -1 (default) starts at configuration 0; JDFTx rejects anything below -1.
+                "iConfiguration": IntTag(lb=-1),
+                # 0 and -1 (default) both run through the last configuration; JDFTx sets no bounds
+                "nConfigurations": IntTag(),
             }
         ),
         "barostat-velocity": TagContainer(

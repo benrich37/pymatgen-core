@@ -348,6 +348,9 @@ species_names_outfile_path = ex_out_files_dir / Path("species_names.out")
 # Natively generated H2 single point in ClassicalDFT water with "fluid-site-params H2O O sigmaNuc 0.5" and
 # "fluid-site-params H2O H aPol 0.4"
 fluid_site_params_outfile_path = ex_out_files_dir / Path("fluid_site_params.out")
+# Natively generated H2 vibrations run ("vibrations centralDiff yes") with JDFTx b3c54e1d, whose echo has the
+# dumpK, iConfiguration and nConfigurations keys added to JDFTx on 2026-08-27
+vib_central_diff_outfile_path = ex_out_files_dir / Path("vib_central_diff.out")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

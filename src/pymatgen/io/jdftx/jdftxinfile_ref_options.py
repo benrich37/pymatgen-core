@@ -742,6 +742,7 @@ jdftxdumpvaroptions = [
     "FluidDensity",  # Fluid densities (NO,NH,nWater for explicit fluids, cavity function for PCMs)
     "Forces",  # Forces on the ions in the coordinate system selected by command forces-output-coords
     "Gvectors",  # List of G vectors in reciprocal lattice basis, for each k-point
+    "HC",  # Hamiltonian applied on wavefunctions for non self-consistent forces
     "IonicDensity",  # Nuclear charge density (with gaussians)
     "IonicPositions",  # Ionic positions in the same format (and coordinate system) as the input file
     "KEdensity",  # Kinetic energy density of the valence electrons

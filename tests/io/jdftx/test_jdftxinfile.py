@@ -1231,6 +1231,28 @@ def test_quad_nbeta_zero_is_left_out():
     assert " ".join(str(jif).split()) == "fluid-solvent H2O 55.338 ScalarEOS quad_nAlpha 0"
 
 
+def test_vibrations_configuration_range():
+    """iConfiguration/nConfigurations (JDFTx since 2026-08) are read and written; JDFTx needs iConfiguration >= -1."""
+    line = "vibrations centralDiff yes iConfiguration 2 nConfigurations 3\n"
+    expected = {"centralDiff": True, "iConfiguration": 2, "nConfigurations": 3}
+    jif = JDFTXInfile.from_str(line, dont_require_structure=True)
+    assert jif["vibrations"] == expected
+    assert " ".join(str(jif).split()) == "vibrations centralDiff yes iConfiguration 2 nConfigurations 3"
+    assert JDFTXInfile.from_str(str(jif), dont_require_structure=True)["vibrations"] == expected
+    # -1 is the default; JDFTx refuses anything lower, but nConfigurations has no bounds
+    unset = line.replace("iConfiguration 2", "iConfiguration -1").replace("nConfigurations 3", "nConfigurations -5")
+    JDFTXInfile.from_str(unset, dont_require_structure=True)
+    with pytest.raises(ValueError, match=re.escape("Value '-2' for tag 'iConfiguration' is not within bounds x >= -1")):
+        JDFTXInfile.from_str(line.replace("iConfiguration 2", "iConfiguration -2"), dont_require_structure=True)
+
+
+def test_dump_hc():
+    """HC (JDFTx since 2025-09) is a dump variable."""
+    jif = JDFTXInfile.from_str("dump End HC\n", dont_require_structure=True)
+    assert jif["dump"] == [{"End": {"HC": True}}]
+    assert " ".join(str(jif).split()) == "dump End HC"
+
+
 @pytest.mark.parametrize("tag", ["electric-field", "perturb-electric-field"])
 def test_electric_field_components_are_floats(tag: str):
     """The field components are doubles in JDFTx (Eh/e/a0), so fields weaker than 1 must not be truncated to 0."""

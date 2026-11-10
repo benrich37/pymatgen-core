@@ -65,6 +65,7 @@ from .outputs_test_utils import (
     species_names_outfile_path,
     vdw_d2_outfile_path,
     vexternal_spin_outfile_path,
+    vib_central_diff_outfile_path,
 )
 from .shared_test_utils import assert_same_value
 
@@ -514,6 +515,28 @@ def test_to_jdftxinfile_keeps_hse06():
     # Reading the restart as an input does warn
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
+
+
+def test_to_jdftxinfile_keeps_vibrations():
+    """JDFTx since 2026-08 echoes iConfiguration/nConfigurations, which pymatgen didn't know, so it dropped the line."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Skipping invalid tag line")
+        outfile = JDFTXOutfile.from_file(vib_central_diff_outfile_path)
+    expected = {
+        "dr": 0.01,
+        "centralDiff": True,
+        "useConstraints": False,
+        "translationSym": True,
+        "rotationSym": False,
+        "omegaMin": 0.0002,
+        "T": 298.0,
+        "omegaResolution": 0.0001,
+        "dumpK": False,
+        "iConfiguration": -1,
+        "nConfigurations": -1,
+    }
+    assert outfile.infile["vibrations"] == expected
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["vibrations"] == expected
 
 
 def test_species_names_from_out_file():
