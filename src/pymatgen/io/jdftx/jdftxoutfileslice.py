@@ -39,7 +39,13 @@ from pymatgen.io.jdftx._output_utils import (
     key_exists,
 )
 from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning, element_from_species_name
-from pymatgen.io.jdftx.inputs import JDFTX_SPECIES_SITE_PROPERTY, JDFTXInfile, get_species_elements, get_species_names
+from pymatgen.io.jdftx.inputs import (
+    JDFTX_SPECIES_SITE_PROPERTY,
+    JDFTXInfile,
+    clean_infile_of_nans,
+    get_species_elements,
+    get_species_names,
+)
 from pymatgen.io.jdftx.joutstructures import JOutStructures, _get_joutstructures_start_idx
 
 __author__ = "Ben Rich"
@@ -1333,7 +1339,8 @@ class JDFTXOutfileSlice:
         # Use internal infile as a reference for calculation parameters
         with warnings.catch_warnings():  # Warnings on the choice of options were for whoever set them
             warnings.simplefilter("ignore", JDFTXOptionWarning)
-            base_infile = self.infile.copy()
+            # Copy without the values JDFTx echoes as nan when unset (e.g. ionic-dynamics P0), which it can't read
+            base_infile = clean_infile_of_nans(self.infile)
         if self.structure is None:
             base_infile.strip_structure_tags()
             return base_infile

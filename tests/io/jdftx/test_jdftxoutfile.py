@@ -517,6 +517,18 @@ def test_to_jdftxinfile_keeps_hse06():
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
 
 
+def test_to_jdftxinfile_leaves_out_nan():
+    """JDFTx echoes unset ionic-dynamics P0/stress0 as nan and can't read it back, so it refused every MD restart."""
+    outfile = JDFTXOutfile.from_file(nolowdin_md_outfile_path)
+    restart = outfile.to_jdftxinfile()
+    assert "nan" not in str(restart).split()
+    assert "P0" not in restart["ionic-dynamics"]
+    assert "stress0" not in restart["ionic-dynamics"]
+    assert restart["ionic-dynamics"]["nSteps"] == 3
+    # The parsed input keeps them
+    assert np.isnan(outfile.infile["ionic-dynamics"]["P0"])
+
+
 def test_to_jdftxinfile_keeps_vibrations():
     """JDFTx since 2026-08 echoes iConfiguration/nConfigurations, which pymatgen didn't know, so it dropped the line."""
     with warnings.catch_warnings():
