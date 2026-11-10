@@ -55,6 +55,7 @@ from .outputs_test_utils import (
     nolowdin_ionmin_outfile_path,
     nolowdin_latmin_outfile_path,
     nolowdin_md_outfile_path,
+    o2_vector_spin_calc_dir,
     partial_lattice_init_outfile_known_lattice,
     partial_lattice_init_outfile_path,
     pcm_params_outfile_path,
@@ -730,3 +731,26 @@ def test_geom_skim_of_run_stopped_in_first_step(tmp_path: Path):
     full = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
     skim = JDFTXOutfile.from_file(tmp_path / "jdftx.out", skim_levels=["geom"], none_slice_on_error=False)
     assert_same_value(skim.slices[-1].jstrucs[-1].as_dict(), full.slices[-1].jstrucs[-1].as_dict())
+
+
+@pytest.mark.parametrize("spintype", ["vector-spin", "spin-orbit"])
+def test_noncollinear_spin(spintype: str, tmp_path: Path):
+    """Noncollinear out files crashed from_file. They have one set of (spinor) states, each band holds one electron,
+    and vector-spin prints each Lowdin moment as |M|, theta and phi."""
+    text = (o2_vector_spin_calc_dir / "out").read_text()
+    if spintype == "spin-orbit":  # The same states; JDFTx prints no moments for spin-orbit
+        text = re.sub(r"^spintype vector-spin$", "spintype spin-orbit", text, flags=re.MULTILINE)
+        text = re.sub(r"^# magnetic-moments .*\n", "", text, flags=re.MULTILINE)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out", none_slice_on_error=False)
+    assert outfile.nspin == 1
+    assert outfile.homo_filling == pytest.approx(1.0)
+    assert outfile.lumo_filling == pytest.approx(0.0)
+    assert not outfile.is_metal
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["spintype"] == spintype
+    if spintype == "vector-spin":
+        # "# magnetic-moments O   0.996 29.9 45.0   0.997 29.8 45.4", as Cartesian vectors
+        m, theta, phi = np.array([[0.996, 29.9, 45.0], [0.997, 29.8, 45.4]]).T
+        theta, phi = np.radians(theta), np.radians(phi)
+        expected = m[:, None] * np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]).T
+        assert np.array(outfile.structure.site_properties["magmom"]) == pytest.approx(expected)

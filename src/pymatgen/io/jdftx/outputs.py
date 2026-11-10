@@ -319,6 +319,9 @@ class JDFTXOutputs:
             _proj_tju = np.abs(_proj_tju) ** 2
         # Convert to standard datatype - using np.real to suppress warnings
         proj_tju = np.array(np.real(_proj_tju), dtype=float)
+        if proj_tju.shape[-1] == 2 * len(self.orb_label_list):
+            # Noncollinear runs project onto both spinor components of each orbital (adjacent columns): add them
+            proj_tju = proj_tju.reshape(*proj_tju.shape[:-1], -1, 2).sum(axis=-1)
         proj_skju = proj_tju.reshape([self.outfile.nspin, -1, self.outfile.nbands, len(self.orb_label_list)])
         proj_sjku = np.swapaxes(proj_skju, 1, 2)
         nspin, nbands, nkpt, nproj = proj_sjku.shape

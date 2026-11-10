@@ -351,6 +351,9 @@ fluid_site_params_outfile_path = ex_out_files_dir / Path("fluid_site_params.out"
 # Natively generated H2 vibrations run ("vibrations centralDiff yes") with JDFTx b3c54e1d, whose echo has the
 # dumpK, iConfiguration and nConfigurations keys added to JDFTx on 2026-08-27
 vib_central_diff_outfile_path = ex_out_files_dir / Path("vib_central_diff.out")
+# Natively generated O2 (triplet) single point with "spintype vector-spin", initial moments tilted to theta 30 and
+# phi 45, and BandEigs and BandProjections dumps (SG15 pseudopotentials, Fermi smearing)
+o2_vector_spin_calc_dir = ex_calc_dirs_dir / Path("O2_vector_spin")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {

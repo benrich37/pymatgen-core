@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from pymatgen.electronic_structure.core import Spin
 from pymatgen.io.jdftx._output_utils import _get_orb_label_list, _get_u_to_oa_map
 from pymatgen.io.jdftx.outputs import JDFTXOutputs, _disambiguate_paths, implemented_store_vars
 
@@ -19,6 +20,7 @@ from .outputs_test_utils import (
     nh3_ex_calc_dir,
     nh3_ex_calc_dir_bandprojections_metadata,
     nh3_ex_calc_dir_known_paths,
+    o2_vector_spin_calc_dir,
 )
 from .shared_test_utils import assert_same_value
 
@@ -168,3 +170,12 @@ def test_f_orbital_projections(tmp_path: Path):
     assert all(atom == 0 for _, atom in u_to_oa_map)
     orb_label_list = _get_orb_label_list(bandfile)
     assert JDFTXOutputs._get_lmax(SimpleNamespace(orb_label_list=orb_label_list)) == ("f", 16)
+
+
+def test_noncollinear_bandstructure_projections():
+    """Noncollinear band projections have two spinor components per orbital, which used to become a fake k-point."""
+    outputs = JDFTXOutputs.from_calc_dir(o2_vector_spin_calc_dir, store_vars=["bandProjections", "bandstructure"])
+    assert outputs.bandProjections.shape == (1, 20, 16)  # 2 O atoms x 4 orbitals x 2 spinor components
+    projections = outputs.bandstructure.projections[Spin.up]
+    assert projections.shape == (20, 1, 4, 2)  # bands, k-points, s and p orbitals, atoms
+    assert projections.sum() == pytest.approx(outputs.bandProjections.sum(), rel=1e-5)

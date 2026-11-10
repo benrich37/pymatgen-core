@@ -1505,7 +1505,7 @@ ION_LINES = "ion Mn 0.0 0.0 0.0 1\nion Mn 0.5 0.5 0.5 1\nion O 0.25 0.25 0.25 1\
         "spintype z-spin\ninitial-magnetic-moments Mn 3 -3 O 0\n" + ION_LINES,
         "spintype z-spin\ninitial-magnetic-moments Mn 3 -3\n",
         "spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0 3 180 0\n",
-        "spintype spin-orbit\ninitial-magnetic-moments Mn 3 0 0 3 180 0 O 0 0 0\n" + ION_LINES,
+        "spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0 3 180 0 O 0 0 0\n" + ION_LINES,
         # JDFTx's species names are case-insensitive
         "spintype z-spin\ninitial-magnetic-moments mn 3 -3 o 0\n" + ION_LINES,
         # Two Mn species (from pseudopotential files Mn1.upf and Mn2.upf), as for an antiferromagnet
@@ -1520,7 +1520,10 @@ def test_validate_initial_magnetic_moments_valid(text: str):
     ("text", "error_match"),
     [
         ("initial-magnetic-moments Mn 3\n", "spintype tag must be specified"),
-        ("spintype spin-orbit\ninitial-magnetic-moments Mn 3 -3\n", "must have a multiple of 3 values, got 2"),
+        ("spintype vector-spin\ninitial-magnetic-moments Mn 3 -3\n", "must have a multiple of 3 values, got 2"),
+        # JDFTx: "Cannot specify magnetic moments in an unpolarized calculation"
+        ("spintype spin-orbit\ninitial-magnetic-moments Mn 3 0 0\n", "unpolarized calculation"),
+        ("spintype no-spin\ninitial-magnetic-moments Mn 3\n", "unpolarized calculation"),
         ("spintype z-spin\ninitial-magnetic-moments Fe 3\n" + ION_LINES, "Fe in initial-magnetic-moments tag is not"),
         ("spintype z-spin\ninitial-magnetic-moments Mn 3 O 0\n" + ION_LINES, "but there are 2 ions"),
         ("spintype vector-spin\ninitial-magnetic-moments Mn 3 0 0\n" + ION_LINES, "values for 1 ions, but there are 2"),

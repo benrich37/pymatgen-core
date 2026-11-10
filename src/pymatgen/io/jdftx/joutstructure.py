@@ -873,6 +873,13 @@ class JOutStructure(Structure):
             names = [s.name.lower() for s in cur_species]
         charges_dict = {name.lower(): values for name, values in charges_dict.items()}
         moments_dict = {name.lower(): values for name, values in moments_dict.items()}
+        # vector-spin prints |M|, theta and phi (degrees) per atom instead of one value
+        vector = bool(moments_dict) and all(
+            len(values) == 3 * names.count(name) for name, values in moments_dict.items()
+        )
+        if not vector and any(len(values) != names.count(name) for name, values in moments_dict.items()):
+            warnings.warn("Lowdin magnetic moments don't match the atoms, skipped", stacklevel=2)
+            moments_dict = {}
         charges = None
         moments = None
         if charges_dict:
@@ -882,11 +889,17 @@ class JOutStructure(Structure):
                 for i, idx in enumerate(idcs):
                     charges[idx] += charges_dict[el][i]
         if moments_dict:
-            moments = np.zeros(len(names))
+            moments = np.zeros((len(names), 3) if vector else len(names))
             for el in moments_dict:
                 idcs = [i for i in range(len(names)) if names[i] == el]
                 for i, idx in enumerate(idcs):
-                    moments[idx] += moments_dict[el][i]
+                    if vector:  # As a Cartesian vector (theta from z, phi from x, as JDFTx's getEulerAxis)
+                        m, (theta, phi) = moments_dict[el][3 * i], np.radians(moments_dict[el][3 * i + 1 : 3 * i + 3])
+                        moments[idx] = m * np.array(
+                            [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
+                        )
+                    else:
+                        moments[idx] += moments_dict[el][i]
         self.charges = charges
         self.magnetic_moments = moments  # type:ignore[assignment]
 

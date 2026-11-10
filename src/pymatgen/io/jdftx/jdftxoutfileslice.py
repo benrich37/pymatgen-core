@@ -573,12 +573,8 @@ class JDFTXOutfileSlice:
         if line is None:
             return "no-spin", 1
         spintype = text[line].split()[1]
-        if spintype == "no-spin":
-            nspin = 1
-        elif spintype == "z-spin":
-            nspin = 2
-        else:
-            raise NotImplementedError("have not considered this spin yet")
+        # vector-spin and spin-orbit have one set of (spinor) states, like no-spin
+        nspin = 2 if spintype == "z-spin" else 1
         return spintype, nspin
 
     def _get_broadeningvars(self, text: list[str]) -> tuple[str | None, float]:
@@ -1069,7 +1065,7 @@ class JDFTXOutfileSlice:
                     if self.broadening is not None:
                         # homo, lumo and efermi may be None (unavailable), leaving the fillings that need them None
                         self._set_orb_fillings_broad(
-                            self.nspin,
+                            self._get_filling_nspin(self.nspin),
                             self.homo,
                             self.lumo,
                             self.efermi,
@@ -1079,9 +1075,13 @@ class JDFTXOutfileSlice:
                     else:
                         raise ValueError("Cannot set orbital fillings with broadening with self.broadening as None")
                 else:
-                    self._set_orb_fillings_nobroad(self.nspin)
+                    self._set_orb_fillings_nobroad(self._get_filling_nspin(self.nspin))
             else:
                 raise ValueError("Cannot set homo/lumo filling with self.nspin as None")
+
+    def _get_filling_nspin(self, nspin: int) -> int:
+        """Return the nspin for which 2 / nspin is the number of electrons a band holds (one for a spinor band)."""
+        return 2 if self.spintype in ("vector-spin", "spin-orbit") else nspin
 
     def _set_fluid(self, text: list[str]) -> None:
         """Set the fluid class variable.
@@ -1240,7 +1240,9 @@ class JDFTXOutfileSlice:
                 # A filling is None if an energy it needs was unavailable, so metallicity can't be determined
                 if self.homo_filling is None or self.lumo_filling is None:
                     return None
-                return self._determine_is_metal(tol_partial, self.nspin, self.homo_filling, self.lumo_filling)
+                return self._determine_is_metal(
+                    tol_partial, self._get_filling_nspin(self.nspin), self.homo_filling, self.lumo_filling
+                )
             raise ValueError("Cannot determine if system is metal - self.nspin undefined")
         return None
 

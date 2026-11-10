@@ -721,8 +721,10 @@ class JDFTXInfile(dict, MSONable):
             return
         if "spintype" not in self:
             raise ValueError(f"spintype tag must be specified to use the {tag} tag!")
-        # Collinear spin has one value (M) per ion; non-collinear spin has three (M, theta, phi)
-        mult = 3 if self["spintype"] in ["spin-orbit", "vector-spin"] else 1
+        if self["spintype"] in ["no-spin", "spin-orbit"]:
+            raise ValueError(f"JDFTx doesn't allow the {tag} tag in an unpolarized calculation ({self['spintype']})!")
+        # z-spin has one value (M) per ion; vector-spin has three (M, theta, phi)
+        mult = 3 if self["spintype"] == "vector-spin" else 1
         # JDFTx's species names are case-insensitive
         ion_species = [ion["species-id"].lower() for ion in self["ion"]] if "ion" in self else None
         for group in self[tag]["species-values"]:
