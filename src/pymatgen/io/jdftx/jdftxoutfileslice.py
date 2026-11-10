@@ -11,14 +11,12 @@ import math
 import pprint
 import re
 import warnings
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from typing import Any
-
     from pymatgen.io.jdftx.jelstep import JElSteps
     from pymatgen.io.jdftx.jminsettings import JMinSettings
 from scipy.constants import Planck as h_j
@@ -30,7 +28,12 @@ from pymatgen.core.periodic_table import Element
 from pymatgen.core.trajectory import Trajectory
 from pymatgen.core.units import Ha_to_eV, ang_to_bohr, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import (
+    _dataclass_from_dict,
     _get_eigstats_varsdict,
+    _json_dict,
+    _none_to_nan,
+    _OutputMSONable,
+    _vibrational_modes_as_dict,
     find_all_key,
     find_first_range_key,
     find_key,
@@ -80,7 +83,7 @@ _jofs_atr_from_jstrucs = (
 
 
 @dataclass
-class JDFTXOutfileSlice:
+class JDFTXOutfileSlice(_OutputMSONable):
     """A class to read and process a slice of a JDFTx out file.
 
     A class to read and process a slice of a JDFTx out file, where a "slice" is a segment of an out file corresponding
@@ -331,6 +334,16 @@ class JDFTXOutfileSlice:
     elec_linmin: float | None = None
     vibrational_modes: list[dict[str, Any]] | None = None
     vibrational_energy_components: dict[str, float] | None = None
+    # Set while parsing; fields so that as_dict keeps them
+    infile: JDFTXInfile = field(default_factory=JDFTXInfile)
+    geom_opt_label: str = "IonicMinimize"
+    ecomponents: dict | None = None
+    pe: float | None = None
+    ke: float | None = None
+    t_k: float | None = None
+    p_bar: float | None = None
+    tmd_fs: float | None = None
+    thermostat_velocity: np.ndarray | None = None
 
     def _get_mu(self) -> float | None:
         """Sets mu from most recent JOutStructure. (Equivalent to efermi)"""
@@ -512,10 +525,10 @@ class JDFTXOutfileSlice:
             dict: Dictionary with values corresponding to these keys in _electronic_output field.
         """
         dct = {}
-        for field in self._electronic_output:
-            if field in self.__dataclass_fields__:
-                value = getattr(self, field)
-                dct[field] = value
+        for key in self._electronic_output:
+            if key in self.__dataclass_fields__:
+                value = getattr(self, key)
+                dct[key] = value
         self.electronic_output = dct
 
     def _from_out_slice_init_all_post_init(self) -> None:
@@ -1430,14 +1443,33 @@ class JDFTXOutfileSlice:
         Returns:
             dict: JDFTXOutfileSlice in dictionary format.
         """
-        dct = {}
+        dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
-            value = getattr(self, fld)
+            value = (
+                _vibrational_modes_as_dict(self.vibrational_modes) if fld == "vibrational_modes" else getattr(self, fld)
+            )
             if hasattr(value, "as_dict"):
                 dct[fld] = value.as_dict()
             else:
                 dct[fld] = value
-        return dct
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any]) -> JDFTXOutfileSlice:
+        """Return a JDFTXOutfileSlice from the dictionary as_dict gives."""
+        instance = _dataclass_from_dict(cls, {key: value for key, value in dct.items() if key != "infile"})
+        # The echoed input has JDFTx's placeholders for unset values, which fail JDFTXInfile's bounds checks, and
+        # warnings on the choice of options were for whoever set them (as when parsing the out file)
+        if dct.get("infile") is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", JDFTXOptionWarning)
+                instance.infile = JDFTXInfile.from_dict(_none_to_nan(dct["infile"]), validate_value_boundaries=False)
+        if instance.vibrational_modes is not None:  # Imaginary frequencies were stored as [real, imag]
+            instance.vibrational_modes = [
+                {key: complex(*v) if isinstance(v, list) else v for key, v in mode.items()}
+                for mode in instance.vibrational_modes
+            ]
+        return instance
 
     # TODO: Re-do this now that there are no properties
     def __repr__(self) -> str:

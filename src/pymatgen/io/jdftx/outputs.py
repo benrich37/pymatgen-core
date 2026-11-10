@@ -21,10 +21,14 @@ from pymatgen.core.units import Ha_to_eV
 from pymatgen.electronic_structure.bandstructure import BandStructure
 from pymatgen.electronic_structure.core import Spin
 from pymatgen.io.jdftx._output_utils import (
+    _dataclass_from_dict,
     _get_nbands_from_bandfile_filepath,
     _get_orb_label_list,
     _get_u_to_oa_map,
+    _json_dict,
+    _OutputMSONable,
     _parse_kptsfrom_bandprojections_file,
+    _vibrational_modes_as_dict,
     get_proj_tju_from_file,
     orb_ref_list,
     read_outfile_slices,
@@ -461,7 +465,7 @@ _jof_atr_from_last_slice = (
 
 
 @dataclass
-class JDFTXOutfile:
+class JDFTXOutfile(_OutputMSONable):
     """
     JDFTx out file parsing class.
 
@@ -862,14 +866,32 @@ class JDFTXOutfile:
         Returns:
             dict: A dictionary representation of the JDFTXOutfile object.
         """
-        dct = {}
+        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # WARNING FOR REVIEWERS: "@module"/"@class" here BREAK ATOMATE2'S JDFTx WORKFLOWS unless atomate2 changes first.
+        # atomate2's CalculationOutput.from_jdftxoutput stores `jdftxoutput.as_dict()` in a plain `parameters: dict`
+        # field. When a later job takes an atomate2 JDFTx job's output (or any part of it, e.g.
+        # `.calc_outputs.structure`) as input, jobflow decodes the stored output with MontyDecoder, which turns this
+        # dict into a JDFTXOutfile, and pydantic rejects that for a dict field, so every flow that chains atomate2
+        # JDFTx jobs fails (reading a stored task document without decoding it still works). Merge the
+        # atomate2 change that stores this dict without its top-level "@" keys (it changes nothing with older
+        # pymatgen-core) before releasing this. Leaving the keys out here would keep atomate2 working, but
+        # JDFTXOutfile would fail MatSciTest.assert_msonable, and a JDFTXOutfile returned by a jobflow job would reach
+        # later jobs as a plain dict.
+        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
             if fld == "slices":
                 dct[fld] = [None if slc is None else slc.as_dict() for slc in self.slices]
                 continue
-            value = getattr(self, fld)
-            dct[fld] = value
-        return dct
+            dct[fld] = (
+                _vibrational_modes_as_dict(self.vibrational_modes) if fld == "vibrational_modes" else getattr(self, fld)
+            )
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any]) -> JDFTXOutfile:
+        """Return a JDFTXOutfile from the dictionary as_dict gives (its values are recomputed from its slices)."""
+        return _dataclass_from_dict(cls, dct)
 
     ###########################################################################
     # Magic methods

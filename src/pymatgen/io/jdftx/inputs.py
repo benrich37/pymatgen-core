@@ -1716,7 +1716,9 @@ def _infile_special_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
     if "latt-scale" in jdftxinfile:
         # JDFTx scales lattice vector k (column k) by s_k
         r = r * np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]], dtype=float)
-    return Lattice(r.T * bohr_to_ang)  # convert to row vector format, in Ang
+    # Row vectors in Angstrom, C-ordered like any Lattice made from lists (else Cartesian coordinates computed from it
+    # can differ in the last digit from those of the same structure loaded from JSON)
+    return Lattice(np.ascontiguousarray(r.T) * bohr_to_ang)
 
 
 def _jdftx_named_lattice_vectors(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> np.ndarray:
@@ -1762,7 +1764,7 @@ def _infile_matrix_format_to_pmg_lattice(jdftxinfile: JDFTXInfile) -> Lattice:
     if "latt-scale" in jdftxinfile:
         latt_scale = np.array([jdftxinfile["latt-scale"][x] for x in ["s0", "s1", "s2"]])
         _lattice *= latt_scale
-    return Lattice(_lattice.T * bohr_to_ang)  # convert to row vector format, in Ang
+    return Lattice(np.ascontiguousarray(_lattice.T) * bohr_to_ang)  # Row vectors in Angstrom, C-ordered (see above)
 
 
 def _constraint_vector_to_cartesian(constraint_type: str, vector: ArrayLike, lattice: Lattice) -> np.ndarray:

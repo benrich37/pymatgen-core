@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 from pymatgen.core.units import Ha_to_eV
-from pymatgen.io.jdftx._output_utils import get_colon_val
+from pymatgen.io.jdftx._output_utils import _dataclass_from_dict, _json_dict, _OutputMSONable, get_colon_val
 
 __author__ = "Ben Rich"
 
@@ -37,7 +37,7 @@ def _get_iter_flag(opt_type: str) -> str:
 
 
 @dataclass
-class JElStep:
+class JElStep(_OutputMSONable):
     """Electronic minimization data for a single SCF step.
 
     Class object for storing logged electronic minimization data for a single
@@ -256,14 +256,19 @@ class JElStep:
         Returns:
             dict: Dictionary representation of JElStep object.
         """
-        dct = {}
+        dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
             value = getattr(self, fld)
             if hasattr(value, "as_dict"):
                 dct[fld] = value.as_dict()
             else:
                 dct[fld] = value
-        return dct
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any]) -> JElStep:
+        """Return a JElStep from the dictionary as_dict gives."""
+        return _dataclass_from_dict(cls, dct)
 
     def __str__(self) -> str:
         """
@@ -290,7 +295,7 @@ _jelsteps_atrs_from_last_slice = [
 
 
 @dataclass
-class JElSteps:
+class JElSteps(_OutputMSONable):
     """Class object for series of SCF steps.
 
     Class object for collecting and storing a series of SCF steps done between
@@ -436,7 +441,7 @@ class JElSteps:
         Returns:
             dict: Dictionary representation of JElSteps object.
         """
-        dct = {}
+        dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
             if fld == "slices":
                 dct[fld] = [slc.as_dict() for slc in self.slices]
@@ -446,7 +451,12 @@ class JElSteps:
                 dct[fld] = value.as_dict()
             else:
                 dct[fld] = value
-        return dct
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any]) -> JElSteps:
+        """Return a JElSteps from the dictionary as_dict gives."""
+        return _dataclass_from_dict(cls, dct)
 
     def __getitem__(self, key: int | str) -> JElStep | Any:
         """Return item.
