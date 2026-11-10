@@ -829,9 +829,9 @@ class JDFTXOutfile:
             if slc is not None:
                 last_slice = slc
                 break
-        if last_slice is not None:
-            for var in _jof_atr_from_last_slice:
-                setattr(self, var, getattr(last_slice, var))
+        # Without any slice the values are None, so that the fields exist (as_dict, repr)
+        for var in _jof_atr_from_last_slice:
+            setattr(self, var, None if last_slice is None else getattr(last_slice, var))
 
     @property
     def trajectory(self) -> Trajectory | None:

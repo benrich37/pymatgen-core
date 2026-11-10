@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 from pymatgen.io.jdftx._output_utils import correct_geom_opt_type
-from pymatgen.io.jdftx.joutstructure import JOutStructure
+from pymatgen.io.jdftx.joutstructure import JOutStructure, line_type_map
 
 __author__ = "Ben Rich"
 
@@ -455,6 +455,8 @@ def _get_joutstructure_list(
             )
         )
     if skim_levels is not None and "geom" in skim_levels:
+        # Only require a new geometry if the slice prints one (vibrations runs bypass ionic minimization and don't)
+        req_new_geom = any(line_type_map["posns"] in line for line in out_slice)
         for bounds in out_bounds[::-1]:
             joutstructure = parse_joutstructure_bounds(
                 init_structure,
@@ -467,7 +469,7 @@ def _get_joutstructure_list(
                 skim_levels,
                 raise_on_error=False,
                 skip_props=skip_props,
-                req_new_geom=True,
+                req_new_geom=req_new_geom,
                 eopt_type=eopt_type,
             )
             if joutstructure is not None:

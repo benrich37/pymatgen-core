@@ -683,3 +683,38 @@ def test_as_dict_with_none_slice():
     dct = jout_with_none.as_dict()
     assert dct["slices"][0] is None
     assert len(dct["slices"]) == 2
+
+
+def test_as_dict_without_slices():
+    """An out file without a readable slice gives an empty JDFTXOutfile, whose values are None."""
+    jout = JDFTXOutfile(slices=[])
+    dct = jout.as_dict()
+    assert dct["slices"] == []
+    assert dct["prefix"] is None
+    assert jout.e is None
+
+
+@pytest.mark.parametrize("skim_levels", [["geom"], ["geom", "elec"], ["outfile", "geom"]], ids="-".join)
+@pytest.mark.parametrize(
+    "outfile_path", [example_vib_outfile_path, vib_central_diff_outfile_path], ids=lambda path: path.name
+)
+def test_geom_skim_of_vibrations(outfile_path: Path, skim_levels: list[str]):
+    """Vibrations runs print no geometry, so skimming to the last geometry step used to leave no slice at all."""
+    full = JDFTXOutfile.from_file(outfile_path)
+    skim = JDFTXOutfile.from_file(outfile_path, skim_levels=skim_levels, none_slice_on_error=False)
+    assert len(skim.slices) == 1
+    assert len(skim.slices[-1].jstrucs.slices) == 1
+    assert skim.e == full.e
+    assert skim.structure == full.structure
+    assert_same_value(skim.vibrational_modes, full.vibrational_modes)
+
+
+def test_geom_skim_of_run_stopped_in_first_step(tmp_path: Path):
+    """A run stopped before its first geometry was printed skims to the step the full parse gives."""
+    lines = nolowdin_ionmin_outfile_path.read_text().splitlines(keepends=True)
+    first_step = next(i for i, line in enumerate(lines) if "-------- Electronic minimization" in line)
+    first_geometry = next(i for i, line in enumerate(lines) if i > first_step and line.startswith("# Ionic positions"))
+    (tmp_path / "jdftx.out").write_text("".join(lines[: (first_step + first_geometry) // 2]))
+    full = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    skim = JDFTXOutfile.from_file(tmp_path / "jdftx.out", skim_levels=["geom"], none_slice_on_error=False)
+    assert_same_value(skim.slices[-1].jstrucs[-1].as_dict(), full.slices[-1].jstrucs[-1].as_dict())
