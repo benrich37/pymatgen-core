@@ -13,6 +13,7 @@ fluid_solvent_options = [
     "CCl4",
     "CH2Cl2",
     "CH3CN",
+    "CHCl3",
     "Chlorobenzene",
     "DMC",
     "DMF",
