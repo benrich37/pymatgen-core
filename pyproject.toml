@@ -225,8 +225,6 @@ isort.known-first-party = ["pymatgen"]
 
 [tool.ruff.format]
 docstring-code-format = true
-# Temporary: the JDFTx IO user guide is a draft that will move out of this repo
-exclude = ["jdftx_user_guide/**"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"] # unused-import
