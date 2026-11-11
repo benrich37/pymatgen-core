@@ -830,18 +830,10 @@ class JDFTXOutfile(_OutputMSONable):
         Returns:
             dict: A dictionary representation of the JDFTXOutfile object.
         """
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # WARNING FOR REVIEWERS: "@module"/"@class" here BREAK ATOMATE2'S JDFTx WORKFLOWS unless atomate2 changes first.
-        # atomate2's CalculationOutput.from_jdftxoutput stores `jdftxoutput.as_dict()` in a plain `parameters: dict`
-        # field. When a later job takes an atomate2 JDFTx job's output (or any part of it, e.g.
-        # `.calc_outputs.structure`) as input, jobflow decodes the stored output with MontyDecoder, which turns this
-        # dict into a JDFTXOutfile, and pydantic rejects that for a dict field, so every flow that chains atomate2
-        # JDFTx jobs fails (reading a stored task document without decoding it still works). Merge the
-        # atomate2 change that stores this dict without its top-level "@" keys (it changes nothing with older
-        # pymatgen-core) before releasing this. Leaving the keys out here would keep atomate2 working, but
-        # JDFTXOutfile would fail MatSciTest.assert_msonable, and a JDFTXOutfile returned by a jobflow job would reach
-        # later jobs as a plain dict.
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # MSONable (and MatSciTest.assert_msonable) needs "@module"/"@class", but atomate2 stores this dict in a plain
+        # `parameters: dict` that jobflow then decodes into a JDFTXOutfile, which breaks chained atomate2 JDFTx flows.
+        # Fix in atomate2, not here: CalculationOutput.from_jdftxoutput (atomate2/jdftx/schemas/calculation.py) must
+        # leave the top-level "@" keys out of `parameters`. Delete this comment once that is merged.
         dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
             if fld == "_trajectory":  # A cache the trajectory property fills on first read
