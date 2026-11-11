@@ -1387,6 +1387,8 @@ class JDFTXOutfileSlice(_OutputMSONable):
         """
         dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
+            if fld == "_trajectory":  # A cache the trajectory property fills on first read
+                continue
             value = (
                 _vibrational_modes_as_dict(self.vibrational_modes) if fld == "vibrational_modes" else getattr(self, fld)
             )

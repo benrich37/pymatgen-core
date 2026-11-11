@@ -641,7 +641,6 @@ class JDFTXOutfile(_OutputMSONable):
     atom_coords_final: list[list[float]] = field(init=False)
     atom_coords: list[list[float]] = field(init=False)
     structure: Structure = field(init=False)
-    # _trajectory: Trajectory = field(init=False)
     _trajectory: Trajectory | None = None
     has_solvation: bool = field(init=False)
     fluid: str = field(init=False)
@@ -845,6 +844,8 @@ class JDFTXOutfile(_OutputMSONable):
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
+            if fld == "_trajectory":  # A cache the trajectory property fills on first read
+                continue
             if fld == "slices":
                 dct[fld] = [None if slc is None else slc.as_dict() for slc in self.slices]
                 continue

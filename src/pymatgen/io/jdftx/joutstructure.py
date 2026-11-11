@@ -1089,7 +1089,8 @@ class JOutStructure(Structure):
         if fmt == "abivars":
             return dct
         for fld in self.__dict__:
-            if fld in JOutStructure.__annotations__:  # Step data, as opposed to the Structure's own attributes
+            # Step data, as opposed to the Structure's own attributes (_structure is the structure property's cache)
+            if fld in JOutStructure.__annotations__ and fld != "_structure":
                 value = getattr(self, fld)
                 dct[fld] = value.as_dict() if hasattr(value, "as_dict") else value
         return _json_dict(dct)

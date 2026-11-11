@@ -769,6 +769,9 @@ def test_msonable(outfile_path: Path):
     jstrucs = outfile.slices[-1].jstrucs
     steps = jstrucs[-1].elecmindata
     text = json.dumps(outfile, cls=MontyEncoder)
+    _ = outfile.trajectory  # Fills lazy caches (trajectories, step structures), which the JSON must leave out
+    unchanged = json.dumps(outfile, cls=MontyEncoder) == text  # Not in the assert: pytest would diff megabytes of JSON
+    assert unchanged
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         for obj in (outfile, outfile.slices[-1], jstrucs, jstrucs[-1], steps, steps and steps.slices[-1]):
