@@ -45,7 +45,7 @@ from pymatgen.io.jdftx.generic_tags import (
     TagContainer,
     element_from_species_name,
 )
-from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs
+from pymatgen.io.jdftx.jdftxinfile_default_inputs import default_inputs, get_default_fluid_params
 from pymatgen.io.jdftx.jdftxinfile_master_format import (
     __PHONON_TAGS__,
     __TAG_LIST__,
@@ -836,23 +836,13 @@ class JDFTXInfile(dict, MSONable):
         Returns:
             list[str]: Tags from this JDFTXInfile that differ from the other JDFTXInfile.
         """
-        # TODO: `TagContainer.is_equal_to(val1, tc2, val2)`, where val2 is the fetched default
-        # value for the tag, will return a false negative if val1 does not specify all the
-        # possible values for a tag. To fix this, missing subtags in both vals for tagcontainer
-        # comparisons should be populated with the default values for the tag.
-        # (ie if val1 = {a: 1}, val2 = {b: 2}, and the default value for the tag is {a: 1, b: 2},
-        # then val1 -> {a: 1, b: 2}, val2 -> {a: 1, b: 2} and the comparison will return True, but
-        # if val2 = {b: 3}, then val2 -> {a: 1, b: 3} and the comparison will return False)
+        # Missing tags and subtags compare as JDFTx's defaults, so an input matches JDFTx's echo of it
         differing_tags = []
         for tag in self:
-            if tag in other:
-                val2 = other[tag]
-            elif tag in ref_infile:
-                val2 = ref_infile[tag]
-            else:
-                differing_tags.append(tag)
-                continue
-            if not _is_equal_tag_value(tag, self[tag], val2):
+            val2 = other[tag] if tag in other else _get_default_value(tag, other)
+            if val2 is None or not _is_equal_tag_value(
+                tag, _fill_default_values(tag, self[tag], self), _fill_default_values(tag, val2, other)
+            ):
                 differing_tags.append(tag)
         return differing_tags
 
@@ -1076,6 +1066,61 @@ class JDFTXInfile(dict, MSONable):
 
 
 ref_infile = JDFTXInfile.from_dict(default_inputs, validate_value_boundaries=False)
+
+
+def _get_default_value(tag: str, infile: JDFTXInfile) -> Any:
+    """Return JDFTx's default value of a tag missing from infile, or None if JDFTx has none.
+
+    Most defaults are fixed (`ref_infile`); these depend on other tags (JDFTx's commands/minimize.cpp,
+    pcm_params.cpp and elec_fillings.cpp). Missing fluid component subtags are filled in by `_fill_default_values`.
+
+    Args:
+        tag (str): Tag name.
+        infile (JDFTXInfile): The input file the tag is missing from.
+
+    Returns:
+        Any: The default value of the tag.
+    """
+    fluid_type = infile.get("fluid", {}).get("type", "None")
+    is_pcm = fluid_type in ("LinearPCM", "NonlinearPCM")
+    if tag == "fluid-solvent":
+        return [{}]  # Water
+    if tag == "ion-width" and is_pcm:
+        return "Ecut"
+    if tag == "fluid-minimize":
+        default = dict(ref_infile[tag])
+        if fluid_type in ("LinearPCM", "SaLSA"):
+            default |= {"nIterations": 400, "knormThreshold": 1e-12 if fluid_type == "SaLSA" else 1e-11}
+        elif fluid_type == "NonlinearPCM":
+            default["energyDiffThreshold"] = 1e-10
+        if is_pcm and not infile.get("pcm-nonlinear-debug", {}).get("linearScreening", False):
+            default["nAlphaAdjustMax"] = 6
+        return default
+    if tag == "lcao-params" and "elec-smearing" in infile:
+        return dict(ref_infile[tag]) | {"smearingWidth": infile["elec-smearing"]["smearingWidth"]}
+    return ref_infile.get(tag)
+
+
+def _fill_default_values(tag: str, value: Any, infile: JDFTXInfile) -> Any:
+    """Return a tag's value with the subtags it leaves out set to JDFTx's defaults for infile.
+
+    Args:
+        tag (str): Tag name.
+        value (Any): Value of the tag in infile (or its default, if infile lacks it).
+        infile (JDFTXInfile): The input file the value belongs to.
+
+    Returns:
+        Any: The filled-in value.
+    """
+    if tag in ("fluid-solvent", "fluid-cation", "fluid-anion"):
+        temperature = infile.get("fluid", {}).get("Temperature", ref_infile["fluid"]["Temperature"])
+        return [  # "bulk" is JDFTx's name for the default concentration
+            get_default_fluid_params(entry.get("name", "H2O"), temperature)
+            | {k: v for k, v in entry.items() if v != "bulk"}
+            for entry in (value if isinstance(value, list) else [value])
+        ]
+    default = _get_default_value(tag, infile)
+    return default | value if isinstance(default, dict) and isinstance(value, dict) else value
 
 
 def _is_equal_tag_value(tag: str, val1: Any, val2: Any) -> bool:
