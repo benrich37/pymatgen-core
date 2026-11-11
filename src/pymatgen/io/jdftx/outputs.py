@@ -798,15 +798,10 @@ class JDFTXOutfile(_OutputMSONable):
             if oslice is None:
                 raise RuntimeError("No valid JDFTx out file slices found.")
             return cls(slices=slices, skim_levels=skim_levels)
-        # if none_slice_on_error is None:
-        #     none_slice_bools = [i != len(texts) - 1 for i in range(len(texts))]
-        # else:
-        #     none_slice_bools = [none_slice_on_error for i in range(len(texts))]
         slices = [
             JDFTXOutfileSlice._from_out_slice(
                 text, is_bgw=is_bgw, none_on_error=none_slice_on_error, skim_levels=_skim_levels, skip_props=_skip_props
             )
-            # for i, text in enumerate(texts)
             for text in texts
         ]
         if pop_none_slices:

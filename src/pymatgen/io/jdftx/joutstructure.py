@@ -422,8 +422,6 @@ class JOutStructure(Structure):
         instance._parse_stress_lines(line_collections["stress"]["lines"])
         instance._parse_kinetic_stress_lines(line_collections["kinetic_stress"]["lines"])
         if instance.is_md:
-            # if "struct" not in skip_props:
-            #     line_collections["thermostat-velocity"] = {"lines": line_collections["posns"]["lines"][-1:]}
             instance._parse_thermostat_line(line_collections["thermostat-velocity"]["lines"])
         # In case of single-point calculation
         instance._init_e_sp_backup()
@@ -431,8 +429,6 @@ class JOutStructure(Structure):
         instance._elecmindata_postinit()
         # Set relevant properties in self.properties
         instance._fill_properties()
-        # Done last in case of any changes to site-properties
-        # instance._init_structure(cur_species)
         return instance
 
     @property
@@ -790,12 +786,6 @@ class JOutStructure(Structure):
             ):
                 if not all(v is None for v in vals):
                     setattr(self, prop, vals)
-                # self.add_site_property(prop, vals)
-            # self.selective_dynamics = selective_dynamics
-            # self.velocities = velocities
-            # self.constraint_types = constraint_types
-            # self.constraint_vectors = constraint_vectors
-            # self.group_names = group_names_list
             # Calling `self.species` is fairly expensive, so we create in manually like this to save compute time
             new_species = [Element(element) for element in elements]
         return new_species if new_species is not None else cur_species
@@ -833,7 +823,6 @@ class JOutStructure(Structure):
                 return
             forces *= Ha_to_eV
             setattr(self, forces_name, forces)
-            # self.forces = forces
             self.add_site_property(forces_name, list(forces))
 
     def _parse_ecomp_lines(self, ecomp_lines: list[str]) -> None:
@@ -1232,7 +1221,6 @@ line_types = [
     "kinetic_stress",
     "stress",
     "posns",
-    # "igp_forces",
     "forces",
     "ecomp",
     "lowdin",
@@ -1243,7 +1231,6 @@ line_types = [
 # Map of line types to their identifying start strings in a JDFTx out file
 line_type_map = {
     "lowdin": "#--- Lowdin population analysis ---",
-    # "opt": f"{self.opt_type}:",
     "ecomp": "# Energy components",
     "igp_forces": "# Forces in",
     "forces": "# Forces in",
@@ -1253,7 +1240,6 @@ line_type_map = {
     "strain": "# Strain tensor in",
     "lattice": "# Lattice vectors:",
     "emin": "---- Electronic minimization -------",
-    # "emin": f"{'MD Step' if True else 'SCF Iter'}:",
     ####
     "charges": "oxidation-state",
     "magnetic_moments": "magnetic-moments",

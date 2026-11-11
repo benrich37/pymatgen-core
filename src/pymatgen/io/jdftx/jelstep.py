@@ -132,11 +132,6 @@ class JElStep(_OutputMSONable):
         Args:
             line_text (str): A line of text from a JDFTx out file containing the electronic minimization data.
         """
-        # data = _parse_all_generic(line_text)
-        # # Quickly fail so JOutStructure can handle Etot parsing
-        # self.e = float(data[f"{self.etype}"]) * Ha_to_eV
-        # data.pop(f"{self.etype}")
-        # self.unread_data["Iter"] = parse_data_generic(data, self)
         ########
         # Only read what follows "<opt_type>: ", since that prefix can itself look like a value label ("SCF: " ends
         # in "F: ")

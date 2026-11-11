@@ -1616,7 +1616,6 @@ class DumpTagContainer(TagContainer):
         """
         # At the moment, the value for a dump tag must be a dict or list of dicts
         value_dict = value
-        # value_dict = self.get_dict_representation(tag, value)
         self._validate_repeat(tag, value_dict)
         results = [
             self._validate_single_entry(x, try_auto_type_fix=try_auto_type_fix, warn_user=warn_user) for x in value_dict

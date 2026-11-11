@@ -970,8 +970,6 @@ class JDFTXOutfileSlice(_OutputMSONable):
             expected_etype = "G"
         self.jstrucs = JOutStructures._from_out_slice(
             text,
-            # skim_levels,
-            # skip_props,
             opt_type=self.geom_opt_label,
             # JDFTx optimizes the electrons by SCF instead of the default variational minimizer if electronic-scf is set
             eopt_type="SCF" if "electronic-scf" in self.infile else "ElecMinimize",
@@ -985,7 +983,6 @@ class JDFTXOutfileSlice(_OutputMSONable):
         if self.jstrucs is not None:
             if self.etype is None:
                 self.etype = self.jstrucs[-1].etype
-            # self._set_trajectory()
             self.mu = self._get_mu()
             for var in _jofs_atr_from_jstrucs:
                 setattr(self, var, getattr(self.jstrucs, var))
