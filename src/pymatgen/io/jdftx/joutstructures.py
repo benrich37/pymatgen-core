@@ -419,7 +419,6 @@ def _get_joutstructure_list(
     init_structure: Structure | None = None,
     is_md: bool = False,
     has_igp: bool = False,
-    skip_error_structures: bool = True,
     expected_etype: str | None = None,
     skim_levels: list[str] | None = None,
     skip_props: list[str] | None = None,
@@ -435,7 +434,6 @@ def _get_joutstructure_list(
         eopt_type (str): Flag string indicating the electronic optimizer type ("ElecMinimize" or "SCF").
         init_structure (Structure | None): The initial structure if available, otherwise None.
         is_md (bool): True if the calculation is a molecular dynamics (MD) simulation, False otherwise.
-        skip_error_structures (bool): If True, skip any structures that raise errors during parsing.
 
     Returns:
         list[JOutStructure]: The list of JOutStructure objects.
@@ -484,8 +482,7 @@ def _get_joutstructure_list(
     for i, bounds in enumerate(out_bounds):
         if i > 0 and joutstructure_list:
             init_structure = joutstructure_list[-1]
-        # The final out_slice slice is protected by the try/except block, as this slice has a high
-        # chance of being empty or malformed.
+        # A step that fails to parse is skipped (the last one is often cut short in a running calculation)
         joutstructure = parse_joutstructure_bounds(
             init_structure,
             out_slice,
@@ -495,7 +492,7 @@ def _get_joutstructure_list(
             has_igp,
             expected_etype,
             skim_levels,
-            raise_on_error=((i != len(out_bounds) - 1) and (not skip_error_structures)),
+            raise_on_error=False,
             skip_props=skip_props,
             eopt_type=eopt_type,
         )
