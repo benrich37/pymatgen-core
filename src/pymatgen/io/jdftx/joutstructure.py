@@ -357,6 +357,7 @@ class JOutStructure(Structure):
             expected_etype (str | None): The expected type of energy from the electronic minimization data.
             skim_levels (list[str] | None): The levels of electronic minimization data to skim.
             skip_props (list[str] | None): The properties to skip parsing. Options are "struct", "forces", and
+                "charges".
 
         Returns:
             JOutStructure: The created JOutStructure object.
@@ -389,11 +390,11 @@ class JOutStructure(Structure):
             instance.etype = expected_etype
         # Remove line types that are being skipped anyways to speed up `_gather_line_collections`
         if "struct" in skip_props:
+            # Position lines are still collected (not parsed): they show whether the step printed a new geometry
             _line_types.remove("lattice")
-            _line_types.remove("posns")
         if "forces" in skip_props:
             _line_types.remove("forces")
-        if "lowdin" in skip_props:
+        if "charges" in skip_props:
             _line_types.remove("lowdin")
         line_collections = instance._init_line_collections(_line_types)
         line_collections = instance._gather_line_collections(line_collections, text_slice)
@@ -415,7 +416,7 @@ class JOutStructure(Structure):
             instance._parse_forces_lines(line_collections["forces"]["lines"])
         if has_igp:
             instance._parse_forces_lines(line_collections["igp_forces"]["lines"], forces_name="igp_forces")
-        if "lowdin" not in skip_props:
+        if "charges" not in skip_props:
             instance._parse_lowdin_lines(line_collections["lowdin"]["lines"], cur_species)
         # Can be parsed at any point
         instance._parse_strain_lines(line_collections["strain"]["lines"])

@@ -767,6 +767,9 @@ class JDFTXOutfile(_OutputMSONable):
                     - This will still result in the same number of `JOutStructure`'s created, but each
                         `JOutStructure` will have the same coordinates and lattice vectors as the
                         input structure.
+                    - Forces printed in lattice coordinates (JDFTx's default) are then converted to Cartesian
+                        with the input lattice, so they are off in runs that change the lattice (lattice
+                        minimizations, NPT MD). Skip "forces" too, or don't skip "struct", for such runs.
                 - "forces": Skip parsing the lines for forces.
                 - "charges": Skip parsing the lines for Lowdin charges/magnetic moments.
 

@@ -812,3 +812,24 @@ def test_pydantic_round_trip():
         assert isinstance(loaded.slices[-1].jstrucs, JOutStructures)
         assert loaded.e == outfile.e
         assert np.isnan(loaded.slices[-1].infile["ionic-dynamics"]["P0"])
+
+
+@pytest.mark.parametrize("skim_levels", [None, ["outfile", "geom"]])
+def test_skip_props(skim_levels: list[str] | None):
+    """Each skipped property is left unparsed and nothing else changes ("struct" used to leave no slice at all, and
+    "charges" skipped nothing)."""
+    full = JDFTXOutfile.from_file(species_names_outfile_path, skim_levels=skim_levels)
+    skipped = {
+        prop: JDFTXOutfile.from_file(species_names_outfile_path, skim_levels=skim_levels, skip_props=[prop])
+        for prop in ("struct", "forces", "charges")
+    }
+    for outfile in skipped.values():
+        assert len(outfile.slices[-1].jstrucs) == len(full.slices[-1].jstrucs)
+        assert outfile.e == pytest.approx(full.e)
+    # Without the position lines, each step keeps the input structure
+    assert skipped["struct"].structure.cart_coords == pytest.approx(full.slices[-1].initial_structure.cart_coords)
+    assert skipped["struct"].structure.cart_coords != pytest.approx(full.structure.cart_coords)
+    assert skipped["forces"].forces is None
+    assert full.forces is not None
+    assert "charges" not in skipped["charges"].structure.site_properties
+    assert "charges" in full.structure.site_properties
