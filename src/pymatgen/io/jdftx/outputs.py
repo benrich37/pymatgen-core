@@ -697,11 +697,6 @@ class JDFTXOutfile(_OutputMSONable):
         Returns:
             JDFTXOutfile: The JDFTXOutfile object.
         """
-        _valid_skim_options = ["outfile", "geom", "elec"]
-        if skim_levels is not None:
-            for level in skim_levels:
-                if level not in _valid_skim_options:
-                    raise ValueError(f"Invalid skim level: {level}. Valid options are: {_valid_skim_options}")
         file_path = _find_jdftx_out_file(Path(calc_dir))
         return cls.from_file(
             file_path=file_path, is_bgw=is_bgw, none_slice_on_error=none_slice_on_error, skim_levels=skim_levels
@@ -712,7 +707,6 @@ class JDFTXOutfile(_OutputMSONable):
         cls,
         file_path: str | Path,
         is_bgw: bool = False,
-        # none_slice_on_error: bool | None = None,
         none_slice_on_error: bool = True,
         pop_none_slices: bool = True,
         skim_levels: list[str] | None = None,
@@ -750,14 +744,14 @@ class JDFTXOutfile(_OutputMSONable):
         Returns:
             JDFTXOutfile: The JDFTXOutfile object.
         """
-        _skim_levels: list[str] = list(skim_levels).copy() if skim_levels is not None else []
-        _skip_props: list[str] = list(skip_props).copy() if skip_props is not None else []
+        _skim_levels: list[str] = list(skim_levels) if skim_levels is not None else []
+        _skip_props: list[str] = list(skip_props) if skip_props is not None else []
         _valid_skim_options = ["outfile", "geom", "elec"]
         if any(level not in _valid_skim_options for level in _skim_levels):
             raise ValueError(f"Invalid skim level(s) found in {skim_levels}. Valid options are: {_valid_skim_options}")
         texts = read_outfile_slices(str(file_path))
 
-        if _skim_levels is not None and "outfile" in _skim_levels:
+        if "outfile" in _skim_levels:
             slices: list[JDFTXOutfileSlice | None] = []
             oslice = None
             for text in texts[::-1]:

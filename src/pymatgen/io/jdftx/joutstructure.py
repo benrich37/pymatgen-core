@@ -385,7 +385,7 @@ class JOutStructure(Structure):
         # Since igp forces share the same header as normal forces and are printed before,
         # the igp forces line type must be inserted before the forces line type
         if has_igp:
-            _line_types.insert(_line_types.index("forces") - 1, "igp_forces")
+            _line_types.insert(_line_types.index("forces"), "igp_forces")
         if expected_etype is not None:
             instance.etype = expected_etype
         # Remove line types that are being skipped anyways to speed up `_gather_line_collections`

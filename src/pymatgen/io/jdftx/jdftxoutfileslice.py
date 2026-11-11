@@ -387,7 +387,6 @@ class JDFTXOutfileSlice(_OutputMSONable):
 
     def _from_out_slice_init_all(self, text: list[str], skim_levels: list[str], skip_props: list[str]) -> None:
         self._set_internal_infile(text)
-        # self._set_min_settings(text)
         self._set_geomopt_vars(text)
         self._set_jstrucs(text, skim_levels=skim_levels, skip_props=skip_props)
         self._set_backup_vars(text)
