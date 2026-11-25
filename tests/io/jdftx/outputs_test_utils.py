@@ -315,6 +315,7 @@ etot_etype_outfile_path = ex_out_files_dir / Path("etot_etype.out")
 etot_etype_outfile_known_simple = {
     "e": -17.265553748795949 * Ha_to_eV,
     "elec_grad_k": 2.991e-07,
+    "etype": "Etot",  # No smearing
 }
 
 # Minimal H2 runs (10 bohr isolated box, 10 Ha) made with each electronic optimizer: electronic-minimize and
@@ -348,6 +349,12 @@ species_names_outfile_path = ex_out_files_dir / Path("species_names.out")
 # Natively generated H2 single point in ClassicalDFT water with "fluid-site-params H2O O sigmaNuc 0.5" and
 # "fluid-site-params H2O H aPol 0.4"
 fluid_site_params_outfile_path = ex_out_files_dir / Path("fluid_site_params.out")
+# Natively generated H2 vibrations run ("vibrations centralDiff yes") with JDFTx b3c54e1d, whose echo has the
+# dumpK, iConfiguration and nConfigurations keys added to JDFTx on 2026-08-27
+vib_central_diff_outfile_path = ex_out_files_dir / Path("vib_central_diff.out")
+# Natively generated O2 (triplet) single point with "spintype vector-spin", initial moments tilted to theta 30 and
+# phi 45, and BandEigs and BandProjections dumps (SG15 pseudopotentials, Fermi smearing)
+o2_vector_spin_calc_dir = ex_calc_dirs_dir / Path("O2_vector_spin")
 
 partial_lattice_init_outfile_path = ex_out_files_dir / Path("partial_lattice_init.out")
 partial_lattice_init_outfile_known_lattice = {
@@ -585,7 +592,7 @@ ex_jstruc_slice2_known = {
     "mag-1": 0.100,
 }
 
-# JESteps test knowns
+# JElSteps test knowns
 
 
 ex_fillings_line1 = "FillingsUpdate:  mu: +0.714406772  \

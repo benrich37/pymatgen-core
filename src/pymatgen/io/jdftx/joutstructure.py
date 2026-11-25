@@ -1,18 +1,19 @@
 """Class object for storing a single JDFTx geometric optimization step.
 
-A mutant of the pymatgen Structure class for flexibility in holding JDFTx.
+A mutant of the pymatgen Structure class for flexibility in holding JDFTx optimization data.
 """
 
 from __future__ import annotations
 
 import pprint
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import Self
 
     from numpy.typing import ArrayLike, NDArray
 
@@ -20,11 +21,12 @@ if TYPE_CHECKING:
 
 from pymatgen.core.structure import Element, Lattice, Species, Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
-from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, get_colon_val
+from pymatgen.io.jdftx._output_utils import _brkt_list_of_3x3_to_nparray, _decode_value, _json_dict, get_colon_val
 from pymatgen.io.jdftx.inputs import (
     JDFTX_SPECIES_SITE_PROPERTY,
     JDFTX_TIME_UNIT_TO_FS,
     _constraint_vector_to_cartesian,
+    _is_homogeneous,
     get_species_elements,
     get_species_names,
 )
@@ -52,22 +54,33 @@ class JOutStructure(Structure):
         eopt_type (str | None): The type of electronic minimization step.
         ecomponents (dict | None): The energy components of the system.
         elecmindata (JElSteps | None): The electronic minimization data.
-        stress (np.ndarray | None): The stress tensor.
+        stress (np.ndarray | None): The stress tensor in eV/Angstrom^3.
+        kinetic_stress (np.ndarray | None): The stress tensor including the kinetic contribution in eV/Angstrom^3,
+            if printed.
         strain (np.ndarray | None): The strain tensor.
+        forces (np.ndarray | None): The forces on the atoms in Cartesian eV/Angstrom.
+        igp_forces (np.ndarray | None): The first block of forces JDFTx prints for the step when
+            ionic-gaussian-potential is set (before the block read as forces), in Cartesian eV/Angstrom.
         thermostat_velocity (np.ndarray | None): The Nose-Hoover chain thermostat velocities (one per chain element,
             chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of time) so they can be
             written back unchanged as the thermostat-velocity tag of a restart input. None if not printed.
+        pe (float | None): The potential energy of a molecular dynamics step in eV.
+        ke (float | None): The kinetic energy of a molecular dynamics step in eV.
+        t_k (float | None): The temperature of a molecular dynamics step in K.
+        p_bar (float | None): The pressure of a molecular dynamics step in bar.
+        tmd_fs (float | None): The simulation time of a molecular dynamics step in fs.
         nstep (int | None): The most recent step number.
-        e (float | None): The total energy of the system.
-        grad_k (float | None): The gradient of the electronic density along the most recent line minimization.
-        alpha (float | None): The step size of the most recent SCF step along the line minimization.
-        linmin (float | None): The normalized alignment projection of the electronic energy gradient to the line
-                                minimization direction.
-        t_s (float | None): The time in seconds for the optimization step.
+        e (float | None): The total energy of the system in eV.
+        grad_k (float | None): The norm of the preconditioned gradient of the geometric optimization step (written as
+            "|grad|_K" in JDFTx output).
+        alpha (float | None): The step size of the geometric optimization step.
+        linmin (float | None): The normalized projection of the gradient onto the step direction of the geometric
+            optimization step.
+        t_s (float | None): The time in seconds from the start of the JDFTx call to the end of the optimization step.
         geom_converged (bool): Whether the geometry optimization has converged.
         geom_converged_reason (str | None): The reason for geometry optimization convergence.
-        line_types (ClassVar[list[str]]): The types of lines in a JDFTx out file.
-        selective_dynamics (list[int] | None): The selective dynamics flags for the atoms in the system.
+        selective_dynamics (list[list[int]] | None): The selective dynamics flags for the atoms in the system (three
+            0/1 values per atom, all from the atom's moveScale).
         mu (float | None): The chemical potential (Fermi level) in eV.
         nelectrons (float | None): The total number of electrons in the electron density.
         abs_magneticmoment (float | None): The absolute magnetic moment of the electron density.
@@ -84,7 +97,6 @@ class JOutStructure(Structure):
 
     opt_type: str | None = None
     etype: str | None = None
-    backup_etype: str = "Etot"
     eopt_type: str | None = None
     ecomponents: dict | None = None
     elecmindata: JElSteps | None = None
@@ -111,7 +123,14 @@ class JOutStructure(Structure):
     elec_linmin: float | np.float64 | None = None
     _structure: Structure | None = None
     is_md: bool = False
-    # thermostat_velocity: np.ndarray | None = None
+    # MD data (and IGP forces), set while parsing; annotated so that as_dict keeps them
+    pe: float | None = None
+    ke: float | None = None
+    t_k: float | None = None
+    p_bar: float | None = None
+    tmd_fs: float | None = None
+    thermostat_velocity: NDArray[np.float64] | None = None
+    igp_forces: NDArray[np.float64] | None = None
     _velocities: list[NDArray[np.float64] | None] | None = None
     _constraint_vectors: list[NDArray[np.float64] | list[NDArray[np.float64]] | None] | None = None
     _constraint_types: list[str | None] | None = None
@@ -224,7 +243,7 @@ class JOutStructure(Structure):
             velocities (list[np.ndarray | None] | None): The velocities of the atoms in the system.
         """
         self._velocities = velocities
-        if velocities is not None:
+        if velocities is not None and _is_homogeneous(velocities):
             self.add_site_property("velocities", list(velocities))
         elif "velocities" in self.site_properties:
             self.remove_site_property("velocities")
@@ -248,14 +267,11 @@ class JOutStructure(Structure):
             constraint_types (list[str | None] | None): The constraint_types of the atoms in the system.
         """
         self._constraint_types = constraint_types
-        if constraint_types is not None:
-            self.add_site_property("constraint_types", list(constraint_types))
-        elif "constraint_types" in self.site_properties:
-            self.remove_site_property("constraint_types")
+        self._sync_constraint_site_properties()
 
     @property
     def constraint_vectors(self) -> Sequence | list[np.ndarray | list[np.ndarray] | None] | None:
-        """Return the velocities.
+        """Return the constraint_vectors.
 
         Returns:
             list[np.ndarray | list[np.ndarray] | None] | None: The constraint_vectors of the atoms in the system.
@@ -273,10 +289,7 @@ class JOutStructure(Structure):
             atoms in the system.
         """
         self._constraint_vectors = constraint_vectors
-        if constraint_vectors is not None:
-            self.add_site_property("constraint_vectors", list(constraint_vectors))
-        elif "constraint_vectors" in self.site_properties:
-            self.remove_site_property("constraint_vectors")
+        self._sync_constraint_site_properties()
 
     @property
     def group_names(self) -> Sequence | list[list[str | None] | None] | None:
@@ -297,10 +310,23 @@ class JOutStructure(Structure):
             group_names (list[list[str | None] | None] | None): The group_names of the atoms in the system.
         """
         self._group_names = group_names
-        if group_names is not None:
-            self.add_site_property("group_names", list(group_names))
-        elif "group_names" in self.site_properties:
-            self.remove_site_property("group_names")
+        self._sync_constraint_site_properties()
+
+    def _sync_constraint_site_properties(self) -> None:
+        """Set the constraints as site properties together, only if they all form regular arrays (see
+        _is_homogeneous); otherwise they are only kept as the private attributes.
+        """
+        constraints = {
+            "constraint_types": self._constraint_types,
+            "constraint_vectors": self._constraint_vectors,
+            "group_names": self._group_names,
+        }
+        homogeneous = _is_homogeneous(*constraints.values())
+        for prop, values in constraints.items():
+            if values is not None and homogeneous:
+                self.add_site_property(prop, list(values))
+            elif prop in self.site_properties:
+                self.remove_site_property(prop)
 
     def __init__(
         self,
@@ -335,7 +361,7 @@ class JOutStructure(Structure):
         """
         Return JOutStructure object.
 
-        Create a JAtoms object from a slice of an out file's text corresponding
+        Create a JOutStructure object from a slice of an out file's text corresponding
         to a single step of a native JDFTx optimization.
 
         Args:
@@ -349,6 +375,8 @@ class JOutStructure(Structure):
             expected_etype (str | None): The expected type of energy from the electronic minimization data.
             skim_levels (list[str] | None): The levels of electronic minimization data to skim.
             skip_props (list[str] | None): The properties to skip parsing. Options are "struct", "forces", and
+                "charges".
+            req_new_geom (bool): Whether to raise a ValueError if the slice prints no ionic positions.
 
         Returns:
             JOutStructure: The created JOutStructure object.
@@ -369,35 +397,35 @@ class JOutStructure(Structure):
             )
         instance.eopt_type = eopt_type
         instance.opt_type = opt_type
-        _line_types = list(line_types)
+        step_line_types = list(_line_types)
         if is_md:
             instance.is_md = True
-            _line_types.append("thermostat-velocity")
+            step_line_types.append("thermostat-velocity")
         # Since igp forces share the same header as normal forces and are printed before,
         # the igp forces line type must be inserted before the forces line type
         if has_igp:
-            _line_types.insert(_line_types.index("forces") - 1, "igp_forces")
+            step_line_types.insert(step_line_types.index("forces"), "igp_forces")
         if expected_etype is not None:
             instance.etype = expected_etype
         # Remove line types that are being skipped anyways to speed up `_gather_line_collections`
         if "struct" in skip_props:
-            _line_types.remove("lattice")
-            _line_types.remove("posns")
+            # Position lines are still collected (not parsed): they show whether the step printed a new geometry
+            step_line_types.remove("lattice")
         if "forces" in skip_props:
-            _line_types.remove("forces")
-        if "lowdin" in skip_props:
-            _line_types.remove("lowdin")
-        line_collections = instance._init_line_collections(_line_types)
+            step_line_types.remove("forces")
+        if "charges" in skip_props:
+            step_line_types.remove("lowdin")
+        line_collections = instance._init_line_collections(step_line_types)
         line_collections = instance._gather_line_collections(line_collections, text_slice)
         if len(line_collections["posns"]["lines"]) == 0 and req_new_geom:
             raise ValueError("No posns lines found in slice, but req_new_geom is True")
-        # ecomponents needs to be parsed before emin and opt to set etype
+        # ecomponents needs to be parsed before emin and opt to set etype, and emin before opt, as it corrects etype
         instance._parse_ecomp_lines(line_collections["ecomp"]["lines"])
+        instance._parse_emin_lines(line_collections["emin"]["lines"], skim_levels=skim_levels)
         if instance.is_md:
             instance._parse_md_opt_lines(line_collections["opt"]["lines"])
         else:
             instance._parse_opt_lines(line_collections["opt"]["lines"])
-        instance._parse_emin_lines(line_collections["emin"]["lines"], skim_levels=skim_levels)
         if "struct" not in skip_props:
             # Lattice must be parsed before posns/forces in case of direct coordinates
             instance._parse_lattice_lines(line_collections["lattice"]["lines"])
@@ -407,15 +435,13 @@ class JOutStructure(Structure):
             instance._parse_forces_lines(line_collections["forces"]["lines"])
         if has_igp:
             instance._parse_forces_lines(line_collections["igp_forces"]["lines"], forces_name="igp_forces")
-        if "lowdin" not in skip_props:
+        if "charges" not in skip_props:
             instance._parse_lowdin_lines(line_collections["lowdin"]["lines"], cur_species)
         # Can be parsed at any point
         instance._parse_strain_lines(line_collections["strain"]["lines"])
         instance._parse_stress_lines(line_collections["stress"]["lines"])
         instance._parse_kinetic_stress_lines(line_collections["kinetic_stress"]["lines"])
         if instance.is_md:
-            # if "struct" not in skip_props:
-            #     line_collections["thermostat-velocity"] = {"lines": line_collections["posns"]["lines"][-1:]}
             instance._parse_thermostat_line(line_collections["thermostat-velocity"]["lines"])
         # In case of single-point calculation
         instance._init_e_sp_backup()
@@ -423,8 +449,6 @@ class JOutStructure(Structure):
         instance._elecmindata_postinit()
         # Set relevant properties in self.properties
         instance._fill_properties()
-        # Done last in case of any changes to site-properties
-        # instance._init_structure(cur_species)
         return instance
 
     @property
@@ -549,8 +573,7 @@ class JOutStructure(Structure):
                 if "Etot:" in line:
                     etype = "Etot"
                     break
-        # Used as last-case scenario as the ordering of <etype> after <Iter> needs
-        # to be checked by reading through the source code (TODO)
+        # Last resort: JDFTx prints the energy label right after the step number (core/Minimize.h, core/Pulay.h)
         if etype is None:
             for line in emin_lines:
                 if step_key in line:
@@ -584,19 +607,18 @@ class JOutStructure(Structure):
                 raise ValueError("eopt_type is not set")
             if self.etype is None:
                 raise ValueError("etype is not set")
-            emindata = None
             try:
-                emindata = JElSteps._from_text_slice(
+                self.elecmindata = JElSteps._from_text_slice(
                     emin_lines, opt_type=self.eopt_type, etype=self.etype, skim_levels=skim_levels
                 )
-            except RuntimeError:  # Wrong etype detected by assertion error
-                pass
-            if emindata is not None:
-                self.elecmindata = emindata
-            else:
-                self.elecmindata = JElSteps._from_text_slice(
-                    emin_lines, opt_type=self.eopt_type, etype=self.backup_etype, skim_levels=skim_levels
-                )
+            except RuntimeError:  # The lines name another energy (e.g. an echo pymatgen couldn't read): use theirs
+                self.etype = self._get_etype_from_emin_lines(emin_lines)
+                try:
+                    self.elecmindata = JElSteps._from_text_slice(
+                        emin_lines, opt_type=self.eopt_type, etype=str(self.etype), skim_levels=skim_levels
+                    )
+                except RuntimeError as err:  # No energy label reads (e.g. a line cut short): skip like other bad steps
+                    raise ValueError(str(err)) from err
         else:
             if self.eopt_type is None:
                 raise ValueError("eopt_type is not set")
@@ -616,8 +638,9 @@ class JOutStructure(Structure):
         r = None
         if len(lattice_lines) >= 5:
             r = _brkt_list_of_3x3_to_nparray(lattice_lines, i_start=2)
-            r = r.T * bohr_to_ang
-            self.lattice = Lattice(np.array(r))
+            # C-ordered, like any Lattice made from lists (else Cartesian coordinates computed from it can differ in
+            # the last digit from those of the same structure loaded from JSON)
+            self.lattice = Lattice(np.ascontiguousarray(r.T) * bohr_to_ang)
 
     def _parse_strain_lines(self, strain_lines: list[str]) -> None:
         """Parse strain lines.
@@ -642,9 +665,7 @@ class JOutStructure(Structure):
             stress_lines (list[str]): A list of lines of text from a JDFTx out file containing the
             stress tensor.
         """
-        # TODO: Lattice optimizations dump stress in cartesian coordinates in units
-        # "[Eh/a0^3]" (Hartree per bohr cubed). Check if this changes for direct
-        # coordinates.
+        # JDFTx always prints the stress in Cartesian coordinates, in Eh/a0^3
         st = None
         if len(stress_lines) == 4:
             st = _brkt_list_of_3x3_to_nparray(stress_lines, i_start=1)
@@ -662,9 +683,7 @@ class JOutStructure(Structure):
             stress_lines (list[str]): A list of lines of text from a JDFTx out file containing the
             stress tensor.
         """
-        # TODO: Lattice optimizations dump stress in cartesian coordinates in units
-        # "[Eh/a0^3]" (Hartree per bohr cubed). Check if this changes for direct
-        # coordinates.
+        # JDFTx always prints the stress in Cartesian coordinates, in Eh/a0^3
         st = None
         if len(stress_lines) == 4:
             st = _brkt_list_of_3x3_to_nparray(stress_lines, i_start=1)
@@ -718,10 +737,14 @@ class JOutStructure(Structure):
         Args:
             posns_lines (list[str]): A list of lines of text from a JDFTx out file.
             Collected lines will start with the string "# Ionic positions in ..."
-            (specifying either cartesian or direct coordinates), followed by a line
-            for each ion (atom) in the format "ion_name x y z sd", where ion_name is
-            the species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file), and sd is a
-            flag indicating whether the ion is excluded from optimization (1) or not (0).
+            (specifying either cartesian or lattice coordinates), followed by a line
+            for each ion (atom) in the format "ion ion_name x y z [v vx vy vz] sd [constraint]", where ion_name is
+            the species name (e.g. Fe, or Fe1 for a species named after its pseudopotential file), and sd is
+            the moveScale: 0 for an ion that is held fixed, and non-zero (usually 1) for an ion that is optimized.
+            cur_species (Sequence[Element | Species]): The species of the sites before these lines are parsed.
+
+        Returns:
+            Sequence[Element | Species]: The species of the sites after these lines are parsed.
         """
         new_species: list[Element | Species] | None = None
         if len(posns_lines):
@@ -781,12 +804,6 @@ class JOutStructure(Structure):
             ):
                 if not all(v is None for v in vals):
                     setattr(self, prop, vals)
-                # self.add_site_property(prop, vals)
-            # self.selective_dynamics = selective_dynamics
-            # self.velocities = velocities
-            # self.constraint_types = constraint_types
-            # self.constraint_vectors = constraint_vectors
-            # self.group_names = group_names_list
             # Calling `self.species` is fairly expensive, so we create in manually like this to save compute time
             new_species = [Element(element) for element in elements]
         return new_species if new_species is not None else cur_species
@@ -824,7 +841,6 @@ class JOutStructure(Structure):
                 return
             forces *= Ha_to_eV
             setattr(self, forces_name, forces)
-            # self.forces = forces
             self.add_site_property(forces_name, list(forces))
 
     def _parse_ecomp_lines(self, ecomp_lines: list[str]) -> None:
@@ -862,9 +878,9 @@ class JOutStructure(Structure):
         charges_dict: dict[str, list[float]] = {}
         moments_dict: dict[str, list[float]] = {}
         for line in lowdin_lines:
-            if line_type_map["charges"] in line:
+            if _line_type_map["charges"] in line:
                 charges_dict = self._parse_lowdin_line(line, charges_dict)
-            elif line_type_map["magnetic_moments"] in line:
+            elif _line_type_map["magnetic_moments"] in line:
                 moments_dict = self._parse_lowdin_line(line, moments_dict)
         # JDFTx prints the values by species name (e.g. "# oxidation-state Fe1 ..."), which it reads ignoring case
         if len(self) == len(cur_species):
@@ -873,6 +889,13 @@ class JOutStructure(Structure):
             names = [s.name.lower() for s in cur_species]
         charges_dict = {name.lower(): values for name, values in charges_dict.items()}
         moments_dict = {name.lower(): values for name, values in moments_dict.items()}
+        # vector-spin prints |M|, theta and phi (degrees) per atom instead of one value
+        vector = bool(moments_dict) and all(
+            len(values) == 3 * names.count(name) for name, values in moments_dict.items()
+        )
+        if not vector and any(len(values) != names.count(name) for name, values in moments_dict.items()):
+            warnings.warn("Lowdin magnetic moments don't match the atoms, skipped", stacklevel=2)
+            moments_dict = {}
         charges = None
         moments = None
         if charges_dict:
@@ -882,11 +905,17 @@ class JOutStructure(Structure):
                 for i, idx in enumerate(idcs):
                     charges[idx] += charges_dict[el][i]
         if moments_dict:
-            moments = np.zeros(len(names))
+            moments = np.zeros((len(names), 3) if vector else len(names))
             for el in moments_dict:
                 idcs = [i for i in range(len(names)) if names[i] == el]
                 for i, idx in enumerate(idcs):
-                    moments[idx] += moments_dict[el][i]
+                    if vector:  # As a Cartesian vector (theta from z, phi from x, as JDFTx's getEulerAxis)
+                        m, (theta, phi) = moments_dict[el][3 * i], np.radians(moments_dict[el][3 * i + 1 : 3 * i + 3])
+                        moments[idx] = m * np.array(
+                            [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
+                        )
+                    else:
+                        moments[idx] += moments_dict[el][i]
         self.charges = charges
         self.magnetic_moments = moments  # type:ignore[assignment]
 
@@ -912,13 +941,13 @@ class JOutStructure(Structure):
     def _is_opt_conv_line(self, line_text: str) -> bool:
         """Return True if line_text is geom opt convergence line.
 
-        Return True if the line_text is the end of a JDFTx optimization step.
+        Return True if the line_text is the log message that the JDFTx geometric optimization converged.
 
         Args:
             line_text (str): A line of text from a JDFTx out file.
 
         Returns:
-            bool: True if the line_text is the end of a JDFTx optimization step.
+            bool: True if the line_text is the convergence message of the geometric optimization.
         """
         return f"{self.opt_type}: Converged" in line_text
 
@@ -941,8 +970,6 @@ class JOutStructure(Structure):
                         raise ValueError("Could not convert Iter to int")
                     self.nstep = int(_nstep)
                     en = get_colon_val(line, f"{self.etype}:")
-                    if en is None:
-                        en = get_colon_val(line, f"{self.backup_etype}:")
                     self.e = en * Ha_to_eV
                     self.grad_k = get_colon_val(line, "|grad|_K: ")
                     self.alpha = get_colon_val(line, "alpha: ")
@@ -996,8 +1023,8 @@ class JOutStructure(Structure):
             bool: True if the line_text is the start of a section of the
             JDFTx out file.
         """
-        if line_type in line_type_map:
-            return line_type_map[line_type] in line_text
+        if line_type in _line_type_map:
+            return _line_type_map[line_type] in line_text
         if line_type == "opt":
             return self._is_opt_start_line(line_text)
         raise ValueError(f"Unrecognized line type {line_type}")
@@ -1008,17 +1035,20 @@ class JOutStructure(Structure):
         """Collect generic log line.
 
         Collect a line of text into a list of lines if the line is not empty,
-        and otherwise updates the collecting and collected flags.
+        and otherwise updates the collecting and collected flags. Collecting also ends with a line
+        that is followed by the start line of any line type.
 
         Args:
             line_text (str): A line of text from a JDFTx out file.
             generic_lines (list[str]): A list of lines of text of the same type.
+            next_line (str | None): The line of text after line_text.
+            line_collections (dict): The line collections of every line type being gathered.
 
         Returns:
             tuple: A tuple containing:
             - generic_lines (list[str]): A list of lines of text of the same type.
-            - collecting (bool): True if the line_text is not empty.
-            - collected (bool): True if the line_text is empty (end of section).
+            - collecting (bool): True if the section continues after line_text.
+            - collected (bool): True if the section ended (line_text is empty, or the next line starts a section).
         """
         collecting = True
         collected = False
@@ -1061,21 +1091,36 @@ class JOutStructure(Structure):
             properties=self.properties,
         )
 
-    def as_dict(self) -> dict:
+    def as_dict(self, verbosity: Literal[0, 1] = 1, fmt: Literal["abivars"] | None = None, **kwargs) -> dict[str, Any]:
         """
-        Convert the JOutStructure object to a dictionary.
+        Convert the JOutStructure object to a dictionary: the Structure's, plus the step data.
+
+        Args:
+            verbosity (0 | 1): As for Structure.as_dict.
+            fmt ("abivars" | None): As for Structure.as_dict; "abivars" gives only the Structure's ABINIT variables.
+            **kwargs: Passed to Structure.as_dict.
 
         Returns:
             dict: A dictionary representation of the JOutStructure object.
         """
-        dct = {}
+        dct = super().as_dict(verbosity=verbosity, fmt=fmt, **kwargs)
+        if fmt == "abivars":
+            return dct
         for fld in self.__dict__:
-            value = getattr(self, fld)
-            if hasattr(value, "as_dict"):
-                dct[fld] = value.as_dict()
-            else:
-                dct[fld] = value
-        return dct
+            # Step data, as opposed to the Structure's own attributes (_structure is the structure property's cache)
+            if fld in JOutStructure.__annotations__ and fld != "_structure":
+                value = getattr(self, fld)
+                dct[fld] = value.as_dict() if hasattr(value, "as_dict") else value
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any], fmt: Literal["abivars"] | None = None) -> Self:
+        """Return a JOutStructure from the dictionary as_dict gives."""
+        instance = _decode_value(super().from_dict(dct, fmt=fmt))  # Decodes the arrays in its properties
+        for key, value in dct.items():
+            if key in JOutStructure.__annotations__:
+                setattr(instance, key, _decode_value(value))
+        return instance
 
     # TODO: Add string representation for JOutStructure-specific meta-data
     # This method currently only returns the Structure Summary as inherited from
@@ -1189,14 +1234,13 @@ def _parse_posn_line(
     return name, posn, sd, velocity, constraint_type, constraint_vector, group_names
 
 
-line_types = [
+_line_types = [
     "emin",
     "lattice",
     "strain",
     "kinetic_stress",
     "stress",
     "posns",
-    # "igp_forces",
     "forces",
     "ecomp",
     "lowdin",
@@ -1205,9 +1249,8 @@ line_types = [
 
 
 # Map of line types to their identifying start strings in a JDFTx out file
-line_type_map = {
+_line_type_map = {
     "lowdin": "#--- Lowdin population analysis ---",
-    # "opt": f"{self.opt_type}:",
     "ecomp": "# Energy components",
     "igp_forces": "# Forces in",
     "forces": "# Forces in",
@@ -1217,7 +1260,6 @@ line_type_map = {
     "strain": "# Strain tensor in",
     "lattice": "# Lattice vectors:",
     "emin": "---- Electronic minimization -------",
-    # "emin": f"{'MD Step' if True else 'SCF Iter'}:",
     ####
     "charges": "oxidation-state",
     "magnetic_moments": "magnetic-moments",

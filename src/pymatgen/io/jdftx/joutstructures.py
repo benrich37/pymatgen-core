@@ -7,6 +7,7 @@ JOutStructure.
 from __future__ import annotations
 
 import pprint
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +19,8 @@ if TYPE_CHECKING:
     from pymatgen.io.jdftx.jelstep import JElSteps
 
 
-from pymatgen.io.jdftx._output_utils import correct_geom_opt_type
-from pymatgen.io.jdftx.joutstructure import JOutStructure
+from pymatgen.io.jdftx._output_utils import _dataclass_from_dict, _json_dict, _OutputMSONable, correct_geom_opt_type
+from pymatgen.io.jdftx.joutstructure import JOutStructure, _line_type_map
 
 __author__ = "Ben Rich"
 
@@ -62,11 +63,11 @@ _joss_atrs_from_last_slice = (
 
 
 @dataclass
-class JOutStructures:
+class JOutStructures(_OutputMSONable):
     """
-    Class for storing a series of JStructure objects.
+    Class for storing a series of JOutStructure objects.
 
-    A class for storing a series of JStructure objects.
+    A class for storing a series of JOutStructure objects.
 
     Attributes:
         out_slice_start_flag (str): The string that marks the beginning of the portion of an out file slice
@@ -80,17 +81,18 @@ class JOutStructures:
         slices (list[JOutStructure]): A list of JOutStructure objects.
         eopt_type (str | None): The type of electronic optimization performed on the last structure in the list.
         etype (str | None): String representation of total energy-type of system. Commonly "G"
-        (grand-canonical potential) for GC calculations, and "F" for canonical (fixed electron count) calculations.
+        (grand-canonical potential) for GC calculations, "F" for canonical (fixed electron count) calculations with
+        electronic smearing, and "Etot" for those without.
         emin_flag (str | None): The flag for the electronic minimization.
-        ecomponents (list[str] | None): The components of the electronic minimization.
+        ecomponents (dict | None): The energy components of the last structure in the list, in eV.
         elecmindata (JElSteps): The electronic minimization data.
         stress (np.ndarray | None): The stress tensor.
         strain (np.ndarray | None): The strain tensor.
         thermostat_velocity (np.ndarray | None): The Nose-Hoover chain thermostat velocities (one per chain element,
             chainLengthT in ionic-dynamics), in JDFTx units (inverse Hartree atomic units of time) so they can be
             written back unchanged as the thermostat-velocity tag of a restart input. None if not printed.
-        nstep (int | None): The number of steps in the optimization.
-        e (float | None): The total energy.
+        nstep (int | None): The step number of the last geometric step (counted from 0).
+        e (float | None): The total energy in eV.
         grad_k (float | None): The final norm of the preconditioned gradient for geometric optimization of the most
             recent JDFTx call (evaluated as dot(g, Kg), where g is the gradient and Kg is the preconditioned gradient).
             (written as "|grad|_K" in JDFTx output).
@@ -101,7 +103,8 @@ class JOutStructures:
         tot_magneticmoment (float | None): The total magnetic moment of the most recent JDFTx call.
         mu (float | None): The Fermi energy of the most recent JDFTx call.
         elec_e (float) | None: The final energy of the most recent electronic optimization step.
-        elec_nstep (int): The number of electronic optimization steps in the most recent JDFTx call.
+        elec_nstep (int): The step number of the last electronic optimization step of the last geometric step
+            (counted from 0).
         elec_grad_k (float | None): The final norm of the preconditioned gradient for electronic optimization of the
             most recent JDFTx call (evaluated as dot(g, Kg), where g is the gradient and Kg is the preconditioned
             gradient). (written as "|grad|_K" in JDFTx output).
@@ -110,7 +113,8 @@ class JOutStructures:
             for the most recent JDFTx call.
         charges (np.ndarray[float] | None): The most recent Lowdin-charges.
         magnetic_moments (np.ndarray[float] | None): The most recent Lowdin-magnetic moments.
-        selective_dynamics (list[int] | None): The selective dynamics flags for the most recent JDFTx call.
+        selective_dynamics (list[list[int]] | None): The selective dynamics flags for the most recent JDFTx call
+            (three 0/1 values per atom).
         structure (Structure | None): Cleaned pymatgen Structure object of final JOutStructure
         initial_structure (Structure | None): Cleaned pymatgen Structure object of initial JOutStructure
     """
@@ -165,15 +169,25 @@ class JOutStructures:
         skip_props: list[str] | None = None,
     ) -> JOutStructures:
         """
-        Return JStructures object.
+        Return JOutStructures object.
 
-        Create a JStructures object from a slice of an out file's text
+        Create a JOutStructures object from a slice of an out file's text
         corresponding to a single JDFTx call.
 
         Args:
             out_slice (list[str]): A slice of a JDFTx out file (individual call of JDFTx).
+            opt_type (str): The type of geometric optimization ("IonicMinimize", "LatticeMinimize" or
+                "IonicDynamics").
             eopt_type (str): The type of electronic optimizer ("ElecMinimize" for electronic-minimize, "SCF" for
                 electronic-scf).
+            init_struc (Structure | None): The initial structure if available, otherwise None.
+            is_md (bool): True if the calculation is a molecular dynamics (MD) simulation, False otherwise.
+            has_igp (bool): Whether a ionic gaussian potential(s) are present.
+            expected_etype (str | None): The expected type of energy from the electronic minimization data.
+            skim_levels (list[str] | None): The levels to skim ("geom" keeps only the last geometric step, "elec"
+                only the last electronic step of each).
+            skip_props (list[str] | None): The properties to skip parsing. Options are "struct", "forces", and
+                "charges".
 
         Returns:
             JOutStructures: The created JOutStructures object.
@@ -196,8 +210,9 @@ class JOutStructures:
         return cls(slices=slices)
 
     def __post_init__(self):
-        # Calling "self.slices[-1].opt_type" is safe since the "initial_structure" argument
-        # ensure a length of at least 1, and opt_type has a default value
+        # "self.slices[-1]" needs at least one slice: _get_joutstructure_list gives an empty JOutStructure for a slice
+        # without geometric steps, and opt_type has a default value. (No slices at all, when every step fails to
+        # parse, raises an IndexError here.)
         self.opt_type = self.slices[-1].opt_type
         if self.opt_type is None and len(self) > 1:
             raise Warning("iter type interpreted as single-point calculation, but multiple structures found")
@@ -217,14 +232,14 @@ class JOutStructures:
     def get_frame_property_list(self, prop: str) -> list[Any] | None:
         """Return list of named property.
 
-        Get a property from the last JOutStructure in the list. If the property is not
-        defined, return None.
+        Get a property (attribute) from every JOutStructure in the list. If the property is not
+        defined for a JOutStructure, its entry is None.
 
         Args:
             prop (str): The name of the property to get.
 
         Returns:
-            Any: The value of the property or None if not defined.
+            list[Any]: The value of the property for each JOutStructure (None where it is not defined).
         """
         if len(self) == 0:
             return []
@@ -275,7 +290,7 @@ class JOutStructures:
         Returns:
             dict: A dictionary representation of the JOutStructures object.
         """
-        dct = {}
+        dct: dict[str, Any] = {"@module": self.__class__.__module__, "@class": self.__class__.__name__}
         for fld in self.__dataclass_fields__:
             if fld == "slices":
                 dct[fld] = [slc.as_dict() for slc in self.slices]
@@ -285,7 +300,12 @@ class JOutStructures:
                 dct[fld] = value.as_dict()
             else:
                 dct[fld] = value
-        return dct
+        return _json_dict(dct)
+
+    @classmethod
+    def from_dict(cls, dct: dict[str, Any]) -> JOutStructures:
+        """Return a JOutStructures from the dictionary as_dict gives."""
+        return _dataclass_from_dict(cls, dct)
 
     def __getitem__(self, key: int | str) -> JOutStructure | Any:
         """Return item.
@@ -414,14 +434,13 @@ def _get_joutstructure_list(
     init_structure: Structure | None = None,
     is_md: bool = False,
     has_igp: bool = False,
-    skip_error_structures: bool = True,
     expected_etype: str | None = None,
     skim_levels: list[str] | None = None,
     skip_props: list[str] | None = None,
 ) -> list[JOutStructure]:
     """Return list of JOutStructure objects.
 
-    Get list of JStructure objects by splitting out_slice into slices and constructing
+    Get list of JOutStructure objects by splitting out_slice into slices and constructing
     a JOutStructure object for each slice. Used in initialization.
 
     Args:
@@ -430,7 +449,6 @@ def _get_joutstructure_list(
         eopt_type (str): Flag string indicating the electronic optimizer type ("ElecMinimize" or "SCF").
         init_structure (Structure | None): The initial structure if available, otherwise None.
         is_md (bool): True if the calculation is a molecular dynamics (MD) simulation, False otherwise.
-        skip_error_structures (bool): If True, skip any structures that raise errors during parsing.
 
     Returns:
         list[JOutStructure]: The list of JOutStructure objects.
@@ -455,8 +473,10 @@ def _get_joutstructure_list(
             )
         )
     if skim_levels is not None and "geom" in skim_levels:
+        # Only require a new geometry if the slice prints one (vibrations runs bypass ionic minimization and don't)
+        req_new_geom = any(_line_type_map["posns"] in line for line in out_slice)
         for bounds in out_bounds[::-1]:
-            joutstructure = parse_joutstructure_bounds(
+            joutstructure = _parse_joutstructure_bounds(
                 init_structure,
                 out_slice,
                 bounds,
@@ -467,7 +487,7 @@ def _get_joutstructure_list(
                 skim_levels,
                 raise_on_error=False,
                 skip_props=skip_props,
-                req_new_geom=True,
+                req_new_geom=req_new_geom,
                 eopt_type=eopt_type,
             )
             if joutstructure is not None:
@@ -477,30 +497,39 @@ def _get_joutstructure_list(
     for i, bounds in enumerate(out_bounds):
         if i > 0 and joutstructure_list:
             init_structure = joutstructure_list[-1]
-        # The final out_slice slice is protected by the try/except block, as this slice has a high
-        # chance of being empty or malformed.
-        joutstructure = parse_joutstructure_bounds(
-            init_structure,
-            out_slice,
-            bounds,
-            opt_type,
-            is_md,
-            has_igp,
-            expected_etype,
-            skim_levels,
-            raise_on_error=((i != len(out_bounds) - 1) and (not skip_error_structures)),
-            skip_props=skip_props,
-            eopt_type=eopt_type,
-        )
+        try:
+            joutstructure = _parse_joutstructure_bounds(
+                init_structure,
+                out_slice,
+                bounds,
+                opt_type,
+                is_md,
+                has_igp,
+                expected_etype,
+                skim_levels,
+                raise_on_error=True,
+                skip_props=skip_props,
+                eopt_type=eopt_type,
+            )
+        except (ValueError, IndexError, TypeError, KeyError, AttributeError) as err:
+            # A step that fails to parse is skipped; only the last one (often cut short in a running calculation)
+            # is skipped silently
+            if i < len(out_bounds) - 1:
+                warnings.warn(
+                    f"Skipping geometry step {i} of {len(out_bounds)} (counting from 0), which could not be parsed "
+                    f"({err!r}); the next step starts from the step before it",
+                    stacklevel=2,
+                )
+            continue
         if joutstructure is not None:
             joutstructure_list.append(joutstructure)
     return joutstructure_list
 
 
-def parse_joutstructure_bounds(
-    init_structure,
-    out_slice,
-    bounds,
+def _parse_joutstructure_bounds(
+    init_structure: Structure | None,
+    out_slice: list[str],
+    bounds: list[int],
     opt_type: str | None,
     is_md: bool,
     has_igp: bool,

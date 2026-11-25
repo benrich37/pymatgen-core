@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-# TODO: These default values only represent what is filled in by JDFTx when a tag as a whole is missing.
-# Subtags have different default values depending on other subtags of the same tag.
-# One example is fluid-minimize, which has different convergence thresholds and max iterations depending
-# on the algorithm specified. For these tags, a second set of default values which can map partially
-# filled tagcontainers to the set as filled by JDFTx is needed.
-# TODO: Make sure ion-width, which changes based on 'fluid' tag, is handled correctly.
+# JDFTx's defaults for a minimal input (no fluid). JDFTXInfile's comparison methods fill in missing tags and
+# subtags from these, adjusted for the defaults that depend on other tags (see inputs._get_default_value).
 default_inputs = {
     "basis": "kpoint-dependent",
     "coords-type": "Lattice",
@@ -41,7 +37,7 @@ default_inputs = {
         "fdTest": False,
     },
     "exchange-regularization": "WignerSeitzTruncated",
-    "fluid": "None",
+    "fluid": {"type": "None", "Temperature": 298.0, "Pressure": 1.01325},
     "fluid-ex-corr": {
         "kinetic": "lda-TF",
         "exchange-correlation": "lda-PZ",
@@ -179,66 +175,19 @@ default_inputs = {
 }
 
 
-def fill_default_values(tag: str, infile_dict: dict):
-    if "fluid-" not in tag:
-        default_values = default_inputs.get(tag)
-        if (default_values is None) or (not isinstance(default_values, dict)):
-            return infile_dict
-        ret_values = default_values.copy()
-        ret_values.update(infile_dict)
-        return ret_values
-    return None
-
-
-# def fill_default_fluid_component_values(tag, infile_dict: dict):
-#     T = 298
-#     if "fluid" in infile_dict and "T" in infile_dict["fluid"]:
-#         T = infile_dict["fluid"]["T"]
-
-
-# Energy, temperature units in Hartrees:
-eV = 1 / 27.21138505  # eV in Hartrees
-Ryd = 0.5  # Rydberg in Hartrees
-Joule = 1 / 4.35974434e-18  # Joule in Hartrees
-KJoule = 1000 * Joule  # KJoule in Hartrees
-Kcal = KJoule * 4.184  # Kcal in Hartrees
-Kelvin = 1.3806488e-23 * Joule  # Kelvin in Hartrees
-invcm = 1.0 / 219474.6313705  # Inverse cm in Hartrees
-
-# Length units in bohrs:
+# JDFTx's units (core/Units.h), in which it echoes the fluid component parameters:
 Angstrom = 1 / 0.5291772  # Angstrom in bohrs
 meter = 1e10 * Angstrom  # meter in bohrs
 liter = 1e-3 * pow(meter, 3)  # liter in cubic bohrs
-
-# Mass units in electron masses:
-amu = 1822.88839  # atomic mass unit in electron masses
-kg = 1.0 / 9.10938291e-31  # kilogram in electron masses
-
-# Dimensionless:
 mol = 6.0221367e23  # mole in number (i.e. Avogadro number)
-
-# Commonly used derived units:
+Joule = 1 / 4.35974434e-18  # Joule in Hartrees
+kg = 1.0 / 9.10938291e-31  # kilogram in electron masses
 Newton = Joule / meter  # Newton in Hartree/bohr
 Pascal = Newton / (meter * meter)  # Pascal in Hartree/bohr^3
 KPascal = 1000 * Pascal  # KPa in Hartree/bohr^3
-Bar = 100 * KPascal  # bar in Hartree/bohr^3
 mmHg = 133.322387415 * Pascal  # mm Hg in Hartree/bohr^3
-
-# Time
 sec = np.sqrt((kg * meter) / Newton)  # second in inverse Hartrees
-invSec = 1.0 / sec  # inverse second in Hartrees
 fs = sec * 1.0e-15  # femtosecond in inverse Hartrees
-
-# Electrical:
-Coul_ = Joule / eV  # Coulomb in electrons
-Volt = Joule / Coul_  # Volt in Hartrees
-Ampere = Coul_ / sec  # Ampere in electrons/inverse Hartree
-Ohm = Volt / Ampere  # Ohm in inverse conductance quanta
-
-# Magnetic:
-Tesla = Volt * sec / (meter * meter)  # Tesla in atomic units
-bohrMagneton = 0.5
-gElectron = 2.0023193043617  # electron gyromagnetic ratio
 
 
 def antoinePvap(T: float, A: float, B: float, C: float) -> float:
@@ -260,9 +209,9 @@ def antoinePvap(T: float, A: float, B: float, C: float) -> float:
     Returns:
     -------
     float
-        Vapor pressure in atm.
+        Vapor pressure in Hartree/bohr^3.
     """
-    return KPascal * 10 ** (A - (B / (T + C)))  # in atm
+    return KPascal * 10 ** (A - (B / (T + C)))
 
 
 pureNbulk = {
@@ -290,7 +239,7 @@ pureNbulk = {
 
 
 def get_default_fluid_params(name: str, T: float) -> dict:
-    """Get default fluid parameters for a given fluid.
+    """Get JDFTx's default parameters for a fluid component (commands/fluid.cpp, fluid/FluidComponent.cpp).
 
     Parameters:
     ----------
@@ -302,7 +251,7 @@ def get_default_fluid_params(name: str, T: float) -> dict:
     Returns:
     -------
     dict
-        Default fluid parameters.
+        Default fluid parameters, in the units JDFTx echoes them in (fluid-solvent, -cation and -anion subtags).
     """
     default_fluid_params = {
         "H2O": {
@@ -524,7 +473,6 @@ def get_default_fluid_params(name: str, T: float) -> dict:
         "epsLJ": 0.0,
         "Nnorm": 0,
         "pMol": 0.0,
-        "poleEl": None,
         "Pvap": 0.0,
         "quad_nAlpha": 0,
         "quad_nBeta": 0,
@@ -537,18 +485,4 @@ def get_default_fluid_params(name: str, T: float) -> dict:
         "tauNuc": float(int(8.3e3 * fs)),
         "translation": "LinearSpline",
     }
-    fluid_params = empty_fluid_component.copy()
-    _fluid_params = default_fluid_params.get(name)
-    if _fluid_params is not None:
-        update_recursively(fluid_params, _fluid_params)
-    return fluid_params
-
-
-def update_recursively(d, u):
-    """Update dictionary d with values from dictionary u recursively."""
-    for k, v in u.items():
-        if isinstance(v, dict):
-            d[k] = update_recursively(d.get(k, {}), v)
-        else:
-            d[k] = v
-    return d
+    return {"name": name} | empty_fluid_component | default_fluid_params.get(name, {})

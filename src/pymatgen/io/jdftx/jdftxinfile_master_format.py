@@ -5,6 +5,8 @@ This module contains;
     tag names to AbstractTag-type objects.
 - get_tag_object: a function that returns an AbstractTag-type object from
     MASTER_TAG_LIST given a tag name.
+- get_tag_object_on_val: the same, but for a tag with several formats (MultiformatTag)
+    it returns the format option that fits a given value.
 """
 
 from __future__ import annotations
@@ -26,9 +28,9 @@ from pymatgen.io.jdftx.generic_tags import (
     TagContainer,
 )
 from pymatgen.io.jdftx.jdftxinfile_ref_options import (
+    _func_option_warnings,
     fluid_solvent_options,
     func_c_options,
-    func_option_warnings,
     func_options,
     func_x_options,
     func_xc_options,
@@ -43,7 +45,7 @@ from pymatgen.io.jdftx.jdftxinfile_ref_options import (
 __author__ = "Jacob Clary, Ben Rich"
 
 
-def get_species_values_tag_container() -> TagContainer:
+def _get_species_values_tag_container() -> TagContainer:
     """Get a TagContainer for tags of the form '<species> <v1> <v2> ... [<species2> <v1> ...]'.
 
     Used for e.g. initial-magnetic-moments. Each species group reads values until the next species label, and the
@@ -124,7 +126,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     subtags={
                         "modification": StrTag(
                             options=["Base-Centered"],  # Single-option modification could be a boolean tag, but keeping
-                            # as a string tagfor consistency with the other modified lattice tags
+                            # as a string tag for consistency with the other modified lattice tags
                             optional=False,
                             write_tagname=False,
                             write_value=True,
@@ -382,7 +384,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 StrTag(
                     write_tagname=True,
                     options=deepcopy(func_options),
-                    option_warnings=deepcopy(func_option_warnings),
+                    option_warnings=deepcopy(_func_option_warnings),
                 ),
                 TagContainer(
                     subtags={
@@ -416,7 +418,7 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                     can_repeat=True,
                     write_tagname=True,
                     options=func_options,
-                    option_warnings=deepcopy(func_option_warnings),
+                    option_warnings=deepcopy(_func_option_warnings),
                 ),
                 TagContainer(
                     can_repeat=True,
@@ -478,6 +480,14 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "plot": BoolTag(write_tagname=False),
             },
         ),
+        "chargeball": TagContainer(
+            can_repeat=True,
+            subtags={
+                "species-id": StrTag(write_tagname=False, optional=False),
+                "norm": FloatTag(write_tagname=False, optional=False),
+                "width": FloatTag(write_tagname=False, optional=False),
+            },
+        ),
         "lj-override": FloatTag(),
         # van-der-waals [<scaleOverride>=0] | D3 | D3BJ: a bare van-der-waals (which is how JDFTx echoes a scale of 0)
         # is DFT-D2 with the default scale, read as a scale of 0
@@ -486,6 +496,21 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 StrTag(options=["D3", "D3BJ"]),
                 FloatTag(value_if_bare=0.0),
             ]
+        ),
+        # setVDW <species> <C6> <R0> [<species2> ...]: DFT-D2 parameters, C6 in J nm^6/mol and R0 in Angstrom
+        "setVDW": TagContainer(
+            subtags={
+                "species-params": TagContainer(
+                    write_tagname=False,
+                    can_repeat=True,
+                    optional=False,
+                    subtags={
+                        "species": StrTag(write_tagname=False, optional=False),
+                        "C6": FloatTag(write_tagname=False, optional=False),
+                        "R0": FloatTag(write_tagname=False, optional=False),
+                    },
+                ),
+            },
         ),
         "elec-cutoff": TagContainer(
             allow_list_representation=True,
@@ -505,7 +530,6 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "smearingWidth": FloatTag(write_tagname=False, optional=False),
             },
         ),
-        # "elec-n-bands": IntTag(),
         "elec-n-bands": TagContainer(
             subtags={
                 "n": IntTag(write_tagname=False, optional=False, lb=0, lb_incl=True),
@@ -513,8 +537,8 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             }
         ),
         "spintype": StrTag(options=["no-spin", "spin-orbit", "vector-spin", "z-spin"]),
-        "initial-magnetic-moments": get_species_values_tag_container(),
-        "initial-oxidation-state": get_species_values_tag_container(),
+        "initial-magnetic-moments": _get_species_values_tag_container(),
+        "initial-oxidation-state": _get_species_values_tag_container(),
         # add-U <species> <orbDesc> <UminusJ> [Vext <atom> <V>] ... [<species2> ...]
         # JDFTx allows add-U only once, with all U channels on one line (and any number of Vext's per channel)
         "add-U": TagContainer(
@@ -1093,6 +1117,20 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
             },
         ),
         "fluid-vdwScale": FloatTag(),
+        # set-atomic-radius <species> <Ri> [<species2> ...]: radii (Angstrom) used by some solvation models
+        "set-atomic-radius": TagContainer(
+            subtags={
+                "species-radii": TagContainer(
+                    write_tagname=False,
+                    can_repeat=True,
+                    optional=False,
+                    subtags={
+                        "species": StrTag(write_tagname=False, optional=False),
+                        "Ri": FloatTag(write_tagname=False, optional=False),
+                    },
+                ),
+            },
+        ),
         "fluid-gummel-loop": TagContainer(
             subtags={
                 "maxIterations": IntTag(write_tagname=False, optional=False),
@@ -1225,27 +1263,32 @@ MASTER_TAG_LIST: dict[str, dict[str, Any]] = {
                 "T": FloatTag(),
                 "omegaResolution": FloatTag(),
                 "dumpK": BoolTag(),
+                # Added in JDFTx 2026-08-27 (c80e3463); JDFTx since then echoes both, even when unset (-1).
+                # iConfiguration -1 (default) starts at configuration 0; JDFTx rejects anything below -1.
+                "iConfiguration": IntTag(lb=-1),
+                # 0 and -1 (default) both run through the last configuration; JDFTx sets no bounds
+                "nConfigurations": IntTag(),
             }
         ),
+        # JDFTx reads as many values as are given (commands/ionic_dynamics.cpp, CommandStatVelocity): chainLengthT
+        # thermostat velocities, and 6 strain rates plus chainLengthP lattice thermostat velocities for the barostat
         "barostat-velocity": TagContainer(
-            subtags={
-                "v1": FloatTag(write_tagname=False, optional=False),
-                "v2": FloatTag(write_tagname=False, optional=False),
-                "v3": FloatTag(write_tagname=False, optional=False),
-                "v4": FloatTag(write_tagname=False, optional=False),
-                "v5": FloatTag(write_tagname=False, optional=False),
-                "v6": FloatTag(write_tagname=False, optional=False),
-                "v7": FloatTag(write_tagname=False, optional=False),
-                "v8": FloatTag(write_tagname=False, optional=False),
-                "v9": FloatTag(write_tagname=False, optional=False),
-            }
+            subtags={"v": FloatTag(write_tagname=False, can_repeat=True, ordered=True, optional=False)}
         ),
         "thermostat-velocity": TagContainer(
+            subtags={"v": FloatTag(write_tagname=False, can_repeat=True, ordered=True, optional=False)}
+        ),
+        # Atoms are 1-based indices within their species; resolution in bohr, energy-per-step in Hartree bohr
+        "metadynamics-bond": TagContainer(
             subtags={
-                "v1": FloatTag(write_tagname=False, optional=False),
-                "v2": FloatTag(write_tagname=False, optional=False),
-                "v3": FloatTag(write_tagname=False, optional=False),
-            }
+                "species1": StrTag(write_tagname=False, optional=False),
+                "atom1": IntTag(write_tagname=False, optional=False),
+                "species2": StrTag(write_tagname=False, optional=False),
+                "atom2": IntTag(write_tagname=False, optional=False),
+                "resolution": FloatTag(write_tagname=False, optional=False),
+                "energy-per-step": FloatTag(write_tagname=False, optional=False),
+                "state-file": StrTag(write_tagname=False),
+            },
         ),
         "ionic-dynamics": TagContainer(
             linebreak_nth_entry=1,
@@ -1526,13 +1569,14 @@ def get_tag_object(tag: str) -> AbstractTag:
 
 
 def get_tag_object_on_val(tag: str, val: Any) -> AbstractTag:
-    """Get the tag object for a given tag name.
+    """Get the tag object for a given tag name and value.
 
     Args:
         tag (str): The tag name.
+        val (Any): A value of the tag, as a string to read or as a parsed value.
 
     Returns:
-        AbstractTag: The tag object.
+        AbstractTag: The tag object. For a MultiformatTag, this is the format option that fits the value.
     """
     tag_object = get_tag_object(tag)
     if isinstance(tag_object, MultiformatTag):

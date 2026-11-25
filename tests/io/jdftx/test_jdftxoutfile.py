@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+import json
 import re
 import warnings
 from itertools import combinations
+from math import ceil
 from time import process_time
 from timeit import Timer
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+from monty.json import MontyDecoder, MontyEncoder, jsanitize
 
+from pymatgen.core import Structure
 from pymatgen.core.units import Ha_to_eV, bohr_to_ang
 from pymatgen.io.jdftx._output_utils import read_outfile_slices
 from pymatgen.io.jdftx.generic_tags import JDFTXOptionWarning
 from pymatgen.io.jdftx.inputs import JDFTXInfile
 from pymatgen.io.jdftx.jdftxoutfileslice import JDFTXOutfileSlice
+from pymatgen.io.jdftx.joutstructures import JOutStructures
 from pymatgen.io.jdftx.outputs import JDFTXOutfile, _jof_atr_from_last_slice
+from pymatgen.util.testing import MatSciTest
 
 from .inputs_test_utils import aimd_infile_fname
 from .outputs_test_utils import (
@@ -55,6 +61,7 @@ from .outputs_test_utils import (
     nolowdin_ionmin_outfile_path,
     nolowdin_latmin_outfile_path,
     nolowdin_md_outfile_path,
+    o2_vector_spin_calc_dir,
     partial_lattice_init_outfile_known_lattice,
     partial_lattice_init_outfile_path,
     pcm_params_outfile_path,
@@ -65,6 +72,7 @@ from .outputs_test_utils import (
     species_names_outfile_path,
     vdw_d2_outfile_path,
     vexternal_spin_outfile_path,
+    vib_central_diff_outfile_path,
 )
 from .shared_test_utils import assert_same_value
 
@@ -84,14 +92,18 @@ def test_JDFTXOutfile_fromfile(filename: Path, known: dict):
     jdftxoutfile_fromfile_matches_known(filename, known)
 
 
-def _parse_time(filename: Path, skim_levels: tuple[str, ...] | None = None) -> float:
-    """Best-of-n CPU time of parsing an out file.
+# Step of the coarsest CPU clock the tests run on (time.process_time advances by 1/64 s on Windows)
+CPU_CLOCK_STEP = 1 / 64
+
+
+def _parse_time(filename: Path, skim_levels: tuple[str, ...] | None = None, number: int = 1) -> float:
+    """Best-of-n CPU time of parsing an out file `number` times.
 
     CPU time leaves out time spent waiting on other processes (e.g. other pytest-xdist workers), and taking the
     fastest of several parses discards the ones slowed by interruptions, since noise can only add time.
     """
     timer = Timer(lambda: JDFTXOutfile.from_file(filename, skim_levels=skim_levels), timer=process_time)
-    return min(timer.repeat(repeat=5, number=1))
+    return min(timer.repeat(repeat=5, number=number))
 
 
 @pytest.mark.parametrize(
@@ -104,11 +116,22 @@ def _parse_time(filename: Path, skim_levels: tuple[str, ...] | None = None) -> f
 )
 def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
     jof_full = JDFTXOutfile.from_file(filename)
-    time_full = _parse_time(filename)
-    # Count how minimum fewer objects can be read at each depth level
+    # Count how many fewer objects are read at each depth level
     nless_outslices = len(jof_full.slices) - 1
     nless_last_geom = len(jof_full.slices[-1].jstrucs.slices) - 1
     nless_last_elec = len(jof_full.slices[-1].jstrucs.slices[-1].elecmindata.slices) - 1
+    # Each CPU time can be off by one step of the clock, so a speedup is only tested where it is at least two steps:
+    # - Only the skims that leave out most of the file are timed: whole out file slices if there are several, otherwise
+    #   geometry steps. Skimming only the geometry steps of a file with several slices saves under half of the time,
+    #   and skimming only electronic steps much less
+    # - Each timing is of enough parses for the full parse to take 6 steps (one parse of these files can take under 1)
+    timed_level = "outfile" if nless_outslices > 0 else "geom"
+    time_full = number = 0
+    if nless_outslices + nless_last_geom > 0:
+        single_parse_time = min(Timer(lambda: JDFTXOutfile.from_file(filename)).repeat(repeat=3, number=1))
+        number = ceil(6 * CPU_CLOCK_STEP / single_parse_time)
+        while (time_full := _parse_time(filename, number=number)) < 6 * CPU_CLOCK_STEP:
+            number *= 2
     skim_level_options = ["outfile", "geom", "elec"]
     # Don't run outfile depth skimming test if only one slice
     if not nless_outslices > 0:
@@ -139,10 +162,8 @@ def test_JDFTXOutfile_skimming(filename: Path, known: dict, known_simple: dict):
         less_outfile_slices_read = nless_outslices if "outfile" in skim_levels else 0
         less_geom_slices_read = nless_last_geom if "geom" in skim_levels else 0
         less_elec_slices_read = nless_last_elec if "elec" in skim_levels else 0
-        # Skipping only electronic steps does not save enough time to be detectable over noise in timing, so only
-        # test the speedup when whole out file slices or geometry steps are skipped
-        if less_outfile_slices_read + less_geom_slices_read > 0:
-            skim_time = _parse_time(filename, skim_levels)
+        if timed_level in skim_levels and less_outfile_slices_read + less_geom_slices_read > 0:
+            skim_time = _parse_time(filename, skim_levels, number=number)
             time_save_info = [
                 filename.name,
                 skim_levels,
@@ -189,7 +210,8 @@ def test_JDFTXOutfile_default_struc_inheritance(filename: Path, latknown: dict):
             assert pytest.approx(lattice[i][j]) == latknown[f"{i}{j}"]
 
 
-# Make sure all possible exceptions are caught when none_on_error is True
+# Ensure that a None slice (one that failed to parse) that occurs after the others leaves
+# the values of the last parsed slice
 @pytest.mark.parametrize(("ex_outfile_path"), [(partial_lattice_init_outfile_path)])
 def test_none_on_partial(ex_outfile_path: Path):
     texts = read_outfile_slices(str(ex_outfile_path))
@@ -271,7 +293,7 @@ def test_aimd_velocity_units():
 )
 def test_outfile_to_infile(outfile_path: Path, infile_path: Path, outfile_known: dict):
     """
-    Test that the JDFTXOutfileSlice.to_infile() method works correctly.
+    Test that the JDFTXOutfile.to_jdftxinfile() method works correctly.
     """
     jdftxoutfile: JDFTXOutfile = JDFTXOutfile.from_file(outfile_path)
     JDFTXInfile.from_file(infile_path)
@@ -286,7 +308,7 @@ def test_outfile_to_infile(outfile_path: Path, infile_path: Path, outfile_known:
     [ov / nv for ov, nv in zip(old_velocities, new_velocities, strict=False)]
     assert_same_value(old_velocities, new_velocities)
     old_thermostat_velocity = jdftxoutfile.slices[-1].jstrucs.thermostat_velocity
-    new_thermostat_velocity = np.array([new_infile["thermostat-velocity"][f"v{i + 1}"] for i in range(3)])
+    new_thermostat_velocity = np.array(new_infile["thermostat-velocity"]["v"])
     assert_same_value(old_thermostat_velocity, new_thermostat_velocity)
 
     # TODO: Do the old TODO related to filling out default input tags so the robust comparison below
@@ -390,6 +412,48 @@ def test_no_lowdin_steps(outfile_path: Path, geom_opt_type: str, geom_converged:
         assert jstruc.elecmindata.converged
 
 
+def test_cut_iteration_line(tmp_path: Path):
+    """A run killed mid-line (no energy on its last iteration line) loses only that geometry step."""
+    lines = nolowdin_ionmin_outfile_path.read_text().splitlines()
+    i = max(i for i, line in enumerate(lines) if line.startswith("ElecMinimize: Iter:"))
+    cut_path = tmp_path / "cut.out"
+    cut_path.write_text("\n".join([*lines[:i], lines[i].split("Etot")[0], "", "appended text"]) + "\n")
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        outfile = JDFTXOutfile.from_file(cut_path)
+    assert len(outfile.slices[-1].jstrucs) == 6
+    # The last step is often cut short in a running calculation, so it is skipped silently
+    assert not any("Skipping geometry step" in str(w.message) for w in record)
+
+
+def test_unparsable_middle_step_warns(tmp_path: Path):
+    """A step before the last that fails to parse is skipped with a warning giving its index."""
+    lines = nolowdin_ionmin_outfile_path.read_text().splitlines()
+    iter_lines = [i for i, line in enumerate(lines) if line.startswith("ElecMinimize: Iter:")]
+    i = iter_lines[len(iter_lines) // 2]
+    lines[i] = lines[i].split("Etot")[0]
+    (tmp_path / "jdftx.out").write_text("\n".join(lines) + "\n")
+    with pytest.warns(UserWarning, match=r"Skipping geometry step \d+ of \d+"):
+        outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    assert len(outfile.slices[-1].jstrucs) == 6
+
+
+def test_unparsable_slices(tmp_path: Path):
+    """A slice that fails to parse is dropped with a warning, and a file in which no slice parses raises."""
+    lines = eopt_elecmin_outfile_path.read_text().splitlines()
+    i = max(i for i, line in enumerate(lines) if line.startswith("ElecMinimize: Iter:"))
+    # A single point killed mid-line, then appended to: its only step fails
+    cut = [*lines[:i], lines[i].split(" F:")[0], "", "appended text"]
+    cut_path = tmp_path / "cut.out"
+    cut_path.write_text("\n".join(cut))
+    with pytest.warns(UserWarning, match="Skipping an out file slice"), pytest.raises(ValueError, match="could be"):
+        JDFTXOutfile.from_file(cut_path)
+    # Appended to a finished run, only the cut run is dropped
+    cut_path.write_text("\n".join(lines + cut))
+    with pytest.warns(UserWarning, match="Skipping an out file slice"):
+        assert len(JDFTXOutfile.from_file(cut_path).slices) == 1
+
+
 @pytest.mark.parametrize("smearing", [True, False])
 def test_unavailable_eigstats(tmp_path: Path, smearing: bool):
     # Without empty bands (e.g. an insulator with the default number of bands), JDFTx prints the LUMO, mu and gaps
@@ -417,6 +481,8 @@ def test_unavailable_eigstats(tmp_path: Path, smearing: bool):
         # Without smearing the fillings don't depend on the band energies
         assert outfile.lumo_filling == 0
         assert outfile.is_metal is False
+        # The edited echo implies Etot, but the minimization lines (from a smearing run) print F, which wins
+        assert outfile.etype == "F"
 
 
 def _printed_final_ions(text: str) -> tuple[str, list[list[str]]] | None:
@@ -472,6 +538,18 @@ def test_to_jdftxinfile_keeps_fractional_move_scale(tmp_path: Path):
     _check_restart_matches_out_file(text, restart, outfile.slices[-1].infile, lattice_changed=False)
 
 
+def test_to_jdftxinfile_thermostat_chain_length(tmp_path: Path):
+    """A restart keeps every Nose-Hoover chain thermostat velocity, however many there are (chainLengthT)."""
+    text = example_aimd_outfile_path.read_text().replace("chainLengthT 3", "chainLengthT 2")
+    text = re.sub(r"^(thermostat-velocity \S+ \S+) \S+$", r"\1", text, flags=re.MULTILINE)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    restart = JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))
+    assert restart["ionic-dynamics"]["chainLengthT"] == 2
+    assert restart["thermostat-velocity"]["v"] == list(outfile.slices[-1].jstrucs.thermostat_velocity)
+    assert len(restart["thermostat-velocity"]["v"]) == 2
+
+
 def test_to_jdftxinfile_keeps_rho_external():
     # JDFTx always echoes rhoExternal with its yes/no includeSelfEnergy flag
     outfile = JDFTXOutfile.from_file(rho_external_outfile_path)
@@ -514,6 +592,40 @@ def test_to_jdftxinfile_keeps_hse06():
     # Reading the restart as an input does warn
     with pytest.warns(JDFTXOptionWarning, match="hyb-gga-hse06"):
         assert JDFTXInfile.from_str(str(restart))["elec-ex-corr"] == "hyb-HSE06"
+
+
+def test_to_jdftxinfile_leaves_out_nan():
+    """JDFTx echoes unset ionic-dynamics P0/stress0 as nan and can't read it back, so it refused every MD restart."""
+    outfile = JDFTXOutfile.from_file(nolowdin_md_outfile_path)
+    restart = outfile.to_jdftxinfile()
+    assert "nan" not in str(restart).split()
+    assert "P0" not in restart["ionic-dynamics"]
+    assert "stress0" not in restart["ionic-dynamics"]
+    assert restart["ionic-dynamics"]["nSteps"] == 3
+    # The parsed input keeps them
+    assert np.isnan(outfile.infile["ionic-dynamics"]["P0"])
+
+
+def test_to_jdftxinfile_keeps_vibrations():
+    """JDFTx since 2026-08 echoes iConfiguration/nConfigurations, which pymatgen didn't know, so it dropped the line."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Skipping invalid tag line")
+        outfile = JDFTXOutfile.from_file(vib_central_diff_outfile_path)
+    expected = {
+        "dr": 0.01,
+        "centralDiff": True,
+        "useConstraints": False,
+        "translationSym": True,
+        "rotationSym": False,
+        "omegaMin": 0.0002,
+        "T": 298.0,
+        "omegaResolution": 0.0001,
+        "dumpK": False,
+        "iConfiguration": -1,
+        "nConfigurations": -1,
+    }
+    assert outfile.infile["vibrations"] == expected
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["vibrations"] == expected
 
 
 def test_species_names_from_out_file():
@@ -660,3 +772,138 @@ def test_as_dict_with_none_slice():
     dct = jout_with_none.as_dict()
     assert dct["slices"][0] is None
     assert len(dct["slices"]) == 2
+
+
+def test_as_dict_without_slices():
+    """An out file without a readable slice gives an empty JDFTXOutfile, whose values are None."""
+    jout = JDFTXOutfile(slices=[])
+    dct = jout.as_dict()
+    assert dct["slices"] == []
+    assert dct["prefix"] is None
+    assert jout.e is None
+
+
+@pytest.mark.parametrize("skim_levels", [["geom"], ["geom", "elec"], ["outfile", "geom"]], ids="-".join)
+@pytest.mark.parametrize(
+    "outfile_path", [example_vib_outfile_path, vib_central_diff_outfile_path], ids=lambda path: path.name
+)
+def test_geom_skim_of_vibrations(outfile_path: Path, skim_levels: list[str]):
+    """Vibrations runs print no geometry, so skimming to the last geometry step used to leave no slice at all."""
+    full = JDFTXOutfile.from_file(outfile_path)
+    skim = JDFTXOutfile.from_file(outfile_path, skim_levels=skim_levels, none_slice_on_error=False)
+    assert len(skim.slices) == 1
+    assert len(skim.slices[-1].jstrucs.slices) == 1
+    assert skim.e == full.e
+    assert skim.structure == full.structure
+    assert_same_value(skim.vibrational_modes, full.vibrational_modes)
+
+
+def test_geom_skim_of_run_stopped_in_first_step(tmp_path: Path):
+    """A run stopped before its first geometry was printed skims to the step the full parse gives."""
+    lines = nolowdin_ionmin_outfile_path.read_text().splitlines(keepends=True)
+    first_step = next(i for i, line in enumerate(lines) if "-------- Electronic minimization" in line)
+    first_geometry = next(i for i, line in enumerate(lines) if i > first_step and line.startswith("# Ionic positions"))
+    (tmp_path / "jdftx.out").write_text("".join(lines[: (first_step + first_geometry) // 2]))
+    full = JDFTXOutfile.from_file(tmp_path / "jdftx.out")
+    skim = JDFTXOutfile.from_file(tmp_path / "jdftx.out", skim_levels=["geom"], none_slice_on_error=False)
+    assert_same_value(skim.slices[-1].jstrucs[-1].as_dict(), full.slices[-1].jstrucs[-1].as_dict())
+
+
+@pytest.mark.parametrize("spintype", ["vector-spin", "spin-orbit"])
+def test_noncollinear_spin(spintype: str, tmp_path: Path):
+    """Noncollinear out files crashed from_file. They have one set of (spinor) states, each band holds one electron,
+    and vector-spin prints each Lowdin moment as |M|, theta and phi."""
+    text = (o2_vector_spin_calc_dir / "out").read_text()
+    if spintype == "spin-orbit":  # The same states; JDFTx prints no moments for spin-orbit
+        text = re.sub(r"^spintype vector-spin$", "spintype spin-orbit", text, flags=re.MULTILINE)
+        text = re.sub(r"^# magnetic-moments .*\n", "", text, flags=re.MULTILINE)
+    (tmp_path / "jdftx.out").write_text(text)
+    outfile = JDFTXOutfile.from_file(tmp_path / "jdftx.out", none_slice_on_error=False)
+    assert outfile.nspin == 1
+    assert outfile.homo_filling == pytest.approx(1.0)
+    assert outfile.lumo_filling == pytest.approx(0.0)
+    assert not outfile.is_metal
+    assert JDFTXInfile.from_str(str(outfile.to_jdftxinfile()))["spintype"] == spintype
+    if spintype == "vector-spin":
+        # "# magnetic-moments O   0.996 29.9 45.0   0.997 29.8 45.4", as Cartesian vectors
+        m, theta, phi = np.array([[0.996, 29.9, 45.0], [0.997, 29.8, 45.4]]).T
+        theta, phi = np.radians(theta), np.radians(phi)
+        expected = m[:, None] * np.array([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]).T
+        assert np.array(outfile.structure.site_properties["magmom"]) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("outfile_path", sorted(ex_out_files_dir.glob("*.out")), ids=lambda path: path.name)
+def test_msonable(outfile_path: Path):
+    """Parsed output follows pymatgen's MSONable contract, and loading its JSON (which used to raise) gives the same
+    JSON again, without warnings."""
+    outfile = JDFTXOutfile.from_file(outfile_path)
+    jstrucs = outfile.slices[-1].jstrucs
+    steps = jstrucs[-1].elecmindata
+    text = json.dumps(outfile, cls=MontyEncoder)
+    _ = outfile.trajectory  # Fills lazy caches (trajectories, step structures), which the JSON must leave out
+    unchanged = json.dumps(outfile, cls=MontyEncoder) == text  # Not in the assert: pytest would diff megabytes of JSON
+    assert unchanged
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for obj in (outfile, outfile.slices[-1], jstrucs, jstrucs[-1], steps, steps and steps.slices[-1]):
+            if obj is not None:
+                MatSciTest.assert_msonable(obj)
+        loaded = json.loads(text, cls=MontyDecoder)
+    assert json.dumps(loaded, cls=MontyEncoder) == text
+    if outfile.vibrational_modes is not None:  # Imaginary frequencies are complex
+        assert_same_value(loaded.vibrational_modes, outfile.vibrational_modes)
+
+
+def test_jsanitize_round_trip():
+    """jobflow stores output with jsanitize: arrays, also those inside structures, load back as arrays, and MD steps
+    keep their data."""
+    outfile = JDFTXOutfile.from_file(nolowdin_md_outfile_path)
+    loaded = MontyDecoder().process_decoded(jsanitize(outfile, strict=True, allow_bson=True))
+    step, loaded_step = outfile.slices[-1].jstrucs[-1], loaded.slices[-1].jstrucs[-1]
+    for original, reloaded in [(outfile, loaded), (step, loaded_step)]:
+        assert isinstance(reloaded.forces, np.ndarray)
+        assert reloaded.forces == pytest.approx(original.forces)
+    assert isinstance(loaded.structure.site_properties["velocities"][0], np.ndarray)
+    assert loaded_step.t_k == step.t_k
+    latmin = MontyDecoder().process_decoded(jsanitize(JDFTXOutfile.from_file(example_latmin_outfile_path), strict=True))
+    assert isinstance(latmin.structure.properties["stress"], np.ndarray)
+    # A step's dictionary is also a Structure's
+    assert Structure.from_dict(step.as_dict()) == outfile.structure
+
+
+def test_pydantic_round_trip():
+    """Pydantic models (as in emmet and atomate2) can hold parsed output: their python and JSON dumps load back."""
+    pydantic = pytest.importorskip("pydantic")
+
+    class Doc(pydantic.BaseModel):
+        outfile: JDFTXOutfile
+
+    # MD: JDFTx echoes unset pressures as nan, which pydantic's JSON dumps write as null by default
+    outfile = JDFTXOutfile.from_file(nolowdin_md_outfile_path)
+    doc = Doc(outfile=outfile)
+    for dumped in (doc.model_dump(), json.loads(doc.model_dump_json())):
+        loaded = Doc.model_validate(dumped).outfile
+        assert isinstance(loaded.slices[-1].jstrucs, JOutStructures)
+        assert loaded.e == outfile.e
+        assert np.isnan(loaded.slices[-1].infile["ionic-dynamics"]["P0"])
+
+
+@pytest.mark.parametrize("skim_levels", [None, ["outfile", "geom"]])
+def test_skip_props(skim_levels: list[str] | None):
+    """Each skipped property is left unparsed and nothing else changes ("struct" used to leave no slice at all, and
+    "charges" skipped nothing)."""
+    full = JDFTXOutfile.from_file(species_names_outfile_path, skim_levels=skim_levels)
+    skipped = {
+        prop: JDFTXOutfile.from_file(species_names_outfile_path, skim_levels=skim_levels, skip_props=[prop])
+        for prop in ("struct", "forces", "charges")
+    }
+    for outfile in skipped.values():
+        assert len(outfile.slices[-1].jstrucs) == len(full.slices[-1].jstrucs)
+        assert outfile.e == pytest.approx(full.e)
+    # Without the position lines, each step keeps the input structure
+    assert skipped["struct"].structure.cart_coords == pytest.approx(full.slices[-1].initial_structure.cart_coords)
+    assert skipped["struct"].structure.cart_coords != pytest.approx(full.structure.cart_coords)
+    assert skipped["forces"].forces is None
+    assert full.forces is not None
+    assert "charges" not in skipped["charges"].structure.site_properties
+    assert "charges" in full.structure.site_properties
